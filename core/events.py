@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from ..contracts import ContractError, SourceEvent, TrustedContext, decode_payload, validate_capture
-from .capture_filters import redact_secret_text, sanitize_source_capture_text
+from .capture_filters import redact_secret_text, sanitize_source_capture_text, without_private
 from .secret_patterns import REDACTED_SECRET, contains_secret_like_text
 
 MAX_SEGMENT_CHARS = 65536
@@ -27,16 +27,29 @@ class PreparedCapture:
     private_revision: int | None = None
     #: Merged replacement spans across the original envelope, counted once before segmentation.
     masked_secret_count: int = 0
+    #: Entry policy version captured with durable ingress, not host-supplied metadata.
+    entry_version: int | None = None
 
 
-def capture_contains_secret(value: object) -> bool:
-    """Whether an envelope contains text admission refuses, including nested keys."""
+def capture_contains_secret(value: object, *, _clear_texts: set[str] | None = None) -> bool:
+    """Whether an envelope contains text admission refuses, including nested keys.
+
+    An optional per-preparation collector retains exact strings whose canonical
+    verdict is clean; it never changes the checks or the returned verdict.
+    """
     if isinstance(value, str):
-        return contains_secret_like_text(value)
+        secret = contains_secret_like_text(value)
+        if not secret and _clear_texts is not None:
+            _clear_texts.add(value)
+        return secret
     if isinstance(value, dict):
-        return any(capture_contains_secret(k) or capture_contains_secret(v) for k, v in value.items())
+        return any(
+            capture_contains_secret(k, _clear_texts=_clear_texts)
+            or capture_contains_secret(v, _clear_texts=_clear_texts)
+            for k, v in value.items()
+        )
     if isinstance(value, list):
-        return any(capture_contains_secret(v) for v in value)
+        return any(capture_contains_secret(v, _clear_texts=_clear_texts) for v in value)
     return False
 
 
@@ -72,9 +85,14 @@ def _capture_identity(raw: dict, context: TrustedContext) -> dict:
     return identity
 
 
-def _mask_capture_texts(value: Any) -> tuple[Any, int]:
+def _mask_capture_texts(value: Any, *, _clear_texts: set[str] | None = None) -> tuple[Any, int]:
     """Copy an envelope through the shared redactor; a withheld whole field refuses the envelope."""
     if isinstance(value, str):
+        # These immutable bytes already passed identity rejection in this
+        # preparation. Containers are still copied so input mutations cannot
+        # change the prepared envelope.
+        if _clear_texts is not None and value in _clear_texts:
+            return value, 0
         masked, count = redact_secret_text(value)
         if count and masked.strip() == REDACTED_SECRET:
             raise ValueError("plaintext_secret_rejected")
@@ -82,13 +100,13 @@ def _mask_capture_texts(value: Any) -> tuple[Any, int]:
     if isinstance(value, dict):
         result, count = {}, 0
         for key, item in value.items():
-            result[key], added = _mask_capture_texts(item)
+            result[key], added = _mask_capture_texts(item, _clear_texts=_clear_texts)
             count += added
         return result, count
     if isinstance(value, list):
         result, count = [], 0
         for item in value:
-            masked, added = _mask_capture_texts(item)
+            masked, added = _mask_capture_texts(item, _clear_texts=_clear_texts)
             result.append(masked)
             count += added
         return result, count
@@ -108,28 +126,37 @@ def capture_text_segments(text: str) -> tuple[str, ...]:
     return tuple(parts) or ("",)
 
 
-def prepare_capture(value: SourceEvent | dict | str | bytes, context: TrustedContext) -> PreparedCapture:
+def prepare_capture(
+    value: SourceEvent | dict | str | bytes, context: TrustedContext, *, private_content_omitted: bool = False
+) -> PreparedCapture:
     """Validate identity, mask stored text once, then sanitize transport and split bounded source segments."""
     raw = decode_payload(dict(value) if isinstance(value, dict) else value)
     content = raw.get("content")
     if type(content) is not str:
         raise ContractError("INPUT_INVALID", "content")
+    content, private_count = without_private(content)
     # Validate the envelope before splitting a bounded long host message. The
     # original content is never repaired or supplied to a model to pass schema.
     checked = validate_capture({**raw, "content": ""}, _principal_context(raw, context))
     raw = {**checked, "content": content}
     if not raw["source_event_key"].strip() or "\x00" in raw["source_event_key"]:
         raise ContractError("INPUT_INVALID", "source_event_key")
-    if capture_contains_secret(_capture_identity(raw, context)):
+    clear_texts: set[str] = set()
+    if capture_contains_secret(_capture_identity(raw, context), _clear_texts=clear_texts):
         return PreparedCapture((), rejection="plaintext_secret_rejected")
     try:
-        raw, masked_secret_count = _mask_capture_texts(raw)
+        raw, masked_secret_count = _mask_capture_texts(raw, _clear_texts=clear_texts)
     except ValueError:
         return PreparedCapture((), rejection="plaintext_secret_rejected")
     context = _principal_context(raw, context)
     content = raw["content"]
     filtered = sanitize_source_capture_text(content)
     gaps = ("transport_payload_omitted",) if filtered != content else ()
+    if private_count:
+        gaps = (*gaps, f"private_spans_removed:{private_count}")
+
+    if private_count or private_content_omitted:
+        gaps = (*gaps, "private_content_omitted")
     if masked_secret_count:
         gaps = (*gaps, "secret_values_masked")
     if not filtered.strip() and not raw.get("artifact_refs") and raw["capture_state"] == "complete":
@@ -165,6 +192,7 @@ def segment_key(group_key: str, index: int) -> str:
 
 def _stored_segments(content: str) -> tuple[str, ...]:
     """The texts a capture of ``content`` stores: masked, sanitized and split the way ``prepare_capture`` does."""
+    content, _private_count = without_private(content)
     masked, _count = redact_secret_text(content)
     return capture_text_segments(sanitize_source_capture_text(masked))
 
@@ -183,7 +211,7 @@ CJK_RUN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
 _IDENTIFIER = re.compile(r"[a-z0-9]+(?:[._/-][a-z0-9]+)*")
 _FILENAME = re.compile(r"(?<![\w-])[\w-]+(?:\.[\w-]+)+", re.UNICODE)
 #: A dotted release version with a pre-release or build suffix, after
-#: normalization: 3.1.0rc28, v3.1.0-rc28, 3.1.0.dev2, 2.0.1-beta3, 1.10.2a1.
+#: Normalize semver prerelease and development spellings before matching.
 _VERSION_SUFFIX = re.compile(r"(?<![a-z0-9])v?[0-9]+(?:\.[0-9]+)+[._-]?([a-z]+[0-9]+)(?![a-z0-9])")
 
 
@@ -230,6 +258,19 @@ def indexed_terms(event) -> tuple[str, ...]:
 
 def lexical_terms(text: str) -> tuple[str, ...]:
     """Chinese bigrams and intact identifiers; normalization affects index only."""
+    # Admission and ranking inspect the same source repeatedly. Bound both the
+    # retained text and entry count; unusually long transcripts are never kept.
+    return _cached_lexical_terms(text) if len(text) <= 16384 else _lexical_terms(text)
+
+
+@functools.lru_cache(maxsize=128)
+def _cached_lexical_terms(text: str) -> tuple[str, ...]:
+    """Reuse the exact tokenization of a bounded source, independent of permissions."""
+    return _lexical_terms(text)
+
+
+def _lexical_terms(text: str) -> tuple[str, ...]:
+    """Tokenize the complete text, including every bounded identifier and CJK bigram."""
     normalized = unicodedata.normalize("NFKC", text).casefold()
     terms = set(_IDENTIFIER.findall(normalized)) | set(_FILENAME.findall(normalized))
     terms.update(part for token in tuple(terms) for part in token.split("/"))

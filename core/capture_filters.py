@@ -15,6 +15,37 @@ from .secret_patterns import (
     secret_redaction_spans,
 )
 
+
+def without_private(text: str) -> tuple[str, int]:
+    """Remove inline private spans before any durable or outbound use.
+
+    Nested spans stay private until the matching close. An unfinished span hides the remaining text, so a partial
+    transcript line cannot release it on replay. The count is metadata only and never includes hidden content.
+    """
+    kept, position, depth, count = [], 0, 0, 0
+    for tag in re.finditer(r"</?private\s*>", text, re.IGNORECASE):
+        if depth == 0:
+            kept.append(text[position : tag.start()])
+        if not tag.group().startswith("</"):
+            if depth == 0:
+                count += 1
+            depth += 1
+        elif depth:
+            depth -= 1
+        else:
+            count += 1
+        position = tag.end()
+    if depth == 0:
+        kept.append(text[position:])
+    return "".join(kept), count
+
+
+def strip_private_content(text: str) -> tuple[str, bool]:
+    """Expose whether the shared nested-span filter omitted any private markup or content."""
+    filtered, count = without_private(text)
+    return filtered, bool(count)
+
+
 PRIVATE_PATH_PATTERNS: tuple[re.Pattern[str], ...] = (
     # Windows drive paths first so `C:/Users/...` is fully redacted before the
     # POSIX `/Users/...` fallback can leave a `C:` fragment behind.
@@ -158,6 +189,26 @@ def sanitize_source_capture_text(text: str) -> str:
     for pattern in INLINE_ATTACHMENT_PATTERNS:
         cleaned = pattern.sub("", cleaned)
     return cleaned
+
+
+def sanitize_source_capture_value(value: Any) -> Any:
+    """Filter each JSON string before a capture copy is retained or exported.
+
+    Refuse colliding keys rather than silently replacing one field after filtering.
+    """
+    if isinstance(value, str):
+        return sanitize_source_capture_text(without_private(value)[0])
+    if isinstance(value, list):
+        return [sanitize_source_capture_value(item) for item in value]
+    if isinstance(value, dict):
+        result = {}
+        for key, item in value.items():
+            clean_key = sanitize_source_capture_value(key)
+            if clean_key in result:
+                raise ValueError("capture_key_collision")
+            result[clean_key] = sanitize_source_capture_value(item)
+        return result
+    return value
 
 
 def sanitize_capture_text(text: Any) -> str:

@@ -47,6 +47,55 @@ def _write_runtime_config(path: Path, payload: dict) -> Path:
     return path
 
 
+def test_pending_upgrade_wakes_from_real_provider_initialize(hermes_home, initialize_kwargs, monkeypatch):
+    from scope_recall.core import storage
+    from scope_recall.runtime import worker_launch
+    from v11_support import downgrade_store
+
+    binding, core = install_hermes_scope_recall(
+        hermes_home,
+        agent_id=initialize_kwargs["agent_identity"],
+        platform=initialize_kwargs["platform"],
+        user_id=initialize_kwargs["user_id"],
+        agent_workspace=initialize_kwargs["agent_workspace"],
+        test_mode=False,
+    )
+    path = _write_runtime_config(
+        hermes_home / "TEST-runtime.json",
+        _runtime_payload(binding, session_id="TEST-upgrade", allowed_scope_ids=binding.scope_ids),
+    )
+    downgrade_store(core.storage.path, 1111)
+    monkeypatch.setattr(storage, "_store_bytes", lambda conn: storage.HEAVY_UPGRADE_BYTES)
+    workers = []
+    launch = worker_launch.launch_worker
+
+    def observed(*args, **kwargs):
+        kwargs["detach_output"] = False
+        worker = launch(*args, **kwargs)
+        workers.append(worker)
+        return worker
+
+    monkeypatch.setattr(worker_launch, "launch_worker", observed)
+    provider = ScopeRecallHermesAdapter()
+    try:
+        provider.initialize("TEST-upgrade", **{**initialize_kwargs, "trusted_runtime_config_path": str(path)})
+        assert workers, "pending provider did not wake schema maintenance"
+        assert len(workers) == 1
+        out, err = workers[0].communicate(timeout=20)
+        assert workers[0].poll() == 0, (out, err)
+        provider.initialize("TEST-next", **{**initialize_kwargs, "trusted_runtime_config_path": str(path)})
+        assert (
+            provider._require_core().status(provider._identity.trusted_context()).schema_version
+            == storage.SCHEMA_VERSION
+        )
+    finally:
+        provider.shutdown()
+        for worker in workers:
+            if worker.poll() is None:
+                worker.terminate()
+            worker.communicate(timeout=5)
+
+
 def test_missing_runtime_config_preserves_basic_behavior_and_reports_gap(adapter):
     provider, _clock = adapter
     assert GAP_UNCONFIGURED in provider.diagnostics.capability_gaps
@@ -121,14 +170,9 @@ def test_binding_directory_runtime_config_attaches_without_host_kwarg(hermes_hom
     provider.shutdown()
 
 
-def test_a_gateway_starts_its_vector_helper_when_it_first_binds(hermes_home, initialize_kwargs, monkeypatch):
-    """The first search opened the vector helper, and its LanceDB import could outrun that recall's budget: a probe
-    run as a gateway's first turn after a start came back without its vector search."""
-    from scope_recall.vector import process_store
+def test_a_gateway_binds_the_sqlite_vector_backend(hermes_home, initialize_kwargs):
+    """A configured gateway binds the direct SQLite factory across session changes."""
 
-    started = []
-    # The helper itself is the only stand-in: the host runtime, its config and its vector section are the real ones.
-    monkeypatch.setattr(process_store, "prestart", lambda **_options: started.append(True))
     binding, _core = install_hermes_scope_recall(
         hermes_home,
         agent_id=initialize_kwargs["agent_identity"],
@@ -154,26 +198,15 @@ def test_a_gateway_starts_its_vector_helper_when_it_first_binds(hermes_home, ini
             provider.initialize(session, **{**initialize_kwargs, "trusted_runtime_config_path": str(config_path)})
         assert provider._host_runtime.configured, provider._host_runtime.capability_gaps
         assert provider._host_runtime.runtime.config.vector is not None
-        assert started == ([True] if sys.platform == "win32" else []), "once, when the gateway first binds"
+        runtime = provider._host_runtime.runtime
+        store = runtime._vector_factory(runtime.config.vector)
+        try:
+            assert store.backend == "sqlite"
+            assert store.requires_reopen, "binding leaves the companion connection unopened"
+        finally:
+            store.close()
     finally:
         provider.shutdown()
-
-
-@pytest.mark.skipif(sys.platform != "win32", reason="LanceDB runs in a helper process on Windows only")
-def test_the_vector_helper_is_started_only_for_a_runtime_with_vectors(monkeypatch):
-    from scope_recall.adapters.hermes import session_binding
-    from scope_recall.vector import process_store
-
-    started = []
-    monkeypatch.setattr(process_store, "prestart", lambda **_options: started.append(True))
-
-    def host(vector):
-        return SimpleNamespace(runtime=SimpleNamespace(config=SimpleNamespace(vector=vector)))
-
-    session_binding._start_vector_helper(host(object()))
-    session_binding._start_vector_helper(host(None))
-    session_binding._start_vector_helper(SimpleNamespace(runtime=None))
-    assert started == [True]
 
 
 @pytest.fixture
@@ -203,31 +236,10 @@ def configured_provider(hermes_home, initialize_kwargs):
     provider.shutdown()
 
 
-def test_every_runtime_a_hermes_process_attaches_searches_one_store_of_a_table(configured_provider):
-    """A gateway attaches a runtime for every agent it makes, and Hermes does not always shut down the one it made
-    before: a runtime holding a vector helper of its own would cost about 1.15 GB each.  Hermes' attach makes the
-    process share one store of each table, as a server does (``vector.process_store.share``), before the runtime
-    builds its own."""
-    import scope_recall.vector.process_store as process_store
-
-    assert configured_provider._host_runtime is not None
-    assert process_store._sharing is True
-    first = process_store.store_for(Path("TEST-vectors"), table_name="scope_recall", dimensions=8)
-    second = process_store.store_for(Path("TEST-vectors"), table_name="scope_recall", dimensions=8)
-    assert isinstance(first, process_store.SharedStore) and first._shared is second._shared
-
-
-@pytest.mark.skipif(sys.platform != "win32", reason="LanceDB runs in a helper process on Windows only")
-def test_two_hermes_agents_build_views_of_one_vector_store_and_a_shutdown_leaves_it(
-    hermes_home, initialize_kwargs, monkeypatch
-):
-    """Both runtimes' stores, built through their real factories (nothing is opened, no helper starts), are views of
-    one store; a provider's shutdown leaves it to the process."""
-    import scope_recall.vector.process_store as process_store
+def test_two_hermes_agents_see_one_companion_and_close_their_own_connections(hermes_home, initialize_kwargs):
+    """Independent runtime connections see committed vectors and close without invalidating each other."""
     from scope_recall.core.recall_policy import EMBEDDING_SPACE, embedding_space_id
 
-    started = []
-    monkeypatch.setattr(process_store, "prestart", lambda **_options: started.append(True))
     binding, _core = install_hermes_scope_recall(
         hermes_home,
         agent_id=initialize_kwargs["agent_identity"],
@@ -249,6 +261,7 @@ def test_two_hermes_agents_build_views_of_one_vector_store_and_a_shutdown_leaves
     config_path = _write_runtime_config(hermes_home / "trusted-runtime.json", payload)
     providers = [ScopeRecallHermesAdapter(), ScopeRecallHermesAdapter()]
     running = list(providers)
+    views = []
     try:
         for index, provider in enumerate(providers):
             provider.initialize(
@@ -256,16 +269,33 @@ def test_two_hermes_agents_build_views_of_one_vector_store_and_a_shutdown_leaves
             )
         runtimes = [provider._host_runtime.runtime for provider in providers]
         views = [runtime._vector_factory(runtime.config.vector) for runtime in runtimes]
-        assert all(isinstance(view, process_store.SharedStore) for view in views)
-        assert views[0]._shared is views[1]._shared, "one store, one helper, for both agents"
-        assert started == [True, True], "each bind still asks for a spare; prestart decides"
-        # As ``RuntimeInstance._ensure_vector_port`` leaves it after a first recall: the view is the runtime's.
-        runtimes[0]._owned_resources.append(views[0])
-        runtimes[0]._vector_store = views[0]
+        assert all(view.backend == "sqlite" for view in views)
+        assert views[0].db_path == views[1].db_path
+        views[0].open()
+        views[1].open()
+        values = [1.0] * space["dimensions"]
+        row = dict(
+            id="TEST-shared",
+            scope_id="TEST-scope",
+            source="TEST-shared",
+            target="{}",
+            content="",
+            summary="",
+            updated_at="",
+            vector=values,
+        )
+        views[0].upsert_records([row])
+        for runtime, view in zip(runtimes, views, strict=True):
+            runtime._owned_resources.append(view)
+            runtime._vector_store = view
+        assert views[1].search(values, scope_id="TEST-scope", limit=1)[0]["id"] == row["id"]
         running.remove(providers[0])
-        providers[0].shutdown()  # closes the runtime, which closes its view
-        assert len(process_store._shared) == 1 and not views[1]._store._closed
+        providers[0].shutdown()
+        views[1].upsert_records([{**row, "id": "TEST-survivor"}])
+        assert views[1].contains_id("TEST-survivor")
     finally:
+        for view in views:
+            view.close()
         for provider in running:
             provider.shutdown()
 

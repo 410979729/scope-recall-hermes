@@ -2,7 +2,7 @@
   "about": "The dev split at scale 1, measured by recall_bench.py; recall_bench.py --update rewrites it.",
   "split": "dev",
   "scale": 1,
-  "world": "4c73726a319a107b60dc302d43ab887d7a2b8572ba5291cee39be9611f9ef07a",
+  "world": "86bbe0f5bc74e351c4ad005d203d19dc03c99bf056671149041e6ce9b452f276",
   "tolerance": 0.02,
   "facts": {
     "hypothetical": 0,
@@ -14,16 +14,16 @@
   "metrics": {
     "auto": {
       "all": {
-        "recall@1": 0.5258,
-        "recall@3": 0.7764,
-        "recall@6": 0.8286,
-        "recall@10": 0.8286,
-        "mrr": 0.7217,
-        "ndcg@10": 0.7378,
+        "recall@1": 0.5293,
+        "recall@3": 0.7731,
+        "recall@6": 0.8232,
+        "recall@10": 0.8232,
+        "mrr": 0.733,
+        "ndcg@10": 0.7387,
         "outdated_above_current": 0.1667,
-        "answered": 0.9718,
+        "answered": 0.9595,
         "abstained": 0.9508,
-        "abstention_balanced_accuracy": 0.9613
+        "abstention_balanced_accuracy": 0.9551
       },
       "single_fact": {
         "recall@1": 0.5556,
@@ -90,20 +90,38 @@
       },
       "no_memory": {
         "abstained": 1.0
+      },
+      "multi_hop": {
+        "recall@1": 0.4167,
+        "recall@3": 0.5417,
+        "recall@6": 0.5417,
+        "recall@10": 0.5417,
+        "mrr": 1.0,
+        "ndcg@10": 0.6379,
+        "answered": 0.5
+      },
+      "assistant_said": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@6": 1.0,
+        "recall@10": 1.0,
+        "mrr": 1.0,
+        "ndcg@10": 1.0,
+        "answered": 1.0
       }
     },
     "explicit": {
       "all": {
-        "recall@1": 0.5147,
-        "recall@3": 0.7306,
-        "recall@6": 0.7612,
-        "recall@10": 0.7682,
-        "mrr": 0.6814,
+        "recall@1": 0.5186,
+        "recall@3": 0.7258,
+        "recall@6": 0.7551,
+        "recall@10": 0.7618,
+        "mrr": 0.6943,
         "ndcg@10": 0.6929,
         "outdated_above_current": 0.2,
-        "answered": 0.9296,
+        "answered": 0.9189,
         "abstained": 0.9016,
-        "abstention_balanced_accuracy": 0.9156
+        "abstention_balanced_accuracy": 0.9103
       },
       "single_fact": {
         "recall@1": 0.6111,
@@ -170,6 +188,24 @@
       },
       "no_memory": {
         "abstained": 0.6667
+      },
+      "multi_hop": {
+        "recall@1": 0.4167,
+        "recall@3": 0.4167,
+        "recall@6": 0.4167,
+        "recall@10": 0.4167,
+        "mrr": 1.0,
+        "ndcg@10": 0.5412,
+        "answered": 0.5
+      },
+      "assistant_said": {
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "recall@6": 1.0,
+        "recall@10": 1.0,
+        "mrr": 1.0,
+        "ndcg@10": 1.0,
+        "answered": 1.0
       }
     }
   }

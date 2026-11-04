@@ -9,6 +9,7 @@ import unicodedata
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import datetime
+from functools import partial
 
 from ..contracts import (
     VALUE_FREE_KINDS,
@@ -22,12 +23,14 @@ from ..contracts import (
     verified_human_principal_ref,
 )
 from .candidate_lifecycle import SELF_SUBJECTS
+from .evidence_support import positioned, support_verdict
 from .fact_actions import ClaimDraft, EvidenceReference
 from .fact_evidence import evidence_supports_claim, evidence_supports_relation, stem
 from .fact_temporal_semantics import classify_durable_state_clause
 from .source_qualification import (
     AUTHORITY_QUESTION,
     CONDITIONAL,
+    POLARITY,
     RELATIVE_SCOPE,
     UNASSERTED_UNCERTAINTY,
     asserted_marker,
@@ -83,6 +86,14 @@ class ClaimVersion:
     replaces_revision: int | None
     conflict_revisions: tuple[int, ...]
     suppressed: bool = False
+    importance: int = 3
+    pinned: bool = False
+    base_importance: int = 3
+
+
+def persisted_claim_payload(proposal):
+    """Keep salience metadata outside the version payload and replay identity."""
+    return {key: value for key, value in proposal.items() if key != "importance"}
 
 
 def canonical_time(value: str | None) -> str | None:
@@ -91,12 +102,17 @@ def canonical_time(value: str | None) -> str | None:
 
 def claim_slot(scope_id: str, project_id: str | None, branch_id: str | None, proposal: ClaimProposal) -> str:
     """Only identical explicit slots merge; aliases/semantic similarity confer no identity."""
+    subject = proposal["subject"]
+    relation = proposal.get("alias")
+    if proposal["kind"] == "alias" and proposal["predicate"].startswith("entity_identity:") and relation is not None:
+        # A name has one relation in an audience even when its evidence or target changes.
+        subject = relation["name"]
     identity = [
         scope_id,
         project_id,
         branch_id,
         proposal["kind"],
-        proposal["subject"],
+        subject,
         proposal["predicate"],
         sorted(set(proposal["conditions"])),
     ]
@@ -113,6 +129,7 @@ def same_assertion(left: ClaimProposal, right: ClaimProposal) -> bool:
         "statement_kind",
         "valid_from",
         "valid_to",
+        "occurred_at",
         "procedure",
         "intention",
         "alias",
@@ -121,6 +138,38 @@ def same_assertion(left: ClaimProposal, right: ClaimProposal) -> bool:
         (sorted(set(left[k])) == sorted(set(right[k]))) if k == "conditions" else left.get(k) == right.get(k)
         for k in fields
     )
+
+
+def statement_key(payload):
+    """Canonical assertion content, excluding evidence, for dependency comparisons."""
+    from .fact_identity import normalize_fact_component
+
+    value = {
+        key: payload.get(key)
+        for key in (
+            "kind",
+            "subject",
+            "predicate",
+            "value_text",
+            "conditions",
+            "statement_kind",
+            "valid_from",
+            "valid_to",
+            "occurred_at",
+            "procedure",
+            "intention",
+            "alias",
+        )
+    }
+    for key in ("subject", "predicate", "value_text"):
+        value[key] = normalize_fact_component(value[key], max_chars=2048, allow_empty=True)
+    value["conditions"] = sorted(set(value["conditions"] or ()))
+    for key in ("valid_from", "valid_to", "occurred_at"):
+        value[key] = canonical_time(value[key])
+    if value["kind"] in {"fact", "preference", "constraint", "decision", "observation"}:
+        for key in ("statement_kind", "occurred_at", "procedure", "intention", "alias"):
+            del value[key]
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
 _HYPOTHETICAL = re.compile(r"假设|假如|设想|虚构|假定|\b(?:suppose|hypothetic|fictional|what if)\b", re.I)
@@ -496,6 +545,7 @@ def bind_claim_subject(
     roots: tuple[RootEvidence, ...],
     *,
     stored: bool = False,
+    semantic_support: bool = False,
 ) -> tuple[ClaimProposal, bool, str | None]:
     """Bind a first-person model label to C1 evidence, or isolate it safely.
 
@@ -516,6 +566,8 @@ def bind_claim_subject(
         )
     )
     written = stored and {verified_human_ref(root) for root in relevant} == {proposal["subject"]}
+    if proposal["subject"].startswith("principal:") and not written:
+        return proposal, False, "subject_not_bound"
     if proposal["subject"].casefold() not in SELF_SUBJECTS and not written:
         return proposal, False, None
     bound = deepcopy(proposal)
@@ -531,11 +583,14 @@ def bind_claim_subject(
     # it: the whole message is asked.
     if not relevant or not any(
         self_report_bound(
-            "\n".join(evidence_context(root.content, span["quote"]) for span in spans_of(root)),
-            proposal["value_text"],
+            "\n".join(evidence_span_context(root.content, span) for span in spans_of(root)),
+            spans_of(root)[0]["quote"] if semantic_support else proposal["value_text"],
             kind=proposal["kind"],
         )
-        and not any(in_pasted_text(root.content, span["quote"]) for span in spans_of(root))
+        and not any(
+            in_pasted_text(root.content, span["quote"], start=span.get("start"), end=span.get("end"))
+            for span in spans_of(root)
+        )
         for root in relevant
     ):
         bound["subject"] = _unresolved_subject(proposal, roots)
@@ -722,6 +777,33 @@ class _Cited:
         return self.proposal["subject"]
 
 
+def evidence_span_context(content, span):
+    """Read the complete sentence around the selected occurrence, preserving a preceding speaker label."""
+    if "start" not in span:
+        return evidence_context(content, span["quote"])
+    start, end = span["start"], span["end"]
+    before = list(re.finditer(r"[。！？!?;；\n]", content[:start]))
+    left = before[-1].end() if before else 0
+    after = re.search(r"[。！？!?;；\n]", content[end:])
+    right = end if span["quote"].endswith(tuple("。！？!?;；\n")) else end + after.end() if after else len(content)
+    prefix = content[:left].rstrip()
+    if prefix.endswith((":", "：")):
+        left = max(0, left - len(re.split(r"[。！？!?;；\n]", prefix)[-1]) - 1)
+    return content[left:right]
+
+
+def evidence_span_neighbourhood(content, span):
+    """Keep legacy source context or neighbours around the verified occurrence for entity binding."""
+    if "start" not in span:
+        return content
+    start, end = span["start"], span["end"]
+    before = list(re.finditer(r"[。！？!?;；\n]", content[:start]))
+    left = before[-2].end() if len(before) >= 2 else 0
+    after = re.search(r"[。！？!?;；\n]", content[end:])
+    right = end + after.end() if after else len(content)
+    return content[left:right]
+
+
 def _cite(
     proposal: ClaimProposal,
     roots: tuple[RootEvidence, ...],
@@ -741,15 +823,19 @@ def _cite(
     if not roots:
         return None
     narrowed = tuple(
-        replace(r, content="\n".join(evidence_context(r.content, span["quote"]) for span in cited(r))) for r in roots
+        replace(r, content="\n".join(evidence_span_context(r.content, span) for span in cited(r))) for r in roots
     )
     by_origin = {origin: tuple(r for r in narrowed if effective_origin(r) == origin) for origin in AUTHORITY_ORIGINS}
     return _Cited(
         proposal,
         narrowed,
         quoted="\n".join(span["quote"] for span in spans),
-        asserted="\n".join(assertion_clause(r.content, span["quote"]) for r in roots for span in cited(r)),
-        cited_spans=tuple((span["quote"], r.content) for r in roots for span in cited(r)),
+        asserted="\n".join(
+            assertion_clause(evidence_span_context(r.content, span), span["quote"]) for r in roots for span in cited(r)
+        ),
+        cited_spans=tuple(
+            (span["quote"], evidence_span_neighbourhood(r.content, span)) for r in roots for span in cited(r)
+        ),
         source_text="\n".join(r.content for r in narrowed),
         human=by_origin["human_direct"],
         observed=by_origin["tool_observation"],
@@ -798,26 +884,31 @@ def _scope_preserved(c: _Cited) -> str | None:
     return None
 
 
-def _authority(c: _Cited) -> str | None:
+def _authority(c: _Cited, *, semantic_support: bool = False) -> str | None:
     if not (c.human or c.observed or c.documents):
         return "no_independent_authority"
     if c.kind in HUMAN_ONLY_KINDS and not c.human:
         return "requires_human_source"
-    if any(not grounded_time(c.proposal[field], c.roots) for field in ("valid_from", "valid_to")):
+    if not semantic_support and any(
+        not grounded_time(c.proposal.get(field), c.roots) for field in ("valid_from", "valid_to", "occurred_at")
+    ):
         return "time_not_grounded"
     return None
 
 
-def _subject_binds(c: _Cited) -> str | None:
+def _subject_binds(c: _Cited, *, normalized: bool = False) -> str | None:
     # Aliases have a separate, exact old-name -> target proof in apply_claim;
     # that proof may name the sourced old label instead of its internal subject.
     if c.subject_bound or c.kind == "alias":
         return None
-    subject, kind = c.subject, c.kind
+    normalize = (lambda text: unicodedata.normalize("NFKC", text).casefold()) if normalized else (lambda text: text)
+    subject, kind = normalize(c.subject), c.kind
+    quoted = normalize(c.quoted)
+    spans = tuple((normalize(quote), normalize(content)) for quote, content in c.cited_spans)
     self_bound = subject.casefold() in SELF_SUBJECTS and self_report_bound(
         c.source_text, c.proposal["value_text"], kind=kind
     )
-    if subject in c.quoted and not bound_literal(c.quoted, subject):
+    if subject in quoted and not bound_literal(quoted, subject):
         return "subject_not_bound"
     if subject == "我" and not self_bound:
         return "subject_not_bound"
@@ -825,7 +916,7 @@ def _subject_binds(c: _Cited) -> str | None:
     # in the same source; see core/subject_binding.py.  Nothing is inferred: only
     # literal text from the cited source counts, and a subject that merely
     # points ("you", "the agent") is refused at any distance.
-    if not bound_literal(c.quoted, subject) and not neighbourhood_binds(subject, c.cited_spans) and not self_bound:
+    if not bound_literal(quoted, subject) and not neighbourhood_binds(subject, spans) and not self_bound:
         return "subject_not_bound"
     return None
 
@@ -978,6 +1069,36 @@ _REFUSALS = (
 )
 
 
+def _qualification_reason(cited, normalized, support_state):
+    """Select semantic support gates without allowing a model to override source governance."""
+    rules = _REFUSALS
+    # No semantic verdict must not erase a known literal refusal merely because
+    # the quote now has positions. Capability failures retain their own state.
+    if normalized and support_state != "unavailable":
+        # Positions locate evidence; they do not invalidate a literal negative
+        # state or a fully stated condition that the ordinary rules already prove.
+        if support_state == "supported" and all(rule(cited) is None for rule in rules):
+            return None
+        if POLARITY.search(cited.source_text) or CONDITIONAL.search(cited.source_text):
+            return "qualified_statement"
+        if support_state != "supported":
+            return "evidence_support_" + str(support_state)
+        rules = (
+            _not_asserted,
+            _scope_preserved,
+            partial(_authority, semantic_support=True),
+            partial(_subject_binds, normalized=True),
+            _intention_proved,
+            _procedure_proved,
+            _time_scope_known,
+        )
+    for rule in rules:
+        reason = rule(cited)
+        if reason is not None:
+            return reason
+    return None
+
+
 def qualify(
     proposal: ClaimProposal,
     roots: tuple[RootEvidence, ...],
@@ -985,6 +1106,8 @@ def qualify(
     project_id: str | None = None,
     explicit_attribute_correction: bool = False,
     _subject_bound: bool = False,
+    _support_state: str | None = None,
+    _legacy: bool = False,
 ) -> Qualification:
     """Source roles are necessary, never sufficient, to promote a proposal.
 
@@ -992,8 +1115,14 @@ def qualify(
     This rule retains unsupported interpretation as proposed. It neither invents
     dates nor converts the model's requested state into governance authority.
     """
+    if proposal["kind"] == "observation":
+        return Qualification("proposed", "derived_summary", "reflection_pending")
+    normalized = positioned(proposal) and not _legacy
+    if normalized and _support_state is None:
+        verdict = support_verdict(proposal, roots)
+        _support_state = verdict.state if verdict else "unavailable"
     if not _subject_bound:
-        bound_proposal, subject_bound, binding_issue = bind_claim_subject(proposal, roots)
+        bound_proposal, subject_bound, binding_issue = bind_claim_subject(proposal, roots, semantic_support=normalized)
         if binding_issue is not None:
             return Qualification("proposed", "inferred_suggestion", binding_issue)
         if subject_bound:
@@ -1003,18 +1132,20 @@ def qualify(
                 project_id=project_id,
                 explicit_attribute_correction=explicit_attribute_correction,
                 _subject_bound=True,
+                _support_state=_support_state,
+                _legacy=_legacy,
             )
     cited = _cite(
         proposal, roots, subject_bound=_subject_bound, explicit_attribute_correction=explicit_attribute_correction
     )
     if cited is None:
         return Qualification("proposed", "inferred_suggestion", "no_complete_root_span")
-    for rule in _REFUSALS:
-        reason = rule(cited)
-        if reason is not None:
-            return Qualification("proposed", "inferred_suggestion", reason)
+    reason = _qualification_reason(cited, normalized, _support_state)
+    if reason is not None:
+        return Qualification("proposed", "inferred_suggestion", reason)
     if cited.human:
-        return Qualification("active", "direct_report", "explicit_scoped_source")
+        reason = "normalized_evidence_supported" if normalized else "explicit_scoped_source"
+        return Qualification("active", "direct_report", reason)
     return Qualification("active", "observed", "observation_at_source_time")
 
 
@@ -1069,6 +1200,8 @@ def select_effective(
         return None
     heads = [v for v in versions if v.revision == 1 or v.replaces_revision is not None]
     head = max(heads, key=lambda v: v.revision)
+    if not as_of and known_at is None and head.state == "superseded" and head.reason == "health_superseded":
+        return None
     # A replacement with an unknown effective date can establish an explicitly
     # current assertion, but supplies no answer about a past date.
     if as_of and head.valid_from is None and head.state != "proposed":

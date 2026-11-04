@@ -57,8 +57,11 @@ def test_it_fails_closed_rather_than_publishing_the_wrong_body():
 
 
 def test_a_release_version_has_a_section_to_publish():
-    """An rc has nothing to publish yet; a release without notes must not ship."""
+    """An rc or a development version has nothing to publish yet; a release without notes must not ship."""
     version = _version()
+    if ".dev" in version:
+        assert f"## [{version}]" in CHANGELOG.read_text(encoding="utf-8"), f"{version} has no changelog entry"
+        pytest.skip(f"{version} is a development version; the release section is written when the final is cut")
     if "rc" in version:
         assert f"### Scope Recall {version} " in CHANGELOG.read_text(encoding="utf-8"), (
             f"{version} has no changelog entry"
@@ -78,3 +81,14 @@ def test_the_script_runs_as_the_workflow_runs_it(tmp_path):
     )
     assert done.returncode == 0, done.stderr
     assert output.read_text(encoding="utf-8").strip()
+
+
+def test_development_notes_follow_the_changelog_summary_convention():
+    """The development entry remains a short user-facing summary."""
+    version = _version()
+    if ".dev" not in version:
+        pytest.skip("the concise development summary applies before the release is cut")
+    body = CHANGELOG.read_text(encoding="utf-8").split(f"## [{version}]", 1)[1]
+    body = body.split("\n## [", 1)[0].split("\n", 1)[1]
+    lines = [line for line in body.splitlines() if line.strip()]
+    assert 1 <= len(lines) <= 2, "keep full release notes on the GitHub release page"

@@ -9,12 +9,18 @@ import time
 from ..contracts import ContractError, TrustedContext
 from .admission import resume_deferred, schedule_source
 from .file_lock import advisory_file_lock
+from .summary_storage import close_session
 from .visibility import release_objects
 
 
 class Records:
     def __init__(self, core) -> None:
         self._core = core
+
+    def close_session(self, context, *, remaining_seconds=1.0):
+        """Accept an explicit end signal for the already bound session without model work."""
+        with self._core.storage.write(context, remaining_seconds=remaining_seconds) as tx:
+            close_session(tx, context.session_id, now=self._core.clock.utc_now())
 
     def schedule_source(self, context, ref, revision, *, remaining_seconds=None):
         return schedule_source(

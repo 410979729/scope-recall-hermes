@@ -114,6 +114,39 @@ def test_raw_client_spools_apply_capture_secret_policy(tmp_path):
     assert len(list((state / "spool").glob("*.json"))) == 4
 
 
+def test_full_backup_filters_inline_private_from_old_client_spool(tmp_path):
+    from scope_recall.adapters.clients.remote_client import _spool
+
+    _, _, binding = _create_synthetic_store(tmp_path)
+    state = tmp_path / "TEST-old-client"
+    config = tmp_path / "TEST-old-client.json"
+    config.write_text(json.dumps({"state_dir": str(state), "token_file": str(tmp_path / "TEST-token-ref")}))
+    _spool(
+        {"state_dir": state},
+        {"hook_event_name": "UserPromptSubmit", "prompt": "TEST visible <private>TEST hidden backup</private>"},
+        "2026-01-01T00:00:00Z",
+    )
+    bundle = tmp_path / "TEST-private-backup.zip"
+    create_backup_bundle(binding=binding, output=bundle, client_configs=(config,))
+    with zipfile.ZipFile(bundle) as archive:
+        entries = [archive.read(name) for name in archive.namelist() if "/spool/" in name]
+    assert entries and all(b"TEST hidden backup" not in entry for entry in entries)
+    assert any(b"TEST visible" in entry for entry in entries)
+
+
+def test_full_backup_filters_inline_private_from_old_kept_capture(tmp_path):
+    _, _, binding = _create_synthetic_store(tmp_path)
+    kept = binding.data_directory / "kept-captures" / "TEST-old.json"
+    kept.parent.mkdir()
+    kept.write_text(json.dumps({"event": {"content": "TEST visible <private>TEST hidden kept</private>"}}))
+    bundle = tmp_path / "TEST-kept-backup.zip"
+    create_backup_bundle(binding=binding, output=bundle)
+    with zipfile.ZipFile(bundle) as archive:
+        data = archive.read("kept-captures/TEST-old.json")
+    assert b"TEST hidden kept" not in data
+    assert b"TEST visible" in data
+
+
 def test_full_backup_omits_private_spools_and_kept_capture_bodies(tmp_path):
     from scope_recall.adapters.clients.remote_client import _spool
     from test_private_mode import PrivateClock
@@ -439,8 +472,8 @@ def test_absence_only_rollback_survives_store_loss_and_disaster_restore(tmp_path
 
 
 def test_retention_timeout_does_not_repeat_daily_publication(tmp_path, monkeypatch):
+    from scope_recall.core.backup_primitives import BackupError
     from scope_recall.runtime import backup_upkeep as upkeep
-    from scope_recall.runtime.backup_primitives import BackupError
 
     core, _, binding = _create_synthetic_store(tmp_path)
     (binding.data_directory / "backup-config.json").write_text(json.dumps({"backup_dir": str(tmp_path / "backups")}))
@@ -466,8 +499,8 @@ def test_retention_timeout_does_not_repeat_daily_publication(tmp_path, monkeypat
 
 
 def test_mirror_upkeep_preserves_a_concurrent_publication_checkpoint(tmp_path, monkeypatch):
+    from scope_recall.core.backup_primitives import atomic_json
     from scope_recall.runtime import backup_upkeep as upkeep
-    from scope_recall.runtime.backup_primitives import atomic_json
 
     core, _, binding = _create_synthetic_store(tmp_path)
     directory = binding.data_directory
@@ -489,8 +522,8 @@ def test_mirror_upkeep_preserves_a_concurrent_publication_checkpoint(tmp_path, m
 
 
 def test_retention_resumes_verified_archives_after_timeout(tmp_path, monkeypatch):
+    from scope_recall.core.backup_primitives import BackupError
     from scope_recall.runtime import backup_rotation as rotation
-    from scope_recall.runtime.backup_primitives import BackupError
 
     _, _, binding = _create_synthetic_store(tmp_path)
     for day in (1, 2):
@@ -530,8 +563,8 @@ def test_retention_resumes_verified_archives_after_timeout(tmp_path, monkeypatch
 
 
 def test_backup_job_timeout_is_visible_and_stops_blind_retries(tmp_path, monkeypatch):
+    from scope_recall.core.backup_primitives import BackupError
     from scope_recall.runtime import backup_upkeep as upkeep
-    from scope_recall.runtime.backup_primitives import BackupError
 
     core, _, binding = _create_synthetic_store(tmp_path)
     create_backup_bundle(binding=binding, output=tmp_path / "manual.zip")
@@ -756,9 +789,9 @@ def test_publication_does_not_follow_a_preexisting_temporary_link(tmp_path):
 def test_mirror_deadline_resumes_after_the_last_validated_line(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
+    from scope_recall.core import backup_primitives as io
     from scope_recall.core import deletion_mirror
     from scope_recall.core import deletion_mirror_checkpoint as checkpoint
-    from scope_recall.runtime import backup_primitives as io
 
     core, ctx, binding = _create_synthetic_store(tmp_path)
     _forget(core, ctx, _say(core, ctx, "NameOne note"))
@@ -1219,7 +1252,10 @@ def test_disaster_restore_recall_equivalence_and_path_rewriting(tmp_path: Path):
     assert len(results) >= 1
     assert any("NameOne preferences: color blue" in s.event["content"] for s in results)
     restored_recall = restored_core.recall(restored_ctx, request, deadline_seconds=10)
-    assert restored_recall.items == original_recall.items
+    # Recovery revokes internal receipts; every other recalled field must match.
+    assert any(item.content_secret_scan is not None for item in original_recall.items)
+    assert all(item.content_secret_scan is None for item in restored_recall.items)
+    assert restored_recall.items == tuple(replace(item, content_secret_scan=None) for item in original_recall.items)
 
     assert "unrecoverable_later_interval" in restore_receipt
     assert restore_receipt["unrecoverable_later_interval"]["start_utc"] == restore_receipt["recovery_point_utc"]
@@ -1519,7 +1555,8 @@ def test_mirror_preserves_groups_created_after_snapshot(tmp_path: Path):
         segment={"group_key": "message-one", "index": 0, "total": 2, "truncated": False},
     )
     receipt = core.record_event(ctx, event, scope_id=next(iter(ctx.allowed_scope_ids)), remaining_seconds=10)
-    source = core.source(ctx, receipt.event_refs[0].ref, 1)
+    assert core.source(ctx, receipt.event_refs[0].ref, 1) is None
+    source = receipt.event_refs[0]
     _forget(core, ctx, source)
     dest = tmp_path / "restored"
     dest = Path(apply_disaster_restore(bundle, dest)["data_directory"])

@@ -1,20 +1,47 @@
 # Private mode
 
 Private mode is the local store owner's control over what Scope Recall may keep,
-recall or send. Use either local owner interface: the command line outside the
-conversation or the [management page](ui.md). Agent tools do not expose this
-control, and a model writing the same words is not the owner's command. There is
-no private-mode agent tool, slash command or host-menu control in this package.
+recall or send. The owner can use the command line outside the conversation or
+the [management page](ui.md). A direct human prompt consisting entirely of
+`scope-recall pause` or `scope-recall resume`, after trimming surrounding
+whitespace, can also open or close the current session's full private interval
+on a supported local host. Model output, tool results, pasted longer messages
+and session-record backfill are not owner commands. Agent tools do not expose
+this control.
+
+The pause and resume shortcuts work on Codex, Claude Code, WorkBuddy and dsh
+prompt hooks, including their remote entries, and on the Hermes CLI. A remote
+command is sent immediately and is never queued for later replay; when the
+entry is unavailable, its state does not change. The entry token authenticates
+the client, not the person at its keyboard: a remote command trusts that
+client machine's hook to identify the owner's direct input. The server checks
+the source fields again and rejects repeated or older command identifiers and
+timestamps for the entry and session. The session's rule is independent of a
+project or global rule; resuming the session does not close those broader rules.
+
+The owner may also set an extraction instruction for each scope. The management
+page shows its history, and these commands read or add a version:
 
 ```sh
-scope-recall private on --session SESSION-ID --mode full
-scope-recall private on --project "C:\Work\Project" --mode read-only
-scope-recall private on --all --for 2h
-scope-recall private status --session SESSION-ID
-scope-recall private list
-scope-recall private off --session SESSION-ID
-scope-recall private off --project "C:\Work\Project"
-scope-recall private off --all
+scope-recall memory instruction-get --scope SCOPE-ID --root /path/to/store
+scope-recall memory instruction-set --scope SCOPE-ID --text "Remember decisions and constraints" --root /path/to/store
+```
+
+Instructions are limited to 2,000 characters and affect later extraction only.
+They cannot relax credential filtering, private mode, injection protection or
+evidence checks. Source messages remain searchable. Each request counts the
+instruction against its input budget; if the whole instruction does not fit,
+the request omits it and records `scope_instruction_omitted_input_budget`.
+
+```sh
+scope-recall private on --session SESSION-ID --mode full --root /path/to/store
+scope-recall private on --project "C:\Work\Project" --mode read-only --root /path/to/store
+scope-recall private on --all --for 2h --root /path/to/store
+scope-recall private status --session SESSION-ID --root /path/to/store
+scope-recall private list --root /path/to/store
+scope-recall private off --session SESSION-ID --root /path/to/store
+scope-recall private off --project "C:\Work\Project" --root /path/to/store
+scope-recall private off --all --root /path/to/store
 ```
 
 The same store selection flags as the management commands apply: `--root` for a
@@ -264,12 +291,9 @@ after the upgrade. Supported older stores are brought forward on the next explic
 Take a database snapshot before upgrading if you need to go back. Earlier
 executables cannot read the upgraded schema. To go back, follow the
 [restore procedure](install.md#going-back-to-a-backup) with a snapshot taken before the upgrade and a
-separate backup directory; do not overwrite the database by hand. A rollback to
-an older schema cannot carry `private_intervals`, because that schema has no
-table for them. Keep the older executable's writers stopped: it cannot reject
-private transcript backfill or retries. Keep the current-schema backup that
+separate backup directory; do not overwrite the database by hand. A rollback restores the snapshot's private-interval history; the deletion ledger does not copy newer intervals.
+Keep writers stopped when the restored history cannot reject private transcript backfill or retries. Keep the current-schema backup that
 `restore` creates as well as the pre-upgrade snapshot. Before enabling capture
 again, open the store with the newer executable and restore that current-schema
 backup to recover the complete interval history. Reopening active rules alone
-does not protect records from closed intervals. Private conversations are absent
-from both snapshots because Scope Recall did not capture them.
+does not protect records from closed intervals. Private-mode refusals do not remove words captured before a rule began or host-owned conversation logs.

@@ -1,0 +1,18 @@
+{
+  "dev": [
+    {"task":"multi_hop","form":"two_hop","language":"en","query":"Which city hosts the employer of Mira?","sources":[{"text":"Mira works for Cedarworks."},{"text":"Cedarworks has its headquarters in Bristol."}]},
+    {"task":"multi_hop","form":"three_hop_alias","language":"en","query":"Which city hosts the employer of the person nicknamed Lantern?","sources":[{"text":"Lantern is the nickname of Mira."},{"text":"Mira works for Cedarworks."},{"text":"Cedarworks has its headquarters in Bristol."}]},
+    {"task":"multi_hop","form":"two_hop","language":"zh","query":"思远工作的公司总部在哪个城市？","sources":[{"text":"思远在青禾公司工作。"},{"text":"青禾公司的总部在苏州。"}]},
+    {"task":"multi_hop","form":"three_hop_alias","language":"zh","query":"小鹭工作的公司总部在哪个城市？","sources":[{"text":"小鹭是思远的昵称。"},{"text":"思远在青禾公司工作。"},{"text":"青禾公司的总部在苏州。"}]},
+    {"task":"assistant_said","form":"recommendation","language":"en","query":"What did the assistant recommend for the Zephyr poster typography?","sources":[{"text":"Please suggest typography for the Zephyr poster.","answer":false},{"text":"For the Zephyr poster typography I recommend large rounded headings.","origin":"assistant_visible"}]},
+    {"task":"assistant_said","form":"unconfirmed","language":"zh","query":"助手之前建议星舟海报用什么配色？","sources":[{"text":"请给星舟海报推荐配色。","answer":false},{"text":"我建议星舟海报用靛蓝和杏黄配色，这只是建议，还没有获得确认。","origin":"assistant_visible"}]}
+  ],
+  "heldout": [
+    {"task":"multi_hop","form":"two_hop","language":"en","query":"Where is the library that employs Ines located?","sources":[{"text":"Ines is employed by Harbor Library."},{"text":"Harbor Library is located in Dundee."}]},
+    {"task":"multi_hop","form":"three_hop_alias","language":"en","query":"Where is the library employing the person called Wren?","sources":[{"text":"Wren is another name for Ines."},{"text":"Ines is employed by Harbor Library."},{"text":"Harbor Library is located in Dundee."}]},
+    {"task":"multi_hop","form":"two_hop","language":"zh","query":"清越负责维护的展馆在哪座城市？","sources":[{"text":"清越负责维护松风展馆。"},{"text":"松风展馆位于泉州。"}]},
+    {"task":"multi_hop","form":"three_hop_alias","language":"zh","query":"阿苇负责维护的展馆在哪座城市？","sources":[{"text":"阿苇是清越的别称。"},{"text":"清越负责维护松风展馆。"},{"text":"松风展馆位于泉州。"}]},
+    {"task":"assistant_said","form":"recommendation","language":"en","query":"Which material did the assistant suggest for the Solstice display?","sources":[{"text":"Suggest a material for the Solstice display.","answer":false},{"text":"For the Solstice display I suggest frosted acrylic panels.","origin":"assistant_visible"}]},
+    {"task":"assistant_said","form":"unconfirmed","language":"zh","query":"助手提议远汀展板采用哪种排版？","sources":[{"text":"请为远汀展板提一个排版建议。","answer":false},{"text":"我的提议是远汀展板采用左右分栏排版，主人还未采纳。","origin":"assistant_visible"}]}
+  ]
+}

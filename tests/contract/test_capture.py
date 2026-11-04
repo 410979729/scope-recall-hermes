@@ -3,6 +3,7 @@
 import hashlib
 import json
 import sqlite3
+from contextlib import closing
 from dataclasses import replace
 
 import pytest
@@ -46,6 +47,221 @@ def rows(core):
         }
     finally:
         conn.close()
+
+
+def test_capture_commits_the_body_scan_verdict_with_its_exact_source_version(core):
+    from scope_recall.core.secret_patterns import SECRET_RULES_VERSION
+
+    app, ctx = core
+    receipt = capture(app, ctx, content="TEST palette is amber. api_key: <your-api-key>")
+    source = receipt.event_refs[0]
+    with app.storage.read(ctx) as tx:
+        row = (
+            tx._check()
+            .execute(
+                "SELECT secret_scan_version,secret_scan_names,secret_scan_input_sha256,content_sha256 "
+                "FROM source_events "
+                "WHERE event_id=? AND source_revision=?",
+                (source.ref, source.revision),
+            )
+            .fetchone()
+        )
+    assert tuple(row) == (SECRET_RULES_VERSION, "[]", row[3], row[3])
+
+
+def test_changed_body_invalidates_its_receipt_and_maintenance_refills_bounded_pages(core):
+    from scope_recall.core.secret_patterns import SECRET_RULES_VERSION
+    from scope_recall.core.source_storage import backfill_secret_scans
+
+    app, ctx = core
+    refs = [capture(app, ctx, key=f"TEST-scan-{i}", content="TEST amber palette").event_refs[0] for i in range(3)]
+    with app.storage.write(ctx) as tx:
+        tx._check(write=True).execute(
+            "UPDATE source_events SET content='api_key: TEST9-secret-value' WHERE event_id=?", (refs[0].ref,)
+        )
+        assert (
+            tx._check()
+            .execute("SELECT secret_scan_version FROM source_events WHERE event_id=?", (refs[0].ref,))
+            .fetchone()[0]
+            is None
+        )
+        assert backfill_secret_scans(tx, now="2026-09-06T12:00:00Z", limit=1) == 1
+        assert backfill_secret_scans(tx, now="2026-09-06T12:00:00Z", limit=1) == 1
+        assert backfill_secret_scans(tx, now="2026-09-06T12:00:00Z", limit=1) == 1
+        assert backfill_secret_scans(tx, now="2026-09-06T12:00:00Z", limit=1) == 0
+        assert backfill_secret_scans(tx, now="2026-09-06T12:00:00Z", limit=1) == 0
+        row = (
+            tx._check()
+            .execute("SELECT secret_scan_version,secret_scan_names FROM source_events WHERE event_id=?", (refs[0].ref,))
+            .fetchone()
+        )
+        assert row[0] == SECRET_RULES_VERSION and json.loads(row[1])
+
+
+def test_scan_maintenance_caps_utf8_bytes_per_page(core, monkeypatch):
+    from scope_recall.core import source_storage
+
+    app, ctx = core
+    refs = [capture(app, ctx, key=f"TEST-byte-page-{i}", content="TEST amber palette").event_refs[0] for i in range(2)]
+    scanned = []
+    original = source_storage.secret_structure_pattern_names
+
+    def counted(body):
+        scanned.append(len(body.encode("utf-8")))
+        return original(body)
+
+    monkeypatch.setattr(source_storage, "secret_structure_pattern_names", counted)
+    body = chr(30028) * 50000
+    with app.storage.write(ctx) as tx:
+        tx._check(write=True).execute(
+            "UPDATE source_events SET content=?,content_sha256=? WHERE event_id IN (?,?)",
+            (body, hashlib.sha256(body.encode("utf-8")).hexdigest(), *(source.ref for source in refs)),
+        )
+        assert source_storage.backfill_secret_scans(tx, now="2026-09-06T12:00:00Z", limit=2) == 1
+        assert scanned == [150000]
+        assert source_storage.backfill_secret_scans(tx, now="2026-09-06T12:00:00Z", limit=2) == 1
+        assert scanned == [150000, 150000]
+
+
+@pytest.mark.parametrize("fence", ["read_blocked", "object_block", "quarantined", "pending_review", "unified_fence"])
+def test_scan_maintenance_never_reads_a_fenced_body(core, monkeypatch, fence):
+    from scope_recall.core import source_storage, visibility
+
+    app, ctx = core
+    ref = capture(app, ctx, content="TEST fenced original").event_refs[0].ref
+    if fence == "unified_fence":
+        original = visibility._allowed_now
+        monkeypatch.setattr(
+            visibility,
+            "_allowed_now",
+            lambda tx, kind, key, automatic: key != ref and original(tx, kind, key, automatic),
+        )
+    reads = []
+    with app.storage.write(ctx) as tx:
+        conn = tx._check(write=True)
+        conn.execute("UPDATE source_events SET secret_scan_version=NULL WHERE event_id=?", (ref,))
+        if fence == "read_blocked":
+            conn.execute("UPDATE source_events SET read_blocked=1 WHERE event_id=?", (ref,))
+        elif fence == "object_block":
+            conn.execute(
+                "INSERT INTO deletion_operations(operation_id,request_sha256,mode,scope_ids_json,requested_refs_json,"
+                "expected_revisions_json,created_at,memory_epoch,layers_json) VALUES(?,?,'delete',?,?,?, ?,0,'[]')",
+                ("TEST-block", "TEST-block-hash", json.dumps(["TEST-scope"]), json.dumps([ref]), "{}", "TEST-now"),
+            )
+            conn.execute(
+                "INSERT INTO object_blocks(object_kind,object_ref,scope_id,read_blocked,suppressed,operation_id) "
+                "VALUES('event',?,'TEST-scope',1,0,'TEST-block')",
+                (ref,),
+            )
+        elif fence in {"quarantined", "pending_review"}:
+            conn.execute(
+                "INSERT INTO source_safety(source_ref,source_revision,state,rules_json,scanned_at) "
+                "VALUES(?,1,?,'[]',?)",
+                (ref, fence, "TEST-now"),
+            )
+        assert tx.source(ref, 1) is None
+
+        def observe(action, table, column, _database, _trigger):
+            if action == sqlite3.SQLITE_READ and table == "source_events" and column == "content":
+                reads.append(column)
+            return sqlite3.SQLITE_OK
+
+        conn.set_authorizer(observe)
+        try:
+            assert source_storage.backfill_secret_scans(tx, now="TEST-now") == 1
+        finally:
+            conn.set_authorizer(None)
+        assert reads == []
+        assert (
+            conn.execute("SELECT secret_scan_version FROM source_events WHERE event_id=?", (ref,)).fetchone()[0] is None
+        )
+        assert source_storage.backfill_secret_scans(tx, now="TEST-now") == 0
+
+
+def test_scan_maintenance_skips_one_oversized_utf8_body_in_a_utf16_store(core, monkeypatch):
+    from scope_recall.core import source_storage
+
+    app, ctx = core
+    refs = [capture(app, ctx, key=f"TEST-oversized-{i}", content="TEST amber palette").event_refs[0] for i in range(2)]
+    with closing(sqlite3.connect(app.storage.path)) as conn:
+        dump = "\n".join(conn.iterdump())
+        application_id = conn.execute("PRAGMA application_id").fetchone()[0]
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+    # Legacy/external tables can lack the modern capture length constraint.
+    # Keep every other constraint while reproducing an oversized stored row.
+    constraint = "content TEXT NOT NULL CHECK(length(content)<=65536)"
+    assert dump.count(constraint) == 1
+    dump = dump.replace(constraint, "content TEXT NOT NULL", 1)
+    replacement = app.storage.path.with_name("TEST-utf16.sqlite3")
+    conn = sqlite3.connect(replacement)
+    try:
+        conn.execute("PRAGMA encoding='UTF-16le'")
+        conn.executescript(dump)
+        conn.execute(f"PRAGMA application_id={application_id}")
+        conn.execute(f"PRAGMA user_version={version}")
+        conn.commit()
+    finally:
+        conn.close()
+    # Copied page by page into the open store: POSIX pins a hardened store's file identity, so a swapped-in file
+    # would be refused as a changed database.
+    with closing(sqlite3.connect(replacement)) as source, closing(sqlite3.connect(app.storage.path)) as target:
+        source.backup(target)
+    replacement.unlink()
+    scanned = []
+    monkeypatch.setattr(source_storage, "secret_structure_pattern_names", lambda body: scanned.append(body) or ())
+    with app.storage.write(ctx) as tx:
+        conn = tx._check(write=True)
+        assert conn.execute("PRAGMA encoding").fetchone()[0] == "UTF-16le"
+        conn.execute(
+            "UPDATE source_events SET content=?,content_sha256='TEST-external' WHERE event_id=?",
+            (chr(30028) * 90000, refs[0].ref),
+        )
+        conn.execute("UPDATE source_events SET secret_scan_version=NULL WHERE event_id=?", (refs[1].ref,))
+        assert source_storage.backfill_secret_scans(tx, now="TEST-now", limit=2) == 2
+        assert scanned == ["TEST amber palette"]
+        assert (
+            conn.execute("SELECT secret_scan_version FROM source_events WHERE event_id=?", (refs[0].ref,)).fetchone()[0]
+            is None
+        )
+        assert source_storage.backfill_secret_scans(tx, now="TEST-now", limit=2) == 0
+
+
+def test_scan_maintenance_bounds_sql_steps_across_sibling_projects(core):
+    from scope_recall.core.source_storage import backfill_secret_scans
+
+    app, ctx = core
+    capture(app, ctx, content="TEST amber palette")
+    with app.storage.write(ctx) as tx:
+        conn = tx._check(write=True)
+        template = dict(conn.execute("SELECT * FROM source_events LIMIT 1").fetchone())
+        columns = list(template)
+        rows = []
+        for index in range(2000):
+            row = dict(
+                template,
+                event_id=f"event-TEST-sibling-{index}",
+                source_event_key=f"TEST-sibling-{index}",
+                source_group_key=f"TEST-sibling-{index}",
+                source_id=index + 2,
+                project_id="TEST-other-project",
+            )
+            rows.append(tuple(row[column] for column in columns))
+        conn.executemany(
+            f"INSERT INTO source_events ({','.join(columns)}) VALUES ({','.join('?' for _ in columns)})", rows
+        )
+        steps = [0]
+
+        def count_steps():
+            steps[0] += 100
+            return 0
+
+        conn.set_progress_handler(count_steps, 100)
+        try:
+            processed = backfill_secret_scans(tx, now="2026-09-06T12:00:00Z", limit=8)
+        finally:
+            conn.set_progress_handler(None, 0)
+        assert steps[0] < 3000
+        assert processed == 8
 
 
 def test_C14_real_occurrences_not_trivial_filter_and_duplicate_is_zero_mutation(core):
@@ -112,6 +328,17 @@ def test_credentials_masked_before_any_source_hash_index_or_work(core, secret):
     assert result.error_code is None and result.masked_secret_count == 1
     assert result.durability == "persisted"
     stored = app.source(ctx, result.event_refs[0].ref, 1)
+    if "\u200b" in secret:
+        assert stored is None
+        assert app.inspect_object(ctx, result.event_refs[0].ref, 1).value["state"] == "quarantined"
+        with sqlite3.connect(app.storage.path) as db:
+            content, state, gaps = db.execute(
+                "SELECT content,capture_state,capture_gaps_json FROM source_events"
+            ).fetchone()
+        assert "[REDACTED_SECRET]" in content and state == "partial"
+        assert json.loads(gaps) == ["secret_values_masked"]
+        assert secret not in repr(result) and secret.encode() not in app.storage.path.read_bytes()
+        return
     assert "[REDACTED_SECRET]" in stored.event["content"]
     assert stored.event["capture_state"] == "partial" and stored.capture_gaps == ("secret_values_masked",)
     assert secret not in repr(result)
@@ -278,6 +505,7 @@ def test_capture_masks_before_segmenting_a_value_across_the_boundary(core):
     text = "TEST prefix\n" + "a" * (65536 - 32) + '\npassword: "Synthet1c meadow silver cabin"\n' + "z" * 60000
     result = capture(app, ctx, content=text)
     assert len(result.event_refs) == 2 and result.masked_secret_count == 1
+    app.drain_worker(ctx, max_items=8, remaining_seconds=10)
     parts = [app.source(ctx, ref.ref, 1).event["content"] for ref in result.event_refs]
     stored = "".join(parts)
     assert stored == text.replace("Synthet1c meadow silver cabin", "[REDACTED_SECRET]")
@@ -292,6 +520,38 @@ def test_capture_refuses_when_replacement_cannot_leave_clean_text(core, monkeypa
     monkeypatch.setattr(capture_filters, "secret_redaction_spans", lambda text: ())
     result = capture(app, ctx, content="TEST password: Synthet1c meadow silver cabin")
     assert result.error_code == "plaintext_secret_rejected" and not rows(app)["source_events"]
+
+
+def test_preparation_does_not_redact_identity_text_already_checked_for_secrets(core, monkeypatch):
+    """Identity checks stay active, and copied containers remain independent from input."""
+    from scope_recall.core import events, secret_patterns
+
+    _app, ctx = core
+    incoming_context = {"platform": "TEST-platform", "chat_type": "private"}
+    incoming_refs = ["event-" + "a" * 64 + "@1"]
+    event = source_event(
+        content="TEST ordinary blue paint", source_context=incoming_context, evidence_refs=incoming_refs
+    )
+    masked, scanned = [], []
+    redact, scan = events.redact_secret_text, secret_patterns.scan_secret_like_text
+
+    def redacted(text):
+        masked.append(text)
+        return redact(text)
+
+    def checked(text):
+        scanned.append(text)
+        return scan(text)
+
+    monkeypatch.setattr(events, "redact_secret_text", redacted)
+    monkeypatch.setattr(secret_patterns, "scan_secret_like_text", checked)
+    prepared = events.prepare_capture(event, ctx)
+    assert event["source_event_key"] in scanned
+    assert masked == [event["content"], "TEST-platform", "private"]
+    incoming_context["platform"] = "TEST-changed"
+    assert prepared.events[0].get("source_context") == {"platform": "TEST-platform", "chat_type": "private"}
+    incoming_refs.clear()
+    assert prepared.events[0].get("evidence_refs") == ["event-" + "a" * 64 + "@1"]
 
 
 @pytest.mark.parametrize("field", ["session_id", "project_id", "branch_id", "task_anchor", "environment_revision"])
@@ -414,7 +674,13 @@ def test_chunking_preserves_every_character_and_replays_all_or_nothing(core):
     raw = ("TEST 精确原文！\r\n" * 7000) + "最后一句不能被略掉。"
     result = capture(app, ctx, content=raw)
     assert len(result.event_refs) == 2
+    app.drain_worker(ctx, max_items=8, remaining_seconds=10)
     sources = [app.source(ctx, r.ref, r.revision) for r in result.event_refs]
+    assert all(source is not None for source in sources), [
+        app.inspect_object(ctx, receipt.ref, receipt.revision).value
+        for receipt, source in zip(result.event_refs, sources, strict=True)
+        if source is None
+    ]
     assert "".join(s.event["content"] for s in sources) == raw
     assert [s.event["segment"]["index"] for s in sources] == [0, 1]
     assert all(not s.capture_gaps for s in sources)
@@ -432,6 +698,7 @@ def test_revised_shorter_source_hides_obsolete_segment_tails(core):
     old = capture(app, ctx, content=original)
     assert len(old.event_refs) > 1
     capture(app, ctx, content="TEST 当前短版 NEWHEAD", source_revision=2)
+    app.drain_worker(ctx, max_items=8, remaining_seconds=10)
     assert not app.search_sources(ctx, "OLDTAIL")
     assert app.search_sources(ctx, "OLDTAIL", history=True)
     assert app.search_sources(ctx, "NEWHEAD")
@@ -446,7 +713,8 @@ def test_partial_host_segments_show_missing_tail_and_recover_on_replay(core):
         content="TEST 第一段",
         segment={"group_key": "TEST-host-group", "index": 0, "total": 2, "truncated": False},
     )
-    assert "source_segments_incomplete" in app.source(ctx, first.event_refs[0].ref, 1).capture_gaps
+    assert app.source(ctx, first.event_refs[0].ref, 1) is None
+    assert app.inspect_object(ctx, first.event_refs[0].ref, 1).value["state"] == "pending_review"
     capture(
         app,
         ctx,
@@ -463,7 +731,8 @@ def test_partial_host_segments_show_missing_tail_and_recover_on_replay(core):
         capture_state="partial",
         segment={"group_key": "TEST-unknown", "index": 0, "total": None, "truncated": False},
     )
-    assert "source_segments_incomplete" in app.source(ctx, unknown.event_refs[0].ref, 1).capture_gaps
+    assert app.source(ctx, unknown.event_refs[0].ref, 1) is None
+    assert app.inspect_object(ctx, unknown.event_refs[0].ref, 1).value["rules"] == ["incomplete_scan_group"]
 
 
 def test_trusted_attachment_version_order_is_preserved(core):

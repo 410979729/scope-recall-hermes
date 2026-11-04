@@ -14,6 +14,7 @@ from typing import Any
 from scope_recall.adapters.clients.config import (
     CONFIG_FILENAME,
     CodexConfigError,
+    CodexInstallationConfig,
     install_codex_scope_recall,
     load_codex_config,
     load_shared_client,
@@ -171,7 +172,7 @@ def _plugin_json(plugin_name: str) -> dict[str, Any]:
 
 
 def planned_files(plan: InstallPlan) -> dict[Path, str | bytes]:
-    config = config_path(plan.instance_root)
+    config = attachment_path(plan.instance_root) if plan.pending_attachment else config_path(plan.instance_root)
     if config.name != ATTACHMENT_FILENAME and plan.project_root is None:
         raise InstallError("project_root is required for a Codex installation of its own")
     launcher = plan.target_plugin_dir / "hooks" / WINDOWS_HOOK_LAUNCHER
@@ -243,3 +244,23 @@ def purge_identity(instance_root: Path) -> tuple[Path, str, str, Path]:
     reject_symlink_chain(config.data_directory)
     reject_symlink_chain(path)
     return config.data_directory.resolve(), config.installation_id, config.agent_id, path.resolve()
+
+
+def prepare_reuse(plan: InstallPlan) -> None:
+    """Preserve old grant evidence before replacing the receipt; an invalid time permits future capture only."""
+    from datetime import UTC, datetime
+
+    from scope_recall.adapters.clients.ledger_state import (
+        AuthorizationStateError,
+        local_authorized_at,
+        record_authorization,
+    )
+    from scope_recall.core import CoreConfig, MemoryCore
+
+    config = _bound(plan.instance_root)
+    if isinstance(config, CodexInstallationConfig):
+        MemoryCore(CoreConfig(config.to_binding())).initialize()
+        try:
+            local_authorized_at(config, seconds=5)
+        except AuthorizationStateError:
+            record_authorization(config, datetime.now(UTC).isoformat(), basis="explicit_reauthorization", fresh=True)

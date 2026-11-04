@@ -5,11 +5,12 @@ from __future__ import annotations
 import re
 from copy import deepcopy
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, cast
 
 from ..contracts import (
     ClaimProposal,
     ContractError,
+    EvidenceSpan,
     SourceSnapshot,
     TrustedContext,
     validate_model_request,
@@ -17,6 +18,7 @@ from ..contracts import (
     validate_proposal_references,
     verified_human_principal_ref,
 )
+from .adoption_storage import adoption_qualification
 from .aliases import validate_alias_source, validate_alias_target
 from .candidate_lifecycle import SELF_SUBJECTS
 from .claim_normalization import expand_frames, human_owner, name_frame, normalize_frame, source_order
@@ -42,8 +44,13 @@ from .claims import (
 )
 from .confirmation import CONFIRMED_REASON, confirmation_targets, is_confirmation
 from .corroboration import CORROBORATED_REASON, corroboration_promotes
-from .evidence_quote import resolve_evidence_quotes
+from .evidence_quote import resolve_evidence_quotes, same_evidence
+from .evidence_support import positioned, support_verdict
+from .reflection_revision import revise_observation
+from .reflection_validity import reflection_live
+from .review_policy import PENDING, REVIEW_REASONS, held_proposal, owner_publication, policy
 from .secret_patterns import structure_contains_secret_like_text
+from .semantic_proposals import merge_candidates
 from .source_qualification import (
     AUTHORITY_QUESTION,
     CONDITIONAL,
@@ -68,6 +75,192 @@ class MutationReceipt:
     items: tuple[Mutation, ...]
     memory_epoch: int
     durability: str = "persisted"
+
+
+def management_claims_private(tx, clock, versions):
+    """Check whether a management write would copy any private claim evidence."""
+    from . import private
+
+    # Read-only mode permits reads but not the new records made by these actions.
+    intervals = [dict(rule, mode="full") for rule in private.active_intervals(tx, clock.utc_now())]
+    return any(private.claim_blocked(tx, intervals, version) for version in versions)
+
+
+def merge_entity_from_management(tx, clock, source_ref, source_revision, target_ref, target_revision, *, name=None):
+    """Record an owner's identity decision as the existing source-backed alias."""
+    from .entity_resolution import publish_entity_merge
+    from .evidence_support import SupportVerdict
+
+    versions = []
+    for ref, revision in ((source_ref, source_revision), (target_ref, target_revision)):
+        if type(revision) is not int or revision < 1:
+            raise ContractError("INPUT_INVALID", "expected_revision")
+        version = tx.claims.version(ref, revision)
+        if version is None or version.current_revision != revision:
+            raise ContractError("VERSION_CONFLICT", "expected_revision")
+        versions.append(version)
+    source, target = versions
+    if management_claims_private(tx, clock, versions):
+        raise ContractError("ACCESS_DENIED", "private_mode")
+    verdict = SupportVerdict("", "supported", target.ref, target.revision, "duplicate")
+    with owner_publication():
+        result = publish_entity_merge(tx, source, target, verdict, now=clock.utc_now(), name=name, only_unmerged=True)
+    if result is None:
+        raise ContractError("VERSION_CONFLICT", "entity_alias")
+    return result
+
+
+def health_fact_pair(tx, clock, first_ref, first_revision, second_ref, second_revision):
+    """Load two reviewed current facts in one audience and reject stale or private input."""
+    from .claims import valid_at
+
+    versions = []
+    for ref, revision in ((first_ref, first_revision), (second_ref, second_revision)):
+        if type(revision) is not int or revision < 1:
+            raise ContractError("INPUT_INVALID", "expected_revision")
+        version = tx.claims.version(ref, revision)
+        if version is None or version.current_revision != revision:
+            raise ContractError("VERSION_CONFLICT", "expected_revision")
+        if version.state != "active" or version.suppressed or not valid_at(version, clock.utc_now(), historical=False):
+            raise ContractError("VERSION_CONFLICT", "fact_state")
+        tx.claims.live_sources(evidence_refs(version.payload), version.scope_id)
+        if version.payload["kind"] == "observation":
+            from .reflection_validity import reflection_live
+
+            if not reflection_live(tx, version):
+                raise ContractError("VERSION_CONFLICT", "observation_dependencies")
+        versions.append(version)
+    if first_ref == second_ref or management_claims_private(tx, clock, versions):
+        raise ContractError("ACCESS_DENIED", "fact_pair")
+    return tuple(versions)
+
+
+def health_pair_kind(first, second):
+    """Classify an exact audience and normalized slot using existing identity and time rules."""
+    from .claims import claim_slot, valid_at
+    from .fact_identity import normalize_fact_component
+
+    if (first.scope_id, first.project_id, first.branch_id) != (second.scope_id, second.project_id, second.branch_id):
+        return None
+    proposals = []
+    for item in (first, second):
+        payload = deepcopy(item.payload)
+        payload["subject"] = normalize_fact_component(payload["subject"])
+        payload["predicate"] = normalize_fact_component(payload["predicate"])
+        proposals.append(payload)
+    if claim_slot(first.scope_id, first.project_id, first.branch_id, proposals[0]) != claim_slot(
+        second.scope_id, second.project_id, second.branch_id, proposals[1]
+    ):
+        return None
+    values = [normalize_fact_component(p["value_text"]) for p in proposals]
+    if values[0] == values[1]:
+        periods = [(canonical_time(v.valid_from), canonical_time(v.valid_to)) for v in (first, second)]
+        return "duplicate" if periods[0] == periods[1] else None
+    start = max((v.valid_from for v in (first, second) if v.valid_from), default="0001-01-01T00:00:00Z")
+    return "contradiction" if all(valid_at(v, start, historical=False) for v in (first, second)) else None
+
+
+def health_apply_facts(tx, clock, first, second, *, merge):
+    """Append owner-reviewed fact heads; callers record the cross-reference atomically."""
+    if merge and (canonical_time(first.valid_from), canonical_time(first.valid_to)) != (
+        canonical_time(second.valid_from),
+        canonical_time(second.valid_to),
+    ):
+        raise ContractError("DERIVATION_INVALID", "different_validity")
+    kind = health_pair_kind(first, second)
+    if kind != ("duplicate" if merge else "contradiction"):
+        raise ContractError("VERSION_CONFLICT", "fact_pair")
+    kept = first
+    if merge:
+        payload = deepcopy(first.payload)
+        for span in second.payload["evidence_spans"]:
+            if span not in payload["evidence_spans"]:
+                payload["evidence_spans"].append(deepcopy(span))
+        kept = tx.claims.append(
+            first.scope_id,
+            payload,
+            Qualification(first.state, first.basis, first.reason),
+            recorded_at=clock.utc_now(),
+            previous=first,
+            expected_revision=first.revision,
+        )
+    replaced = tx.claims.append(
+        second.scope_id,
+        second.payload,
+        Qualification("superseded", second.basis, "health_superseded"),
+        recorded_at=clock.utc_now(),
+        previous=second,
+        expected_revision=second.revision,
+    )
+    if first.payload["kind"] == "observation":
+        if merge:
+            health_observation_dependencies(tx, kept, (first, second))
+        health_observation_dependencies(tx, replaced, (second,))
+    return kept, replaced
+
+
+def health_restore_fact(tx, clock, original, head):
+    """Append the pre-decision state without rewriting either reference's history."""
+    with owner_publication():
+        saved = tx.claims.append(
+            original.scope_id,
+            original.payload,
+            Qualification(original.state, original.basis, original.reason),
+            recorded_at=clock.utc_now(),
+            previous=head,
+            expected_revision=head.revision,
+        )
+    if original.payload["kind"] == "alias":
+        from .entity_resolution import copy_entity_proof
+
+        copy_entity_proof(tx, original, saved)
+    if original.payload["kind"] == "observation":
+        row = (
+            tx._check()
+            .execute(
+                "SELECT manifest_json,signature,confirmed FROM observations WHERE claim_ref=? AND claim_revision=?",
+                (original.ref, original.revision),
+            )
+            .fetchone()
+        )
+        if row is None:
+            raise ContractError("SOURCE_MISSING", "observation_dependencies")
+        tx._check(write=True).execute("INSERT INTO observations VALUES(?,?,?,?,?)", (saved.ref, saved.revision, *row))
+    return saved
+
+
+def health_observation_dependencies(tx, saved, originals):
+    """Carry the full induction manifests onto the new version with a fresh dependency fence."""
+    import json
+
+    from . import private
+    from .reflection_validity import dependency_signature, live_members
+
+    members = {}
+    confirmed = 0
+    for original in originals:
+        row = (
+            tx._check()
+            .execute(
+                "SELECT manifest_json,confirmed FROM observations WHERE claim_ref=? AND claim_revision=?",
+                (original.ref, original.revision),
+            )
+            .fetchone()
+        )
+        if row is None:
+            raise ContractError("SOURCE_MISSING", "observation_dependencies")
+        confirmed = max(confirmed, row[1])
+        for item in json.loads(row[0]):
+            members[(item["ref"], item["revision"])] = item
+    manifest = sorted(members.values(), key=lambda item: item["position"])
+    sources = live_members(tx, manifest)
+    intervals = [dict(rule, mode="full") for rule in private.active_intervals(tx, saved.recorded_from)]
+    if any(private.source_blocked(intervals, source) for source in sources):
+        raise ContractError("ACCESS_DENIED", "private_mode")
+    tx._check(write=True).execute(
+        "INSERT INTO observations VALUES(?,?,?,?,?)",
+        (saved.ref, saved.revision, json.dumps(manifest), dependency_signature(tx, manifest), confirmed),
+    )
 
 
 def validate_claims(tx, value, scope_id: str, *, ungrounded_values: list[int] | None = None):
@@ -188,6 +381,16 @@ def _order_against_head(tx, proposal, roots, previous, qualification, scope_id):
     evidence whose order against the head is unknown and has no live human
     behind it becomes disputed.
     """
+    if same_assertion(previous.payload, proposal):
+        # Replaying an assertion cannot create a conflict with itself. An
+        # existing dispute still needs changed evidence before it can resolve.
+        if (
+            previous.state == "disputed"
+            and qualification.state == "active"
+            and same_evidence(previous.payload, proposal, {(r.ref, r.revision): r.content for r in roots})
+        ):
+            qualification = Qualification(previous.state, previous.basis, previous.reason)
+        return qualification, True, ()
     old_roots = tx.claims.roots(evidence_refs(previous.payload))
     new_owner, old_owner = human_owner(roots), human_owner(old_roots)
     new_order, old_order = source_order(tx, roots), source_order(tx, old_roots)
@@ -261,50 +464,108 @@ def _end_denied_value(tx, proposal, roots, previous, held, qualification, scope_
     return Mutation(retracted.ref, retracted.revision, "retracted", retracted.state)
 
 
-def apply_claim(tx, proposal: ClaimProposal, scope_id: str, now: str, *, _subject_bound: bool = False) -> Mutation:
-    roots = tx.claims.roots(evidence_refs(proposal))
-
-    proposal = name_frame(normalize_frame(proposal, roots), roots)
-    if _subject_bound:
+def _qualify_incoming(
+    tx, proposal: ClaimProposal, roots, scope_id, now, subject_already_bound
+) -> tuple[ClaimProposal, Qualification, bool]:
+    """Bind source identity, classify support and revalidate any prepared slot decision."""
+    if adoption_qualification(tx, proposal):
+        return proposal, Qualification("active", "direct_report", "owner_adopted_assistant_proposal"), False
+    submitted = proposal
+    verdict = support_verdict(proposal, roots) if positioned(proposal) else None
+    support_state = verdict.state if verdict else None
+    if positioned(proposal) and support_state is None:
+        support_state = "supported" if qualify(proposal, roots, _legacy=True).state == "active" else "unavailable"
+    if not positioned(proposal):
+        proposal = cast(ClaimProposal, name_frame(normalize_frame(proposal, roots), roots))
+    if subject_already_bound:
         subject_bound, binding_issue = True, None
     else:
-        proposal, subject_bound, binding_issue = bind_claim_subject(proposal, roots)
+        proposal, subject_bound, binding_issue = bind_claim_subject(
+            proposal, roots, semantic_support=positioned(proposal)
+        )
     if binding_issue is not None:
         qualification = Qualification("proposed", "inferred_suggestion", binding_issue)
     else:
-        qualification = qualify(proposal, roots, project_id=tx.context.project_id, _subject_bound=subject_bound)
+        qualification = qualify(
+            proposal,
+            roots,
+            project_id=tx.context.project_id,
+            _subject_bound=subject_bound,
+            _support_state=support_state,
+        )
     if proposal["kind"] == "alias" and not _alias_verified(tx, proposal, roots, scope_id, now):
         qualification = Qualification("proposed", "inferred_suggestion", "alias_target_or_relation_unverified")
-    history = tx.claims.slot(scope_id, proposal)
-    previous = next((v for v in history if v.revision == v.current_revision), None)
-    held = select_effective(history, now) if history else None
-    denial_reason, ends_held = denial_verdict(proposal, held, roots, history)
-    gated = qualification
-    if denial_reason is not None and qualification.state != "proposed":
-        qualification = Qualification("proposed", "inferred_suggestion", denial_reason)
-    # Repeated extraction cannot alter the live identity, validity, head,
-    # lifecycle, epoch or work queue of the same assertion.
-    identical = next(
-        (
-            v
-            for v in reversed(history)
-            if same_assertion(v.payload, proposal) and (v.state == qualification.state or v.state == "active")
-        ),
-        None,
-    )
-    if identical is not None:
+    if verdict is not None and verdict.target_ref is not None:
+        choices = merge_candidates(tx, submitted, scope_id, now=now)
+        target = next(
+            (c for c in choices if (c["ref"], c["revision"]) == (verdict.target_ref, verdict.target_revision)), None
+        )
+        if target is None:
+            raise ContractError("VERSION_CONFLICT", "merge_target")
+        proposal = deepcopy(proposal)
+        proposal.update(subject=target["payload"]["subject"], predicate=target["payload"]["predicate"])
+    return proposal, qualification, verdict is not None and verdict.action == "duplicate"
+
+
+def _repeat_claim(tx, proposal, history, previous, qualification, denial_reason, scope_id, now):
+    """Return final duplicates without writes; independent corroboration may promote the same assertion."""
+    roots = tx.claims.roots(evidence_refs(proposal))
+    for identical in reversed(history):
+        if not same_assertion(identical.payload, proposal):
+            continue
         if _corroborated(tx, proposal, roots, identical, previous, qualification, denial_reason):
-            promoted = Qualification("active", "direct_report", CORROBORATED_REASON)
             saved = tx.claims.append(
                 scope_id,
                 proposal,
-                promoted,
+                Qualification("active", "direct_report", CORROBORATED_REASON),
                 recorded_at=now,
                 previous=previous if previous is not None else identical,
                 advance_head=True,
             )
             return Mutation(saved.ref, saved.revision, "inserted", saved.state)
-        return Mutation(identical.ref, identical.revision, "duplicate", identical.state)
+        # Legacy active-assertion replays are no-ops even when another source
+        # repeats them after retraction. Final disputed verdicts cannot use this path.
+        legacy_active = not positioned(proposal) and identical.state == qualification.state == "active"
+        if legacy_active or (
+            (identical.state, identical.basis, identical.reason)
+            == (qualification.state, qualification.basis, qualification.reason)
+            and same_evidence(identical.payload, proposal, {(r.ref, r.revision): r.content for r in roots})
+        ):
+            return Mutation(identical.ref, identical.revision, "duplicate", identical.state)
+    return None
+
+
+def apply_claim(tx, proposal: ClaimProposal, scope_id: str, now: str, *, _subject_bound: bool = False) -> Mutation:
+    roots = tx.claims.roots(evidence_refs(proposal))
+
+    proposal, qualification, semantic_duplicate = _qualify_incoming(tx, proposal, roots, scope_id, now, _subject_bound)
+    history = tx.claims.slot(scope_id, proposal)
+    previous = next((v for v in history if v.revision == v.current_revision), None)
+    reviewed = held_proposal(tx, proposal, scope_id, history)
+    if reviewed is not None:
+        return Mutation(reviewed.ref, reviewed.revision, "duplicate", reviewed.state)
+    if policy(tx, scope_id)["enabled"]:
+        # Store beside an existing head: review must not displace a fact before
+        # the owner approves, nor trigger automatic conflict/retraction effects.
+        saved = tx.claims.append(
+            scope_id,
+            proposal,
+            Qualification("proposed", qualification.basis, PENDING),
+            recorded_at=now,
+            previous=previous,
+            advance_head=previous is None,
+        )
+        return Mutation(saved.ref, saved.revision, "historical", saved.state)
+    held = select_effective(history, now) if history else None
+    denial_reason, ends_held = denial_verdict(proposal, held, roots, history)
+    gated = qualification
+    if denial_reason is not None and qualification.state != "proposed":
+        qualification = Qualification("proposed", "inferred_suggestion", denial_reason)
+    if semantic_duplicate and previous is not None and previous.state == qualification.state == "active":
+        ordered, advance, _ = _order_against_head(tx, proposal, roots, previous, qualification, scope_id)
+        qualification = ordered
+        if ordered.state == "active" and advance:
+            return Mutation(previous.ref, previous.revision, "duplicate", previous.state)
     if ends_held and gated.state == "active":
         ended = _end_denied_value(tx, proposal, roots, previous, held, gated, scope_id, now)
         if ended is not None:
@@ -319,6 +580,9 @@ def apply_claim(tx, proposal: ClaimProposal, scope_id: str, now: str, *, _subjec
             qualification, advance, conflicts = _order_against_head(
                 tx, proposal, roots, previous, qualification, scope_id
             )
+    repeated = _repeat_claim(tx, proposal, history, previous, qualification, denial_reason, scope_id, now)
+    if repeated is not None:
+        return repeated
     saved = tx.claims.append(
         scope_id, proposal, qualification, recorded_at=now, previous=previous, advance_head=advance, conflicts=conflicts
     )
@@ -346,7 +610,10 @@ def register_applied_candidate(tx, mutation: Mutation, now: str, *, schedule_ini
 def apply_claim_frames(tx, proposal, scope_id, now):
     roots = tx.claims.roots(evidence_refs(proposal))
     items = []
-    for frame in expand_frames(proposal, roots):
+    frames: list[ClaimProposal] = (
+        [proposal] if positioned(proposal) else cast(list[ClaimProposal], expand_frames(proposal, roots))
+    )
+    for frame in frames:
         item = apply_claim(tx, frame, scope_id, now)
         register_applied_candidate(tx, item, now)
         items.append(item)
@@ -476,6 +743,9 @@ def _revision_authority(tx, head, request) -> _Authority:
             raise ContractError("ACCESS_DENIED", "retraction_not_authorized")
         if _NO_FAST_PATH.search(raw) or RELATIVE_SCOPE.search(raw):
             raise ContractError("ACCESS_DENIED", "conditional_retraction_not_authorized")
+    elif head.payload["kind"] == "observation" and new_value == {"confirmed": True}:
+        if not is_confirmation(raw):
+            raise ContractError("ACCESS_DENIED", "confirmation_not_authorized")
     elif not _CORRECTION.search(raw):
         raise ContractError("ACCESS_DENIED", "correction_not_authorized")
     if not _names_target(raw, head, first_person_target):
@@ -604,6 +874,18 @@ def _record_revision(tx, clock, head, updated, qualification, request, authority
 def _revise_in_transaction(tx, clock, request) -> Mutation:
     head = _revision_head(tx, request)
     authority = _revision_authority(tx, head, request)
+    changes = request["new_value"]
+    if head.payload["kind"] == "observation":
+        saved = revise_observation(tx, clock, head, changes, authority.source)
+        return Mutation(
+            saved.ref, saved.revision, "retracted" if saved.state == "retracted" else "revised", saved.state
+        )
+    if isinstance(changes, dict) and changes and set(changes) <= {"importance", "pinned"}:
+        from .importance import require_importance_statement, set_importance
+
+        require_importance_statement(authority.raw, changes)
+        set_importance(tx, head, **changes)
+        return Mutation(head.ref, head.revision, "revised", head.state)
     updated = _revised_payload(head, request, authority.retraction)
     proof = _revision_proof(head, updated, authority)
     source = authority.source
@@ -627,6 +909,10 @@ def _revise_in_transaction(tx, clock, request) -> Mutation:
 def revise(storage, clock, context: TrustedContext, value, *, remaining_seconds: float = 1.0) -> MutationReceipt:
     request = validate_model_request("revise_request", value, context)
     with storage.write(context, remaining_seconds=remaining_seconds) as tx:
+        from .entry_control import capture_refusal
+
+        if reason := capture_refusal(tx, context):
+            raise ContractError("ACCESS_DENIED", reason)
         item = _revise_in_transaction(tx, clock, request)
         epoch = tx.status().memory_epoch
     return MutationReceipt((item,), epoch)
@@ -643,6 +929,11 @@ def revise_from_management(tx, clock, request, source) -> Mutation:
     head = _revision_head(tx, request)
     if request["conditions"] != head.payload["conditions"]:
         raise ContractError("INPUT_INVALID", "management_conditions")
+    if head.payload["kind"] == "observation":
+        saved = revise_observation(tx, clock, head, request["new_value"], source)
+        return Mutation(
+            saved.ref, saved.revision, "retracted" if saved.state == "retracted" else "revised", saved.state
+        )
     retraction = request["new_value"] is None
     updated = _revised_payload(head, request, retraction)
     updated["evidence_spans"] = [
@@ -833,6 +1124,8 @@ def capture_confirmation(tx, source, clock) -> Mutation | None:
         for v in heads
         if v is not None
         and v.state == "proposed"
+        and v.reason not in REVIEW_REASONS
+        and v.payload["kind"] != "observation"
         and v.scope_id == source.scope_id
         and (v.project_id, v.branch_id) == (source.project_id, source.branch_id)
     ]
@@ -848,7 +1141,7 @@ def capture_confirmation(tx, source, clock) -> Mutation | None:
         tx.claims.unresolved(source.ref, source.revision, (target.ref,), recorded_at=clock.utc_now())
         return None
     payload = deepcopy(target.payload)
-    spans = list(payload.get("evidence_spans") or ())
+    spans: list[EvidenceSpan] = list(payload.get("evidence_spans") or ())
     # The confirmation is itself evidence: it is the record of who vouched.
     spans.append({"source_ref": source.ref, "source_revision": source.revision, "quote": raw[:2000]})
     payload["evidence_spans"] = spans
@@ -872,6 +1165,7 @@ def current_claim(
     storage, clock, context: TrustedContext, ref: str, *, as_of: str | None = None, known_at: str | None = None
 ) -> ClaimVersion | None:
     with storage.read(context) as tx:
-        return select_effective(
+        version = select_effective(
             tx.claims.versions(ref), as_of or clock.utc_now(), as_of=as_of is not None, known_at=known_at
         )
+        return version if version is None or reflection_live(tx, version) else None

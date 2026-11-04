@@ -321,7 +321,7 @@ def grown(recorded: dict, current: dict) -> list[str]:
 
 
 #: The package's layers, lowest first: a module imports from its own layer or a lower one, at the top or in a
-#: function.  Modules outside them (the package's root, ``_version``, ``_lance_worker``, ``distribution``) keep none,
+#: function.  Modules outside them (the package's root, ``_version``, ``distribution``) keep none,
 #: and an import through one of them counts as an import of what it imports.
 LAYERS = ("contracts", "core", "vector", "runtime", "adapters", "maintenance")
 #: The entry modules the installed hook and server command lines name: composition roots, free to import any layer.
@@ -335,6 +335,8 @@ ENTRY_MODULES = frozenset(
 #: front of it.
 LAZY_UPWARD = frozenset(
     {
+        ("runtime/worker_entry.py", "adapters/clients/ledger.py"),
+        ("runtime/worker_entry.py", "adapters/clients/store_service.py"),
         ("runtime/instance.py", "adapters/clients/authorization.py"),
         ("runtime/instance.py", "adapters/hermes/authorization.py"),
     }
@@ -717,7 +719,23 @@ def import_problems(root: Path, files: Iterable[str]) -> list[str]:
             if importer in group and imported in group
         )
         problems.append(f"import cycle among {len(group)} modules:" + "".join(inside))
+    problems += client_import_problems(graph)
     return problems + _upward(edges, graph)
+
+
+def client_import_problems(graph: dict[str, set[str]]) -> list[str]:
+    """Reject a client reaching a Hermes adapter, including indirect imports through shared modules."""
+    problems = []
+    for start in sorted(path for path in graph if path.startswith("adapters/clients/")):
+        seen, pending = {start}, [start]
+        while pending:
+            for target in sorted(graph[pending.pop()] - seen):
+                seen.add(target)
+                if target.startswith("adapters/hermes/"):
+                    problems.append(f"client imports Hermes: {start} reaches {target}")
+                else:
+                    pending.append(target)
+    return problems
 
 
 def _upward(edges: list[Edge], graph: dict[str, set[str]]) -> list[str]:

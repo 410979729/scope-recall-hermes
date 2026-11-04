@@ -412,7 +412,7 @@ def test_a_turn_writes_at_most_64_interim_messages(adapter, monkeypatch):
         "record_host_event",
         lambda _context, event, **kwargs: keys.append(event["source_event_key"]) or queued,
     )
-    monkeypatch.setattr(provider._core, "source_by_event_key", lambda *args, **kwargs: None, raising=False)
+    monkeypatch.setattr(provider._core, "_source_replay_metadata", lambda *args, **kwargs: None)
     provider.sync_turn("TEST 跑三百步", "TEST 三百步都跑完了。", session_id="TEST-session-1")
     assert sum(":interim:" in key for key in keys) == 64
     assert any(":sync_assistant:" in key for key in keys), keys[-3:]
@@ -635,10 +635,10 @@ def test_a_switch_during_a_tool_results_write_keeps_its_session_and_audience(
     provider, _clock = adapter
     monkeypatch.setattr(provider._retry, "start", lambda: None)
     before = provider._identity
-    real = provider._core.source_by_event_key
+    real = provider._core._source_replay_metadata
     entered, release = threading.Event(), threading.Event()
 
-    def source_by_event_key(context, key, *args, **kwargs):
+    def replay_metadata(context, key, *args, **kwargs):
         if "slow-call" in key and not entered.is_set():
             entered.set()
             release.wait(10)
@@ -646,9 +646,10 @@ def test_a_switch_during_a_tool_results_write_keeps_its_session_and_audience(
                 time.sleep(0.6)
         return real(context, key, *args, **kwargs)
 
-    monkeypatch.setattr(provider._core, "source_by_event_key", source_by_event_key)
+    monkeypatch.setattr(provider._core, "_source_replay_metadata", replay_metadata)
     _register_adapter_instance(provider)
     kwargs = {} if switch == "session" else {"chat_type": "group", "chat_id": "TEST-group-9", "thread_id": "main"}
+    switch_thread = None
     try:
         first, first_box, first_thread = _in_thread(_tool_hook("TEST-session-1", "slow-call"))
         assert entered.wait(_PROMPTLY)
@@ -657,7 +658,8 @@ def test_a_switch_during_a_tool_results_write_keeps_its_session_and_audience(
     finally:
         release.set()
         first_thread.join(_PROMPTLY)
-        switch_thread.join(_PROMPTLY)
+        if switch_thread is not None:
+            switch_thread.join(_PROMPTLY)
         _unregister_adapter_instance(provider)
     assert "error" not in first_box and "error" not in switch_box, (first_box, switch_box)
     # Waiting for the switch can consume the capture's admission time. Its retry must keep the original audience
@@ -776,7 +778,7 @@ def test_the_next_turn_starts_while_the_last_one_is_written(adapter, monkeypatch
         return queued
 
     monkeypatch.setattr(provider._core, "record_host_event", record_host_event)
-    monkeypatch.setattr(provider._core, "source_by_event_key", lambda *args, **kwargs: None, raising=False)
+    monkeypatch.setattr(provider._core, "_source_replay_metadata", lambda *args, **kwargs: None)
     synced, _, sync_thread = _in_thread(
         lambda: provider.sync_turn("TEST 跑三步", "TEST 三步都跑完了。", session_id="TEST-session-1")
     )
@@ -874,7 +876,7 @@ def test_a_shutdown_waits_for_the_turn_being_written(adapter, monkeypatch):
         return queued
 
     monkeypatch.setattr(provider._core, "record_host_event", record_host_event)
-    monkeypatch.setattr(provider._core, "source_by_event_key", lambda *args, **kwargs: None, raising=False)
+    monkeypatch.setattr(provider._core, "_source_replay_metadata", lambda *args, **kwargs: None)
     synced, _, sync_thread = _in_thread(
         lambda: provider.sync_turn("TEST 跑几步", "TEST 跑完了。", session_id="TEST-session-1")
     )
@@ -908,7 +910,7 @@ def test_turn_reply_keeps_observation_time_when_its_sync_is_delayed(adapter, mon
         return queued
 
     monkeypatch.setattr(provider._core, "record_host_event", record_host_event)
-    monkeypatch.setattr(provider._core, "source_by_event_key", lambda *args, **kwargs: None, raising=False)
+    monkeypatch.setattr(provider._core, "_source_replay_metadata", lambda *args, **kwargs: None)
     provider.sync_turn("TEST 跑几步", "TEST 跑完了。", session_id="TEST-session-1")
     assert [when for key, when in dated.items() if ":sync_assistant:" in key] == [observed_at], dated
     assert [when for key, when in dated.items() if ":user:" in key] == ["2026-10-01T12:00:00Z"], dated
@@ -1085,9 +1087,7 @@ def test_a_retry_pass_writes_every_buffered_capture_it_has_time_for(adapter, her
 
 
 def test_a_capture_that_cannot_be_written_is_given_up_and_said(adapter, hermes_home, monkeypatch, caplog):
-    """A capture of a full inbox, or of an installation whose scopes changed under a running gateway, is not kept for
-    good: retried every 30 s for the life of the process, its thread would hold an evicted agent's adapter.  Past its
-    time it is kept on disk for the next start, and the thread ends."""
+    """Persistent store failures move to disk cooldown instead of retrying at the in-memory pace."""
     provider, _clock = adapter
     monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 3600.0)
     monkeypatch.setattr(capture_retry, "_RETRY_GIVE_UP_S", 0.2)
@@ -1107,7 +1107,7 @@ def test_a_capture_that_cannot_be_written_is_given_up_and_said(adapter, hermes_h
     assert not provider._retry.captures, "an authorization that could not be read kept it for good"
     monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 0.05)
     provider._retry.wake.set()
-    assert _until(lambda: provider._retry.thread is None), "the thread outlived an empty buffer"
+    assert provider._retry.disk_retry_at is not None, "disk work has no next attempt"
 
 
 def test_a_retry_pass_that_raises_still_gives_up_what_is_past_its_time(adapter, hermes_home, monkeypatch, caplog):
@@ -1127,7 +1127,7 @@ def test_a_retry_pass_that_raises_still_gives_up_what_is_past_its_time(adapter, 
     monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 0.05)
     provider._retry.wake.set()
     assert _until(lambda: not provider._retry.captures), "a pass that raised kept the capture for good"
-    assert _until(lambda: provider._retry.thread is None)
+    assert provider._retry.disk_retry_at is not None
     assert [record for record in caplog.records if "still failing after" in record.getMessage()]
 
 

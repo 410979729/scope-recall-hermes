@@ -157,6 +157,113 @@ _LEXICAL_PROJECTION_1108 = (
     "CREATE INDEX lexical_source ON lexical_projection(event_id,source_revision)",
 )
 _SCHEMA_STEPS = {
+    1134: {
+        "before": tuple(
+            f"DROP TRIGGER {name}"
+            for name in (
+                "storage_cursor_insert",
+                "storage_cursor_update",
+                "storage_cursor_delete",
+                "source_secret_body_changed",
+            )
+        ),
+        "columns": (
+            ("source_events", "secret_scan_version"),
+            ("source_events", "secret_scan_names"),
+            ("source_events", "secret_scan_input_sha256"),
+            ("instance_meta", "storage_revision"),
+        ),
+    },
+    1133: {"indexes": ("claim_profile_heads",)},
+    1132: {
+        "before": (
+            "DROP TRIGGER claim_terms_insert",
+            "DROP TRIGGER claim_terms_delete",
+            "DROP TRIGGER claim_terms_update",
+            "DROP TRIGGER claim_terms_head",
+        ),
+        "tables": ("claim_version_postings", "claim_lexical_dirty"),
+    },
+    1131: {"tables": ("scope_review_policy",)},
+    1130: {"tables": ("handoff_events", "handoffs")},
+    1129: {"columns": (("session_brief_injections", "notice_marker"), ("session_brief_injections", "source"))},
+    1128: {"tables": ("entry_control_history", "entry_controls")},
+    1127: {"tables": ("private_command_fences", "scope_memory_instructions")},
+    1125: {
+        "tables": (
+            "session_brief_compaction_epochs",
+            "session_brief_injections",
+            "session_brief_sessions",
+            "session_briefs",
+            "safety_retractions",
+        ),
+    },
+    1124: {
+        "tables": ("observation_conflicts", "reflection_daily_usage", "reflection_discovery", "reflection_rejections"),
+        "columns": tuple(("reflection_groups", name) for name in ("empty_streak", "new_sources", "required_sources")),
+    },
+    1123: {"indexes": ("reflection_jobs",), "tables": ("observations", "reflection_groups", "reflection_cursors")},
+    1122: {"tables": ("adoption_processing",)},
+    1121: {"tables": ("adoption_relations",)},
+    1120: {
+        "indexes": ("importance_backfill", "summary_due"),
+        "tables": ("summary_parts", "summary_groups", "summary_backfill"),
+        "columns": tuple(
+            ("claims", name) for name in ("importance", "pinned", "importance_assigned", "importance_owner")
+        ),
+    },
+    1119: {"columns": (("instance_meta", "database_id"), ("instance_meta", "database_created_at"))},
+    1118: {
+        "before": (
+            "DROP TRIGGER claim_lexical_insert",
+            "DROP TRIGGER claim_lexical_update",
+            "DROP TRIGGER claim_lexical_delete",
+            "DROP TRIGGER claim_lexical_head",
+            "DROP TABLE claim_lexical_heads",
+            "DROP INDEX claim_lexical_versions",
+            "DROP INDEX claim_lexical_subject",
+            "ALTER TABLE claim_lexical_postings DROP COLUMN subject_terms",
+        ),
+    },
+    1117: {
+        "before": ("DELETE FROM candidate_scan_cursors WHERE cursor_name='claim_lexical'",),
+        "tables": ("claim_lexical_postings",),
+    },
+    1116: {"tables": ("source_scan_progress",)},
+    1115: {},
+    1114: {"tables": ("source_safety", "injection_rules")},
+    1113: {
+        "before": tuple(
+            f"DROP TRIGGER {name}"
+            for name in (
+                "entity_alias_version",
+                "entity_alias_head",
+                "entity_name_index",
+                "entity_name_reindex",
+                "entity_name_unindex",
+                "entity_name_orphan",
+                "entity_name_pending",
+                "entity_name_changed",
+                "entity_name_deleted",
+                "entity_source_changed",
+            )
+        ),
+        "indexes": (
+            "entity_unresolved",
+            "entity_alias_scope",
+            "entity_subject_lookup",
+            "entity_subject_presence",
+            "entity_index_pending",
+        ),
+        "tables": (
+            "entity_name_search",
+            "entity_name_mentions",
+            "entity_names",
+            "entity_alias_labels",
+            "entity_alias_proofs",
+        ),
+        "columns": (("claim_versions", "entity_resolved"), ("claims", "entity_indexed")),
+    },
     1112: {"tables": ("private_intervals",), "columns": (("source_events", "project_root"),)},
     1111: {
         "before": tuple(f"DROP TRIGGER {name}" for name, _sql in SUPPRESSION_TRIGGERS),
@@ -214,11 +321,12 @@ def downgrade_store(path, version: int) -> None:
 
 
 def slowdown(work, small, large, *, runs: int = 5) -> float:
-    """How many times as long ``work(large)`` takes as ``work(small)`` on this machine: the shortest of ``runs`` turns
-    of each, taken in turn with the garbage collector off, so that a machine slow or busy throughout changes neither.
+    """Compare per-call CPU work, excluding time the operating system schedules other packages.
 
-    For a test that work grows linearly with its input, which no bound in seconds can say on every machine: four
-    times the input takes about four times as long, where work quadratic in it takes sixteen."""
+    Each sample accumulates enough CPU time to cross coarse Windows accounting
+    ticks. Four times the input costs roughly four times the work for a linear
+    scan and sixteen for a quadratic one; wall-clock latency is measured elsewhere.
+    """
     best = [math.inf, math.inf]
     collecting = gc.isenabled()
     gc.collect()
@@ -226,9 +334,14 @@ def slowdown(work, small, large, *, runs: int = 5) -> float:
     try:
         for _ in range(runs):
             for index, value in enumerate((small, large)):
-                started = time.perf_counter()
-                work(value)
-                best[index] = min(best[index], time.perf_counter() - started)
+                started = time.thread_time()
+                iterations = 0
+                duration = 0.0
+                while duration < 0.05:
+                    work(value)
+                    iterations += 1
+                    duration = time.thread_time() - started
+                best[index] = min(best[index], duration / iterations)
     finally:
         if collecting:
             gc.enable()

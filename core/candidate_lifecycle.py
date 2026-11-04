@@ -131,8 +131,31 @@ def candidate_model_subject(
     subject = candidate.payload.get("subject")
     if not isinstance(subject, str):
         return None
-    if subject in _verified_human_principal_refs(sources):
+    return candidate_identities(candidate, sources).get(subject, subject)
+
+
+def candidate_identities(candidate: CandidateSnapshot, sources: tuple[StoredSource, ...]) -> dict[str, str]:
+    """Reproduce the request-local principal mapping from its immutable candidate and sources."""
+    subject = candidate.payload.get("subject")
+    if isinstance(subject, str):
+        label = model_subject(subject, sources)
+        if label is not None:
+            return {subject: label}
+    return {}
+
+
+def model_subject(
+    subject: object, sources: tuple[StoredSource, ...], *, identities: dict[str, str] | None = None
+) -> str | None:
+    """Replace a verified source principal with its public speaker label for model requests."""
+    if not isinstance(subject, str):
+        return None
+    principals = _verified_human_principal_refs(sources)
+    if subject in principals and len(principals) == 1:
         return "current_user"
+    if subject.startswith("principal:"):
+        labels = identities if identities is not None else {}
+        return labels.setdefault(subject, f"speaker_{len(labels) + 1}")
     return subject
 
 
@@ -235,9 +258,15 @@ def candidate_identity_restored(
     is restored rather than rejected: re-asking costs a model call and usually comes
     back written differently again.  A name that is not the candidate's is refused,
     and so is any other kind: a kind is one of a fixed set, so there is nothing to
-    write differently.  A verified human principal keeps its own rule -- the model
-    must say a self label and ``apply_claim`` performs the binding.
+    write differently. Request-local labels supplied by the decoder are restored
+    before ``apply_claim`` binds the cited sources to a verified human principal.
     """
+    subject = candidate.payload.get("subject")
+    identities = candidate_identities(candidate, sources)
+    if subject in _verified_human_principal_refs(sources) and proposal.get("subject") == identities.get(subject):
+        # Only this request's label may become a self label. apply_claim binds
+        # the cited sources again; the worker checks the resulting local principal.
+        proposal = {**proposal, "subject": "current_user"}
     for field in ("kind", "predicate"):
         expected = candidate.payload.get(field)
         if proposal.get(field) == expected:

@@ -293,8 +293,8 @@ def test_deletions_in_scopes_added_after_snapshot_survive_without_new_grants(tmp
 def test_deadline_during_archive_io_does_not_publish_or_touch_unowned_file(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
+    from scope_recall.core import backup_primitives as io
     from scope_recall.runtime import backup_bundle as bundles
-    from scope_recall.runtime import backup_primitives as io
 
     binding, _ = local_store(tmp_path, "codex")
     output = tmp_path / "backup.zip"
@@ -326,8 +326,8 @@ def test_deadline_during_archive_io_does_not_publish_or_touch_unowned_file(tmp_p
 def test_deadline_during_mirror_io_checkpoints_and_saves_retry_state(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
+    from scope_recall.core import backup_primitives as io
     from scope_recall.core import deletion_mirror
-    from scope_recall.runtime import backup_primitives as io
     from scope_recall.runtime import backup_upkeep as upkeep
 
     binding, core = local_store(tmp_path, "codex")
@@ -507,6 +507,59 @@ def test_shared_restore_keeps_each_entry_grants_and_local_resources(tmp_path, ca
     assert restored_ledger.is_relative_to(restored_root)
     with sqlite3.connect(restored_ledger) as connection:
         assert connection.execute("SELECT amount FROM preserved_spend").fetchone() == (23,)
+
+
+def test_bundle_with_registered_scopes_outside_manifest_is_verified_and_restored(tmp_path, capsys):
+    from scope_recall.core.deletion_mirror import catchup_deletion_mirror, load_mirror_operations
+
+    binding, _ = local_store(tmp_path, "shared")
+    extra = "TEST-extra-scope"
+    with sqlite3.connect(binding.data_directory / "memory.sqlite3") as conn:
+        conn.execute("INSERT INTO instance_scopes(scope_id) VALUES (?)", (extra,))
+    expanded = replace(binding, scope_ids=binding.scope_ids | {extra})
+    core = MemoryCore(CoreConfig(expanded))
+    ctx = TrustedContext(expanded, "TEST-session", frozenset({extra}), "human_direct", entry_id="agent1")
+    saved = core.record_event(
+        ctx, source_event(content="Synthetic extra-scope text"), scope_id=extra, remaining_seconds=10
+    )
+    deleted = core.record_event(
+        ctx,
+        source_event(source_event_key="deleted-extra", content="Synthetic deleted text"),
+        scope_id=extra,
+        remaining_seconds=10,
+    )
+    bundle = tmp_path / "backup.zip"
+    create_backup_bundle(binding=binding, output=bundle)
+    ref = deleted.event_refs[0].ref
+    core.record_event(
+        ctx,
+        source_event(source_event_key="delete-extra", content=f"delete {ref}"),
+        scope_id=extra,
+        remaining_seconds=10,
+    )
+    core.forget(
+        ctx,
+        {"protocol_version": "1.1", "mode": "delete", "target_refs": [ref], "expected_revisions": {ref: 1}},
+        remaining_seconds=10,
+    )
+    assert catchup_deletion_mirror(core.storage, tmp_path)["status"] in {"caught_up", "up_to_date"}
+    operations = load_mirror_operations(tmp_path / "deletion-mirror.jsonl")
+    assert any(extra in json.loads(item["operation"]["scope_ids_json"]) for item in operations)
+    assert main(["backup", "verify", "--bundle", str(bundle), "--temp-restore-check"]) == 0
+    verified = json.loads(capsys.readouterr().out)
+    assert verified["status"] == "verified" and verified["restore_check"]["doctor"]["binding_verified"]
+    destination = tmp_path / "recovered"
+    assert main(["restore", "--bundle", str(bundle), "--to", str(destination), "--apply"]) == 0
+    restored = json.loads(capsys.readouterr().out)
+    root = Path(restored["data_directory"])
+    payload = read_shared_payload(root)
+    restored_binding = store_binding(payload, root, frozenset(payload["scope_ids"]) | {extra})
+    restored_ctx = replace(ctx, binding=restored_binding)
+    found = MemoryCore(CoreConfig(restored_binding)).source(restored_ctx, saved.event_refs[0].ref, 1)
+    assert found is not None and found.event["content"] == "Synthetic extra-scope text"
+    assert MemoryCore(CoreConfig(restored_binding)).source(restored_ctx, ref, 1) is None
+    assert restored["mirror_replayed_operations"] == 1
+    assert extra not in payload["scope_ids"]
 
 
 def test_remote_spool_is_explicitly_packed_without_its_credential(tmp_path):

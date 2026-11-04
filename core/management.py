@@ -7,31 +7,276 @@ mint it; ordinary agent operations retain their captured-message authority.
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import asdict, replace
 from typing import Any
+from uuid import uuid4
 
 from ..contracts import ContractError
 from .delete_storage import OBJECT_TABLES, canonical
+from .importance import set_importance
 from .management_query import MemoryFilter, browse, partition, session_refs, source_metadata, witnesses
 from .management_revision import correct
+from .quarantine_management import preview_release, release_source, review_page
 from .restore import InstallationMaintenance, maintenance_context
+from .secret_patterns import contains_secret_like_text
 from .suppression import release
 
 
 class MemoryManagement:
     """Manage a bound installation, preserving Core visibility and version checks."""
 
-    def __init__(self, core, authority: InstallationMaintenance):
+    def __init__(self, core, authority: InstallationMaintenance, *, entry_grants=None):
         self.core = core
         self.authority = authority
+        self.entry_grants = entry_grants
         self._context()
 
     def _context(self):
         return maintenance_context(self.core.storage, self.authority)
 
+    def memory_instructions(self, scope_id):
+        """Read the owner's instruction history for one authorized scope, newest first."""
+        context = self._context()
+        if scope_id not in context.allowed_scope_ids:
+            raise ContractError("ACCESS_DENIED", "scope_id")
+        with self.core.storage.read(context) as tx:
+            return [
+                dict(row)
+                for row in tx._check().execute(
+                    "SELECT scope_id,version,text,changed_at,changed_by FROM scope_memory_instructions "
+                    "WHERE scope_id=? ORDER BY version DESC",
+                    (scope_id,),
+                )
+            ]
+
+    def set_memory_instruction(self, scope_id, text):
+        """Append one owner instruction version; source and fact rows are unchanged."""
+        context = self._context()
+        if scope_id not in context.allowed_scope_ids:
+            raise ContractError("ACCESS_DENIED", "scope_id")
+        if type(text) is not str or len(text) > 2000:
+            raise ContractError("INPUT_INVALID", "instruction_max_2000_chars")
+        if contains_secret_like_text(text):
+            raise ContractError("SECRET_DETECTED", "memory_instruction")
+        with self.core.storage.write(context, remaining_seconds=10) as tx:
+            conn = tx._check()
+            version = conn.execute(
+                "SELECT coalesce(max(version),0)+1 FROM scope_memory_instructions WHERE scope_id=?", (scope_id,)
+            ).fetchone()[0]
+            changed_at = self.core.clock.utc_now()
+            conn.execute(
+                "INSERT INTO scope_memory_instructions VALUES(?,?,?,?,?)",
+                (scope_id, version, text, changed_at, "local_user_management"),
+            )
+            return dict(
+                scope_id=scope_id, version=version, text=text, changed_at=changed_at, changed_by="local_user_management"
+            )
+
     def list(self, filters: MemoryFilter | None = None, *, limit=30, cursor=None):
         """Return one inventory page, with an opaque cursor for the next page."""
         return browse(self.core, self._context(), filters or MemoryFilter(), limit=limit, cursor=cursor)
+
+    def review_policy(self, scope_id):
+        """Read the scope's publication policy and last policy version."""
+        from .review_policy import policy
+
+        with self.core.storage.read(self._context()) as tx:
+            return policy(tx, scope_id)
+
+    def set_review_policy(self, scope_id, enabled, *, expected_version):
+        """Version an owner policy change in the existing write transaction."""
+        from .review_policy import set_policy
+
+        with self.core.storage.write(self._context(), remaining_seconds=10) as tx:
+            return set_policy(tx, self.core.clock, scope_id, enabled, expected_version)
+
+    def reviews(self, *, source=None, limit=30, cursor=None):
+        """Read one page of source-owned review items."""
+        from .review_list import reviews
+
+        return reviews(self, source=source, limit=limit, cursor=cursor)
+
+    def review_decide(self, key, decision, *, expected_version, selection=None):
+        """Approve or reject one exact native-state snapshot."""
+        from .review_list import decide
+
+        return decide(self, key, decision, expected_version=expected_version, selection=selection)
+
+    def review_undo(self, action_id, *, expected_version):
+        """Restore the source state preceding an unchanged review action."""
+        from .review_list import undo
+
+        return undo(self, action_id, expected_version=expected_version)
+
+    def review_actions(self, *, limit=30, before=None):
+        """Read bounded review receipts available for undo."""
+        from .review_list import actions
+
+        return actions(self, limit=limit, before=before)
+
+    def quarantine(self, *, limit=30, before=None):
+        """Read a bounded held-content page with the installation owner capability."""
+        return review_page(self.core.storage, self.authority, limit=limit, before=before)
+
+    def recalls(self, *, session=None, request_id=None, entry_id=None, before=None, limit=30):
+        """Read recall attempts by session or request, retaining current visibility fences."""
+        from .recall_log_view import history
+
+        return history(
+            self.core,
+            self._context(),
+            session=session,
+            request_id=request_id,
+            entry_id=entry_id,
+            before=before,
+            limit=limit,
+        )
+
+    def entries(self):
+        """List each registered entry and its current control state."""
+        from .entry_control import state_for
+
+        context = self._context()
+        with self.core.storage.read(context) as tx:
+            registered = (
+                tx.registry.entries()
+                if context.binding.installation_kind == "shared"
+                else {"local": {"name": context.binding.agent_id, "host": None}}
+            )
+            controls = {key: state_for(tx, context, entry_id=key) for key in registered}
+        grants = self.entry_grants() if self.entry_grants is not None else {}
+        return [
+            dict(id=key, state=controls[key][0], version=controls[key][1], **(details | grants.get(key, {})))
+            for key, details in registered.items()
+        ]
+
+    def set_entry_state(self, entry_id, state, *, actor):
+        """Change an entry only through the installation owner's capability."""
+        from .entry_control import change
+
+        context = self._context()
+        with self.core.storage.write(context) as tx:
+            return change(tx, context, entry_id, state, actor, self.core.clock.utc_now())
+
+    def entry(self, entry_id):
+        """Read the current entry state and bounded change history."""
+        from .entry_control import state_for
+
+        context = self._context()
+        with self.core.storage.read(context) as tx:
+            if context.binding.installation_kind == "shared":
+                if entry_id not in tx.registry.entries():
+                    raise ContractError("SOURCE_MISSING", "entry")
+            elif entry_id != "local":
+                raise ContractError("SOURCE_MISSING", "entry")
+            state, version = state_for(tx, context, entry_id=entry_id)
+            rows = tx._check().execute(
+                "SELECT version,from_state,to_state,actor,account_id,changed_at FROM entry_control_history "
+                "WHERE entry_id=? ORDER BY version DESC LIMIT 100",
+                (entry_id,),
+            )
+            history_rows = [dict(row) for row in rows]
+            latest_capture = (
+                tx._check()
+                .execute(
+                    "SELECT persisted_at,extra_json FROM source_events WHERE entry_id=? "
+                    "ORDER BY persisted_at DESC,source_id DESC LIMIT 1",
+                    (entry_id,),
+                )
+                .fetchone()
+            )
+            latest = latest_capture[0] if latest_capture is not None else None
+            capture_version = json.loads(latest_capture[1]).get("protocol_version") if latest_capture else None
+        log_entry = context.binding.agent_id if context.binding.installation_kind == "local" else entry_id
+        records = self.recalls(entry_id=log_entry, limit=10)["items"]
+        recorded = records[0] if records else None
+        activity = max((stamp for stamp in (latest, recorded and recorded.get("timestamp")) if stamp), default=None)
+        recent = sorted(
+            (
+                item
+                for kind in ("event", "claim")
+                for item in self.list(MemoryFilter(kind=kind, agent=entry_id), limit=10)["items"]
+            ),
+            key=lambda item: item.get("sort_time", ""),
+            reverse=True,
+        )
+        return {
+            "id": entry_id,
+            "state": state,
+            "version": version,
+            "history": history_rows,
+            "recent_writes": recent,
+            "recent_reads": records,
+            "last_activity": activity,
+            "version_recorded": (
+                recorded.get("protocol_version")
+                if recorded and activity == recorded.get("timestamp")
+                else capture_version
+            ),
+        }
+
+    def health(self, *, limit=30, cursor=None, deadline_seconds=2.0):
+        """Compute one page of visible health candidates without persisting it."""
+        from .health import health_page
+
+        return health_page(self.core, self._context(), limit=limit, cursor=cursor, deadline_seconds=deadline_seconds)
+
+    def health_actions(self, *, limit=30, before=None):
+        """List recent reversible decisions whose targets remain visible and unchanged."""
+        from .mutate import management_claims_private
+
+        if (
+            type(limit) is not int
+            or not 1 <= limit <= 100
+            or (before is not None and (type(before) is not int or before < 1))
+        ):
+            raise ContractError("INPUT_INVALID", "limit_or_before")
+        context = self._context()
+        items = []
+        with self.core.storage.read(context) as tx:
+            rows = (
+                tx._check()
+                .execute(
+                    "SELECT rowid,action_id,action,targets_json,recorded_at FROM management_actions "
+                    "WHERE action IN ('health_entity_merge','health_fact_merge','health_fact_choose') AND rowid<? "
+                    "ORDER BY rowid DESC LIMIT ?",
+                    (before or 2**63 - 1, limit + 1),
+                )
+                .fetchall()
+            )
+            for row in rows[:limit]:
+                targets = json.loads(row["targets_json"])
+                try:
+                    location = self._location(tx, targets[0]["ref"])[1]
+                    view = partition(tx, context, location["project_id"], location["branch_id"])
+                    heads = [view.claims.version(item["ref"], item["revision"]) for item in targets]
+                    if any(
+                        head is None or head.current_revision != item["revision"] or head.suppressed
+                        for head, item in zip(heads, targets, strict=True)
+                    ):
+                        continue
+                    if management_claims_private(view, self.core.clock, heads):
+                        continue
+                except ContractError:
+                    continue
+                items.append(
+                    dict(
+                        action_id=row["action_id"],
+                        action=row["action"],
+                        recorded_at=row["recorded_at"],
+                        versions={item["ref"]: item["revision"] for item in targets},
+                    )
+                )
+        return dict(items=items, next_before=rows[limit - 1]["rowid"] if len(rows) > limit else None)
+
+    def preview_quarantine_release(self, ref, *, expected_revision):
+        """Return the owner-only content and hash required to authorize release."""
+        return preview_release(self.core, self.authority, ref, expected_revision)
+
+    def release_quarantine(self, ref, *, expected_revision, content_sha256):
+        """Return the reviewed source to normal admission and retain its action receipt."""
+        return release_source(self.core, self.authority, ref, expected_revision, content_sha256=content_sha256)
 
     def secrets(self):
         """Find stored secret-bearing versions for the local owner, without content or writes."""
@@ -255,6 +500,144 @@ class MemoryManagement:
             "ON CONFLICT(action_id) DO NOTHING",
             (identity, action, canonical(targets), self.core.clock.utc_now(), tx.status().memory_epoch),
         )
+
+    def health_merge_entity(self, source_ref, source_revision, target_ref, target_revision, *, name=None):
+        """Apply an owner's entity decision with both reviewed fact versions."""
+        from .mutate import merge_entity_from_management
+
+        context = self._context()
+        with self.core.storage.write(context, remaining_seconds=10) as tx:
+            source_kind, source_row = self._location(tx, source_ref)
+            target_kind, target_row = self._location(tx, target_ref)
+            if source_kind != "claim" or target_kind != "claim":
+                raise ContractError("INPUT_INVALID", "claim_required")
+            audience = (source_row["scope_id"], source_row["project_id"], source_row["branch_id"])
+            if audience != (target_row["scope_id"], target_row["project_id"], target_row["branch_id"]):
+                raise ContractError("ACCESS_DENIED", "entity_audience")
+            view = partition(tx, context, audience[1], audience[2], writable=True)
+            alias = merge_entity_from_management(
+                view, self.core.clock, source_ref, source_revision, target_ref, target_revision, name=name
+            )
+            action = "management-" + uuid4().hex
+            targets = [dict(ref=alias.ref, revision=alias.revision)]
+            self._audit(tx, action, "health_entity_merge", targets)
+            return dict(action_id=action, ref=alias.ref, versions={alias.ref: alias.revision})
+
+    def _health_facts(self, first_ref, first_revision, second_ref, second_revision, *, merge):
+        from .mutate import health_apply_facts, health_fact_pair
+
+        context = self._context()
+        with self.core.storage.write(context, remaining_seconds=10) as tx:
+            first_kind, first_row = self._location(tx, first_ref)
+            second_kind, second_row = self._location(tx, second_ref)
+            audience = (first_row["scope_id"], first_row["project_id"], first_row["branch_id"])
+            if first_kind != "claim" or second_kind != "claim":
+                raise ContractError("INPUT_INVALID", "claim_required")
+            if audience != (second_row["scope_id"], second_row["project_id"], second_row["branch_id"]):
+                raise ContractError("ACCESS_DENIED", "fact_audience")
+            view = partition(tx, context, audience[1], audience[2], writable=True)
+            first, second = health_fact_pair(
+                view, self.core.clock, first_ref, first_revision, second_ref, second_revision
+            )
+            kept, replaced = health_apply_facts(view, self.core.clock, first, second, merge=merge)
+            targets = [
+                dict(ref=first.ref, before=first.revision, revision=kept.revision),
+                dict(
+                    ref=second.ref,
+                    before=second.revision,
+                    revision=replaced.revision,
+                    replacement_ref=kept.ref,
+                    replacement_revision=kept.revision,
+                ),
+            ]
+            action = "management-" + uuid4().hex
+            self._audit(tx, action, "health_fact_merge" if merge else "health_fact_choose", targets)
+            return dict(action_id=action, versions={item["ref"]: item["revision"] for item in targets})
+
+    def health_merge_facts(self, first_ref, first_revision, second_ref, second_revision):
+        """Merge a reviewed duplicate pair while retaining their separate histories."""
+        return self._health_facts(first_ref, first_revision, second_ref, second_revision, merge=True)
+
+    def health_choose_fact(self, first_ref, first_revision, second_ref, second_revision):
+        """Select the first of two reviewed, overlapping conflicting facts."""
+        return self._health_facts(first_ref, first_revision, second_ref, second_revision, merge=False)
+
+    def health_undo(self, action_id, versions):
+        """Withdraw an entity decision only while its reviewed alias is unchanged."""
+        from .mutate import management_claims_private
+
+        context = self._context()
+        with self.core.storage.write(context, remaining_seconds=10) as tx:
+            row = (
+                tx._check()
+                .execute("SELECT action,targets_json FROM management_actions WHERE action_id=?", (action_id,))
+                .fetchone()
+            )
+            if row is None or row["action"] not in {"health_entity_merge", "health_fact_merge", "health_fact_choose"}:
+                raise ContractError("SOURCE_MISSING", "health_action")
+            targets = json.loads(row["targets_json"])
+            expected = {item["ref"]: item["revision"] for item in targets}
+            if versions != expected:
+                raise ContractError("VERSION_CONFLICT", "expected_revision")
+            if row["action"] != "health_entity_merge":
+                return self._health_undo_facts(tx, context, targets)
+            ref, revision = next(iter(expected.items()))
+            _kind, location = self._location(tx, ref)
+            view = partition(tx, context, location["project_id"], location["branch_id"], writable=True)
+            head = view.claims.version(ref, revision)
+            if head is None or head.current_revision != revision:
+                raise ContractError("VERSION_CONFLICT", "expected_revision")
+            if management_claims_private(view, self.core.clock, (head,)):
+                raise ContractError("ACCESS_DENIED", "private_mode")
+            action, alias, source = correct(view, self.core.clock, ref, revision, None)
+            self._audit(tx, action, "health_entity_undo", [dict(ref=ref, revision=alias.revision, source_ref=source)])
+            return dict(action_id=action, ref=ref, versions={ref: alias.revision})
+
+    def _health_undo_facts(self, tx, context, targets):
+        from .mutate import health_restore_fact, management_claims_private
+
+        locations = [self._location(tx, item["ref"])[1] for item in targets]
+        first = locations[0]
+        view = partition(tx, context, first["project_id"], first["branch_id"], writable=True)
+        heads = [view.claims.version(item["ref"], item["revision"]) for item in targets]
+        if any(
+            head is None or head.current_revision != item["revision"] for head, item in zip(heads, targets, strict=True)
+        ):
+            raise ContractError("VERSION_CONFLICT", "expected_revision")
+        if management_claims_private(view, self.core.clock, heads):
+            raise ContractError("ACCESS_DENIED", "private_mode")
+        restored = {}
+        for head, item in zip(heads, targets, strict=True):
+            original = view.claims.version(item["ref"], item["before"])
+            if original is None:
+                raise ContractError("SOURCE_MISSING", "fact_history")
+            saved = (
+                health_restore_fact(view, self.core.clock, original, head)
+                if item["before"] != item["revision"]
+                else head
+            )
+            restored[head.ref] = saved.revision
+        action = "management-" + uuid4().hex
+        self._audit(tx, action, "health_fact_undo", [dict(ref=ref, revision=rev) for ref, rev in restored.items()])
+        return dict(action_id=action, versions=restored)
+
+    def importance(self, ref, *, expected_revision, importance=None, pinned=None):
+        """Change fact salience through the local owner's management capability."""
+        context = self._context()
+        with self.core.storage.write(context, remaining_seconds=10) as tx:
+            kind, row = self._location(tx, ref)
+            if kind != "claim":
+                raise ContractError("INPUT_INVALID", "claim_required")
+            view = partition(tx, context, row["project_id"], row["branch_id"], writable=True)
+            head = view.claims.version(ref, expected_revision)
+            if head is None:
+                raise ContractError("SOURCE_MISSING", "claim")
+            set_importance(view, head, importance=importance, pinned=pinned)
+            action = "importance-" + hashlib.sha256(canonical([ref, tx.memory_epoch()]).encode()).hexdigest()
+            self._audit(
+                tx, action, "importance", [dict(ref=ref, revision=head.revision, importance=importance, pinned=pinned)]
+            )
+        return self.show(ref)
 
     def revise(self, ref, *, expected_revision, value):
         """Correct a derived claim; a null value withdraws it while keeping history."""

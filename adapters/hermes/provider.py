@@ -5,7 +5,9 @@ from __future__ import annotations
 import logging
 import threading
 import time
+import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from functools import wraps
 from typing import Any, Dict, List, Optional
 
@@ -57,6 +59,13 @@ _MemoryProviderBase = _memory_provider_base()
 
 @dataclass
 class AdapterDiagnostics:
+    injection_tokens: int = 0
+    injection_format: str = "json"
+    injection_refs: tuple[tuple[str, str, int], ...] = ()
+    session_tokens: int = 0
+    injection_token_cap: int = 0
+    session_token_cap: int | None = None
+    delivery_reason: str | None = None
     last_prefetch_request_id: str | None = None
     last_prefetch_skip_reason: str | None = None
     last_render_ref: str | None = None
@@ -89,6 +98,11 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         clock: Any | None = None,
     ) -> None:
         self._lock = threading.RLock()
+        self._brief_lock = threading.Lock()
+        self._brief_compactions: dict[str, int] = {}
+        self._brief_sequences: dict[str, int] = {}
+        self._brief_epoch = uuid.uuid4().hex
+        self._brief_compaction_times: dict[str, str] = {}
         #: Guards only ``_interim_said``/``_steer_said`` and the turn they belong to, never across I/O:
         #: ``post_llm_call`` runs before Hermes sends the reply and must not wait behind a capture.
         self._said_lock = threading.Lock()
@@ -123,6 +137,9 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         #: off until the refs reset rather than run with an incomplete fence.
         self._current_source_refs_overflow = False
         self._current_task_message = ""
+        # Per-turn receipt counts survive tool diagnostic updates without retaining source text.
+        self._private_span_receipts: dict[tuple[str, str], int] = {}
+        self._pending_private_receipt: tuple[str, str] | None = None
         self._retry = CaptureRetry(self)
         self._writer = CaptureWriter(self)
         self._turns = TurnCapture(self)
@@ -249,6 +266,13 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         with self._sync_lock:
             self._turns.sync(user_content, assistant_content, session_id=session_id, messages=messages)
 
+    @_serialized_host_event
+    def on_memory_write(self, action: str, target: str, content: str, metadata: dict[str, Any] | None = None) -> None:
+        """Mirror the native file write using its reported writer, without owner attestation."""
+        from .native_memory import record_memory_write
+
+        record_memory_write(self, action, target, content, metadata)
+
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         # One capture pass (``steer_deadline``) for the steers and the retry inside ``end``. The steers' store
         # I/O runs without the lock; ``end`` then holds it, serialized with shutdown, and never drains. The worker
@@ -284,11 +308,20 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                 }
             self._retry.write_observed(deadline=deadline)
             self._binding.bounded_message_gaps(messages, hook="on_pre_compress")
+            session = self._effective_session_id(str(kwargs.get("session_id") or ""))
+            sequence = self._brief_sequences.get(session, 0) + 1
+            self._brief_sequences[session] = sequence
+            self._brief_compactions[session] = sequence
+            clock = self._core.clock if self._core is not None else self._clock
+            self._brief_compaction_times[session] = (
+                clock.utc_now() if clock is not None else datetime.now(UTC).isoformat()
+            )
         # The compression takes the steers it summarizes out of the conversation; the turn's end would not find them.
         # Written outside the hook's hold of the lock, so their store I/O runs without it.
         self._turns.steers(
             messages, session_id=str(kwargs.get("session_id") or ""), hook="on_pre_compress", deadline=deadline
         )
+
         with self._lock, self._calls.holding("on_pre_compress"):
             self._binding.wake_worker()
         return ""
@@ -311,12 +344,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             self._retry.wake.set()
             seconds = min(SHUTDOWN_RETRY_SECONDS, max(CAPTURE_TIMEOUT_S, deadline - time.monotonic()))
             pass_deadline = time.monotonic() + seconds
-            try:
-                self._retry.write_buffered(seconds=seconds, force=True)
-            except Exception as exc:  # noqa: BLE001 - the shutdown goes on; what is left is said below
-                _log.warning("scope-recall: a retry of buffered captures failed at shutdown (%s)", type(exc).__name__)
-            pending = self._retry.pending_identities()
-            kept_on_disk, _retained = self._retry.keep_all_on_disk(guard=self._retry.private_guard)
+            pending, kept_on_disk = self._retry.finish(seconds=seconds)
             # Read only while one more store call fits the pass's time (``fits``): a count is not worth running past it.
             durable_pending = (
                 self._retry.durable_pending_count(remaining_seconds=pass_deadline - time.monotonic())

@@ -11,12 +11,15 @@ import sys
 import threading
 import time
 from collections import deque
-from contextlib import redirect_stdout
+from contextlib import ExitStack, nullcontext, redirect_stdout
 from io import StringIO
 from pathlib import Path
 
+from ..core.file_lock import advisory_file_lock
 from .backup_upkeep import BACKUP_JOB_SECONDS, record_backup_job_failure
+from .instance_config import RuntimeInstanceConfig
 from .scheduling import operator_paused, supervise
+from .store_maintenance import STORE_UPGRADE_SECONDS, store_upgrade_pending
 from .validation import utc_now
 from .worker_entry import backup_pause_check, load_config, persist_worker_status
 from .worker_launch import (
@@ -219,8 +222,8 @@ def _spawn_worker(
         str(config_path),
         repr(deadline_epoch),
     ]
-    if job_kind == "backup":
-        command.append("backup")
+    if job_kind in {"backup", "upgrade"}:
+        command.append(job_kind)
     return subprocess.Popen(
         command,
         cwd=str(Path(__file__).resolve().parents[1]),
@@ -348,6 +351,39 @@ def _relay_output(stdout: str, stderr: str, result_sink: dict | None) -> None:
         sys.stderr.flush()
 
 
+def _job_budget(config: RuntimeInstanceConfig, job_kind: str, timeout_seconds: float | None) -> float:
+    """Choose the independent job window before applying an owner's remaining budget."""
+    budgets = {"upgrade": STORE_UPGRADE_SECONDS, "backup": BACKUP_JOB_SECONDS}
+    budget = float(budgets.get(job_kind, config.drain_seconds))
+    return budget if timeout_seconds is None else min(budget, timeout_seconds)
+
+
+def _maintenance_ownership(config, job_kind: str):
+    """Use the existing worker lock to serialize schema workers across host processes."""
+    return (
+        advisory_file_lock(config.binding.data_directory / "runtime-worker.lock", timeout_seconds=0)
+        if job_kind == "upgrade"
+        else nullcontext()
+    )
+
+
+def _job_failure(exc: Exception) -> tuple[dict, int]:
+    if isinstance(exc, TimeoutError):
+        return _degraded("worker_wait_timeout"), 75
+    return _degraded(f"watchdog_error:{type(exc).__name__}"), 1
+
+
+def _job_deadline(config, job_kind, after_pid, delay_seconds, timeout_seconds) -> float | None:
+    """Delay the wake, then share one job window with its predecessor wait."""
+    validate_wake_arguments(after_pid, delay_seconds)
+    if delay_seconds:
+        time.sleep(delay_seconds)
+    deadline = time.monotonic() + _job_budget(config, job_kind, timeout_seconds)
+    if after_pid is not None and not _wait_for_prior_worker(after_pid, deadline):
+        return None
+    return deadline
+
+
 def _run_once(
     config_path: Path,
     python_executable: Path,
@@ -364,6 +400,7 @@ def _run_once(
     child: subprocess.Popen[str] | None = None
     job: _OwnedWindowsJob | None = None
     tree_stopped = False
+    ownership = ExitStack()
 
     def save(payload, exit_code) -> None:
         if result_sink is not None:
@@ -388,25 +425,16 @@ def _run_once(
 
     try:
         config = load_config(config_path)
-        validate_wake_arguments(after_pid, delay_seconds)
-        # One detached delayed wake survives host shutdown. It never spawns
-        # another wake; its ordinary daily/model budgets remain unchanged.
-        if delay_seconds:
-            time.sleep(delay_seconds)
-        budget = float(BACKUP_JOB_SECONDS if job_kind == "backup" else config.drain_seconds)
-        if timeout_seconds is not None:
-            budget = min(budget, timeout_seconds)
-        # One deadline bounds the whole pass, a wait for the predecessor
-        # included.  The child is handed it and finishes inside it.
-        deadline = time.monotonic() + budget
-        if after_pid is not None and not _wait_for_prior_worker(after_pid, deadline):
+        deadline = _job_deadline(config, job_kind, after_pid, delay_seconds, timeout_seconds)
+        if deadline is None:
             started_at = utc_now()
             return report(_degraded("worker_followup_wait_timeout"), 124)
         started_at = utc_now()
+        ownership.enter_context(_maintenance_ownership(config, job_kind))
         job = _OwnedWindowsJob()
         child = (
             _spawn_worker(config_path, python_executable, deadline, job_kind=job_kind)
-            if job_kind == "backup"
+            if job_kind in {"backup", "upgrade"}
             else _spawn_worker(config_path, python_executable, deadline)
         )
         if not job.assign(child):
@@ -451,7 +479,8 @@ def _run_once(
             save(failure, int(child.returncode))
         return int(child.returncode or 0)
     except Exception as exc:
-        return report(_degraded(f"watchdog_error:{type(exc).__name__}"), 1)
+        payload, code = _job_failure(exc)
+        return report(payload, code)
     finally:
         if child is not None and not tree_stopped:
             _kill_tree(child, job)
@@ -459,6 +488,7 @@ def _run_once(
             job.close()
         if cleanup_config:
             _remove_ephemeral_config(config_path)
+        ownership.close()
 
 
 def run(
@@ -468,10 +498,33 @@ def run(
     cleanup_config: bool,
     after_pid: int | None = None,
     delay_seconds: float = 0.0,
+    upgrade_only: bool = False,
 ) -> int:
     passes = 0
     try:
         config = load_config(config_path)
+        upgrade_result = {}
+        if store_upgrade_pending(config.binding):
+            if operator_paused(config):
+                _emit({"status": "paused", "job_kind": "upgrade", "capability_gaps": []})
+                return 0
+            with redirect_stdout(StringIO()):
+                code = _run_once(
+                    config_path,
+                    python_executable,
+                    cleanup_config=False,
+                    job_kind="upgrade",
+                    after_pid=after_pid,
+                    delay_seconds=delay_seconds,
+                    result_sink=upgrade_result,
+                )
+            if code or upgrade_result.get("status") == "paused":
+                _emit(upgrade_result)
+                return code
+            after_pid, delay_seconds = None, 0.0
+        if upgrade_only:
+            _emit(upgrade_result or {"status": "ok", "job_kind": "upgrade", "capability_gaps": []})
+            return 0
         if not config.supervisor_enabled:
             code = _run_once(
                 config_path, python_executable, cleanup_config=False, after_pid=after_pid, delay_seconds=delay_seconds
@@ -530,6 +583,9 @@ def run(
         # missing or unreadable one would surface as an opaque watchdog_error.
         # When no pass ever started, run one bounded pass directly: the worker
         # names the real cause.  The delay is dropped; the wake already passed.
+        if upgrade_only:
+            _emit(_degraded(f"watchdog_error:{type(exc).__name__}"))
+            return 1
         if not passes:
             return _run_once(
                 config_path, python_executable, cleanup_config=False, after_pid=after_pid, delay_seconds=0.0
@@ -546,6 +602,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", required=True)
     parser.add_argument("--python", required=True)
     parser.add_argument("--cleanup-config", action="store_true")
+    parser.add_argument("--upgrade-only", action="store_true")
     parser.add_argument("--after-pid", type=int)
     parser.add_argument("--delay-seconds", type=float, default=0.0)
     args = parser.parse_args(argv)
@@ -573,6 +630,7 @@ def main(argv: list[str] | None = None) -> int:
         cleanup_config=bool(args.cleanup_config),
         after_pid=args.after_pid,
         delay_seconds=args.delay_seconds,
+        upgrade_only=bool(args.upgrade_only),
     )
 
 

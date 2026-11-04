@@ -5,6 +5,7 @@ a reader, are tested where they are built.  Sources are synthetic.
 """
 
 import itertools
+import json
 import os
 import shutil
 import sqlite3
@@ -370,7 +371,7 @@ def test_a_local_recall_packet_carries_no_entries(tmp_path):
 
 def test_an_item_with_evidence_from_several_entries_names_each_once(tmp_path):
     """A claim or episode lists every entry behind its evidence: once each, ordered."""
-    from scope_recall.core.retrieval_hydration import evidence_entries
+    from scope_recall.core.retrieval_hydration import _evidence_metadata
 
     binding = shared_binding(tmp_path / "TEST-shared")
     core = _core(binding)
@@ -382,12 +383,15 @@ def test_an_item_with_evidence_from_several_entries_names_each_once(tmp_path):
     c = _record(core, shared_context(binding, "agent4"), "TEST 第三句。", "TEST-many/3")
     refs = [f"{r.ref}@{r.revision}" for r in (a, b, c)] + ["not-a-source-ref"]
     with core.storage.read(shared_context(binding)) as tx:
-        assert evidence_entries(tx, refs) == [{"id": "agent3", "name": "天三"}, {"id": "agent4", "name": "天四"}]
+        assert json.loads(dict(_evidence_metadata(tx, tuple(refs)))["entries"]) == [
+            {"id": "agent3", "name": "天三"},
+            {"id": "agent4", "name": "天四"},
+        ]
     local = context(tmp_path / "TEST-local")
     local_core = _core(local.binding)
     d = _record(local_core, local, "TEST 本地一句。", "TEST-many/4")
     with local_core.storage.read(local) as tx:
-        assert evidence_entries(tx, [f"{d.ref}@{d.revision}"]) == []
+        assert "entries" not in dict(_evidence_metadata(tx, (f"{d.ref}@{d.revision}",)))
 
 
 # --- writers in separate processes take turns ----------------------------------------------

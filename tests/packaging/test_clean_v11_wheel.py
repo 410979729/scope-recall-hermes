@@ -166,8 +166,8 @@ def test_clean_v11_wheel_exact_allowlist(built_wheel: Path) -> None:
     assert f"Version: {allowlist['package_version']}" in metadata
 
 
-def test_vector_extra_dependencies_exclude_android(built_wheel: Path) -> None:
-    """The wheel keeps its dependency bounds and excludes only the vector extra on Android."""
+def test_vector_dependencies_keep_legacy_reader_optional(built_wheel: Path) -> None:
+    """NumPy serves the base backend; legacy readers stay optional and native wheels exclude Android."""
     with zipfile.ZipFile(built_wheel) as archive:
         name = next(name for name in archive.namelist() if name.endswith(".dist-info/METADATA"))
         metadata = Parser().parsestr(archive.read(name).decode("utf-8"))
@@ -190,6 +190,16 @@ def test_vector_extra_dependencies_exclude_android(built_wheel: Path) -> None:
         for platform in ("win32", "linux", "darwin"):
             assert requirement.marker.evaluate({"sys_platform": platform, "extra": "lancedb"})
             assert not requirement.marker.evaluate({"sys_platform": platform, "extra": ""})
+    native = {
+        requirement.name: requirement for requirement in requirements if requirement.name in {"sqlite-vec", "numpy"}
+    }
+    assert set(native) == {"numpy"}
+    assert project["optional-dependencies"]["vectors"] == []
+    requirement = native["numpy"]
+    assert requirement.marker is not None
+    assert not requirement.marker.evaluate({"sys_platform": "android", "extra": ""})
+    for platform in ("win32", "linux", "darwin"):
+        assert requirement.marker.evaluate({"sys_platform": platform, "extra": ""})
 
 
 def test_clean_v11_wheel_has_no_private_or_legacy_artifacts(built_wheel: Path) -> None:
@@ -420,10 +430,75 @@ def test_clean_v11_wheel_installed_worker_bootstrap_gate(installed_venv: dict[st
 
 
 def test_clean_v11_wheel_hermes_plugin_yaml_semver(built_wheel: Path) -> None:
-    allowlist = _load_allowlist()
-    manifest_version = allowlist["package_version"].replace(".dev", "-dev.", 1)
+    expected = _load_allowlist()["package_version"].replace(".dev", "-dev.", 1).replace("rc", "-rc.", 1)
 
     with zipfile.ZipFile(built_wheel) as archive:
         plugin_yaml = archive.read("scope_recall/adapters/hermes/plugin.yaml").decode("utf-8")
 
-    assert re.search(rf"^version:\s*{re.escape(manifest_version)}\s*$", plugin_yaml, re.MULTILINE)
+    assert re.search(rf"^version:\s*{re.escape(expected)}\s*$", plugin_yaml, re.MULTILINE)
+
+
+def test_all_prompt_resources_and_extraction_format_from_installed_wheel(installed_venv):
+    script = r"""
+import json
+from importlib.resources import files
+from pathlib import Path
+from scope_recall.core.consolidate import consolidation_messages
+from scope_recall.core.language_resources import prompt_text
+from scope_recall.core.source_records import StoredSource
+import scope_recall
+
+root = files("scope_recall")
+names = ("consolidation", "candidate", "fragment", "repair", "support", "merge",
+         "entity", "importance", "session_summary")
+for name in names:
+    assert prompt_text(name)
+    examples = json.loads(root.joinpath(f"prompts/{name}.examples.json").read_text(encoding="utf-8"))
+    assert examples and all("input" in item and "expected" in item for item in examples)
+for name in ("credentials", "query_time", "aliases"):
+    assert json.loads(root.joinpath(f"prompts/{name}.json").read_text(encoding="utf-8"))
+source = StoredSource("TEST-source", 1, "TEST-scope", "TEST-session", None, None,
+    dict(origin="human_direct", content="I prefer deep blue.", occurred_at="2026-09-06T12:00:00Z"),
+    "0" * 64, False)
+messages = consolidation_messages((source,), budget=64000)
+assert json.loads(messages[-1]["content"])["sources"][0]["content"] == "I prefer deep blue."
+assert "{schema}" not in messages[0]["content"] and '"properties"' in messages[0]["content"]
+print(json.dumps({"prompts": len(names), "examples": len(names), "formatted": True,
+                  "package": str(Path(scope_recall.__file__).resolve())}))
+"""
+    result = _run_clean_child(installed_venv["python"], cwd=_outside_repo_cwd(), args=["-c", script])
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    report = json.loads(result.stdout)
+    assert report["prompts"] == report["examples"] == 9
+    assert report["formatted"]
+    assert not Path(report["package"]).is_relative_to(REPO_ROOT)
+
+
+@pytest.mark.parametrize("dotted", [False, True])
+def test_installation_ignores_retired_build_outputs_without_deleting_them(tmp_path, monkeypatch, dotted):
+    """A reused build directory cannot add modules or resources to the wheel."""
+    from setuptools import Distribution
+    from setuptools.command.install_lib import install_lib
+
+    from packaging_hooks import v11_build
+
+    allowlist = {"python_modules": ["runtime/vector_port.py"], "package_data": ["vector/model-capabilities.json"]}
+    monkeypatch.setattr(v11_build, "_load_allowlist", lambda: allowlist)
+    build, destination = tmp_path / "build", tmp_path / "installed"
+    accepted = {"scope_recall/" + path for paths in allowlist.values() for path in paths}
+    retired = {"scope_recall/runtime/lance_port.py", "scope_recall/vector/retired-data.bin"}
+    for name in accepted | retired:
+        path = build / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"TEST artifact")
+    classes = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["setuptools"][
+        "cmdclass"
+    ]
+    target = classes.get("install_lib")
+    command_class = install_lib if target is None else getattr(v11_build, target.rsplit(".", 1)[1])
+    command = command_class(Distribution())
+    command.build_dir = str(build)
+    command.install_dir = str(destination) + (os.sep + "." if dotted else "")
+    command.copy_tree(str(build), command.install_dir)
+    assert {path.relative_to(destination).as_posix() for path in destination.rglob("*") if path.is_file()} == accepted
+    assert all((build / name).read_bytes() == b"TEST artifact" for name in accepted | retired)

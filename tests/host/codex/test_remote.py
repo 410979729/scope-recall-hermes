@@ -12,6 +12,8 @@ import logging
 import os
 import socket
 import sqlite3
+import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -76,6 +78,22 @@ def store(tmp_path):
         )
         homes[host] = client
     return root, homes
+
+
+@pytest.fixture
+def committed_prompt_capture(monkeypatch):
+    """Wait for prompt commits before clock assertions inspect stored sources."""
+    from scope_recall.adapters.clients.handler import CodexHookHandler
+
+    finish_capture = CodexHookHandler.finish_prompt_capture
+
+    def wait_for_capture(self):
+        # The remote hook may return with capture queued; clock assertions read committed sources.
+        if self.pending_capture is not None:
+            assert self.pending_capture.done.wait(2)
+        finish_capture(self)
+
+    monkeypatch.setattr(CodexHookHandler, "finish_prompt_capture", wait_for_capture)
 
 
 def _free_port() -> int:
@@ -153,6 +171,145 @@ def _rows(root: Path, entry: str) -> list[tuple]:
 
 def _hook(config: dict, payload: dict) -> dict:
     return remote_client.run_hook(config, json.dumps(payload).encode("utf-8"))
+
+
+def test_remote_compaction_mark_is_forwarded_until_server_confirms(tmp_path, monkeypatch):
+    config = _client(tmp_path, "claude-code", 12345)
+    sent = []
+    acknowledge = [False]
+
+    def send(_config, body, _until):
+        sent.append(body)
+        return {"result": {}, "compaction_ack": body.get("compaction_seq") if acknowledge[0] else None}
+
+    monkeypatch.setattr(remote_client, "_send_checked", send)
+    start = {"hook_event_name": "SessionStart", "session_id": "TEST-remote-compact", "cwd": str(tmp_path)}
+    _hook(config, {**start, "source": "compact"})
+    mark = config["state_dir"] / "compactions" / hashlib.sha256(start["session_id"].encode()).hexdigest()[:32]
+    assert mark.exists()
+    first = sent[-1]["compacted_at"]
+    _hook(config, start)
+    assert sent[-1]["compacted_at"] == first
+    acknowledge[0] = True
+    _hook(config, start)
+    assert not mark.exists()
+
+
+def test_remote_spool_replay_carries_pending_compaction(tmp_path, monkeypatch):
+    from scope_recall.adapters.clients.session_marks import mark_compaction
+
+    config = _client(tmp_path, "codex", 12345)
+    session = "TEST-spooled-compact"
+    stamp = mark_compaction(config, session, "2026-09-01T00:00:00Z")
+    payload = {"hook_event_name": "UserPromptSubmit", "session_id": session, "prompt": "TEST question"}
+    assert remote_client._spool(config, payload, "2026-09-01T00:00:01Z") is not None
+    bodies = []
+
+    def post(_config, body, _timeout):
+        bodies.append(body)
+        return {"retry": False}
+
+    monkeypatch.setattr(remote_client, "_post", post)
+    assert remote_client.flush_spool(config) == 1
+    assert bodies[0]["compaction_seq"] == stamp
+
+
+def test_remote_compaction_survives_client_clock_behind_server(served, tmp_path, monkeypatch):
+    from tests.host.codex.test_shared_client import _LEASE_HOLDER, _seed_shared_brief
+
+    root, homes, ports = served
+    owner = next(row for row in read_shared_payload(root)["entries"][0]["audiences"] if row["kind"] == "owner_private")
+    claim = _seed_shared_brief((root, {}, homes["claude-code"], owner["capture_scope_id"]))
+    config = _client(tmp_path, "claude-code", ports["claude-code"])
+    start = {"hook_event_name": "SessionStart", "session_id": "TEST-behind-clock", "cwd": str(tmp_path)}
+    assert claim.ref in _hook(config, start)["hookSpecificOutput"]["additionalContext"]
+    holder = subprocess.Popen(
+        [sys.executable, "-c", _LEASE_HOLDER, str(root)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert holder.stdout.readline().strip() == "holding"
+        monkeypatch.setattr(remote_client, "_now", lambda: (datetime.now(UTC) - timedelta(days=1)).isoformat())
+        assert claim.ref in _hook(config, {**start, "source": "compact"})["hookSpecificOutput"]["additionalContext"]
+        assert claim.ref in _hook(config, start)["hookSpecificOutput"]["additionalContext"]
+    finally:
+        holder.communicate(input="release\n", timeout=30)
+
+
+@pytest.mark.parametrize("host", ["claude-code", "codex"])
+def test_remote_pending_compaction_is_cleared_by_next_stop(served, tmp_path, host):
+    from tests.host.codex.test_shared_client import _LEASE_HOLDER, _seed_shared_brief
+
+    root, homes, ports = served
+    owner = next(row for row in read_shared_payload(root)["entries"][0]["audiences"] if row["kind"] == "owner_private")
+    claim = _seed_shared_brief((root, {}, homes["claude-code"], owner["capture_scope_id"]))
+    config = _client(tmp_path, host, ports[host])
+    start = {"hook_event_name": "SessionStart", "session_id": "TEST-remote-stop", "cwd": str(tmp_path)}
+    assert claim.ref in _hook(config, start)["hookSpecificOutput"]["additionalContext"]
+    holder = subprocess.Popen(
+        [sys.executable, "-c", _LEASE_HOLDER, str(root)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert holder.stdout.readline().strip() == "holding"
+        _hook(config, {**start, "source": "compact"})
+    finally:
+        holder.communicate(input="release\n", timeout=30)
+    mark = config["state_dir"] / "compactions" / hashlib.sha256(start["session_id"].encode()).hexdigest()[:32]
+    assert mark.exists()
+    _hook(config, {**start, "hook_event_name": "Stop", "last_assistant_message": "TEST answer"})
+    assert not mark.exists()
+    with closing(sqlite3.connect(root / "memory.sqlite3")) as db:
+        assert (
+            db.execute("SELECT count(*) FROM session_brief_injections WHERE object_ref=?", (claim.ref,)).fetchone()[0]
+            == 0
+        )
+
+
+@pytest.mark.parametrize("host", ["claude-code", "codex"])
+def test_remote_compaction_survives_a_writer_held_by_another_process(served, tmp_path, host, monkeypatch):
+    from tests.host.codex.test_shared_client import _LEASE_HOLDER, _seed_shared_brief
+
+    root, homes, ports = served
+    owner = next(row for row in read_shared_payload(root)["entries"][0]["audiences"] if row["kind"] == "owner_private")
+    claim = _seed_shared_brief((root, {}, homes["claude-code"], owner["capture_scope_id"]))
+    config = _client(tmp_path, host, ports[host])
+    responses = []
+    post = remote_client._post
+
+    def recorded(*args, **kwargs):
+        answer = post(*args, **kwargs)
+        responses.append(answer)
+        return answer
+
+    monkeypatch.setattr(remote_client, "_post", recorded)
+    start = {"hook_event_name": "SessionStart", "session_id": "TEST-remote-locked", "cwd": str(tmp_path)}
+    holder = None
+    try:
+        assert claim.ref in _hook(config, start)["hookSpecificOutput"]["additionalContext"]
+        holder = subprocess.Popen(
+            [sys.executable, "-c", _LEASE_HOLDER, str(root)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+        )
+        assert holder.stdout.readline().strip() == "holding"
+        assert claim.ref in _hook(config, {**start, "source": "compact"})["hookSpecificOutput"]["additionalContext"]
+        assert claim.ref in _hook(config, start)["hookSpecificOutput"]["additionalContext"]
+        question = {
+            **start,
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "TEST-project 配色",
+            "prompt_id": "TEST-remote-prompt",
+            "turn_id": "TEST-remote-turn",
+        }
+        answer = _hook(config, question)
+        assert claim.ref in answer.get("hookSpecificOutput", {}).get("additionalContext", ""), responses[-1]
+        holder.stdin.write("release\n")
+        holder.stdin.flush()
+        holder.communicate(timeout=30)
+        holder = None
+        assert claim.ref in _hook(config, start)["hookSpecificOutput"]["additionalContext"]
+        mark = config["state_dir"] / "compactions" / hashlib.sha256(start["session_id"].encode()).hexdigest()[:32]
+        assert not mark.exists()
+    finally:
+        if holder is not None:
+            holder.communicate(input="release\n", timeout=30)
 
 
 def _moments():
@@ -468,7 +625,9 @@ def test_a_remote_client_waits_as_long_as_a_local_one():
     assert codex == {event: install_codex.HOOK_TIMEOUTS[event] for event in codex}
     assert codex["UserPromptSubmit"] == install_claude_code.HOOK_TIMEOUTS["UserPromptSubmit"]
     assert max(install_codex.HOOK_TIMEOUTS["SessionEnd"], install_codex.HOOK_TIMEOUTS["Interrupt"]) <= 3
-    assert remote_client.HOOK_TIMEOUTS["workbuddy"] == remote_client.HOOK_TIMEOUTS["claude-code"]
+    workbuddy = remote_client.HOOK_TIMEOUTS["workbuddy"]
+    assert "SessionStart" not in workbuddy
+    assert workbuddy == {event: remote_client.HOOK_TIMEOUTS["claude-code"][event] for event in workbuddy}
 
 
 @pytest.mark.parametrize("host", remote_client.HOSTS)
@@ -737,37 +896,6 @@ def test_a_failed_recall_s_cause_reaches_the_server_log(served, tmp_path, monkey
     assert "hook UserPromptSubmit: recall_exception (ContractError:INPUT_INVALID), record through None" in log
 
 
-def test_a_server_that_cannot_start_a_vector_helper_ahead_still_serves(store, monkeypatch):
-    """Keeping a helper ready is a speed-up: failing to start one must not keep the entry from being served."""
-    import sys as system
-    import types
-
-    from scope_recall.vector import process_store
-
-    root, homes = store
-    remote_server.write_server_config(
-        homes["codex"], "codex", listen="127.0.0.1", port=_free_port(), token_sha256="0" * 64
-    )
-    config = remote_server.load_server_config(homes["codex"], "codex")
-    served = []
-    monkeypatch.setattr(system, "platform", "win32")
-    monkeypatch.setitem(system.modules, "uvicorn", types.SimpleNamespace(run=lambda app, **kwargs: served.append(app)))
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: (_ for _ in ()).throw(OSError("TEST no helper")))
-    root_logger = logging.getLogger()
-    level = root_logger.level
-    try:
-        remote_server.serve(config)
-    finally:
-        for handler in list(root_logger.handlers):
-            if isinstance(handler, logging.handlers.RotatingFileHandler):
-                root_logger.removeHandler(handler)
-                handler.close()
-        root_logger.setLevel(level)
-    assert len(served) == 1
-    log = (homes["codex"] / "scope-recall" / remote_server.LOG_NAME).read_text(encoding="utf-8")
-    assert "could not start a vector helper ahead: OSError" in log
-
-
 def test_the_server_warms_its_kept_handler_when_it_starts(store, monkeypatch):
     """The kept handler is warmed when the server starts: made at the first prompt, it would open the table inside
     that prompt's recall, and the first prompts would recall by words alone."""
@@ -775,7 +903,6 @@ def test_the_server_warms_its_kept_handler_when_it_starts(store, monkeypatch):
     import types
 
     from scope_recall.adapters.clients import local_endpoint
-    from scope_recall.vector import process_store
 
     root, homes = store
     remote_server.write_server_config(
@@ -784,7 +911,6 @@ def test_the_server_warms_its_kept_handler_when_it_starts(store, monkeypatch):
     config = remote_server.load_server_config(homes["codex"], "codex")
     warmed = []
     monkeypatch.setitem(system.modules, "uvicorn", types.SimpleNamespace(run=lambda app, **kwargs: None))
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
     monkeypatch.setattr(local_endpoint.KeptRecaller, "warm", lambda self, *args: warmed.append(self))
     root_logger = logging.getLogger()
     level = root_logger.level
@@ -798,39 +924,6 @@ def test_the_server_warms_its_kept_handler_when_it_starts(store, monkeypatch):
                 handler.close()
         root_logger.setLevel(level)
     assert len(warmed) == 1, "serve warms; a test's app does not"
-
-
-def test_the_server_shares_one_vector_store_among_its_handlers(store, monkeypatch):
-    """A prompt that comes while the kept handler is busy gets a handler whose store would start a LanceDB helper of
-    its own, and parallel sub-agents would lose their vector search to that helper's start.  The server shares its
-    stores before anything builds one."""
-    import sys as system
-    import types
-
-    from scope_recall.adapters.clients import local_endpoint
-    from scope_recall.vector import process_store
-
-    root, homes = store
-    remote_server.write_server_config(
-        homes["codex"], "codex", listen="127.0.0.1", port=_free_port(), token_sha256="0" * 64
-    )
-    config = remote_server.load_server_config(homes["codex"], "codex")
-    seen = []
-    monkeypatch.setattr(system, "platform", "win32")
-    monkeypatch.setitem(system.modules, "uvicorn", types.SimpleNamespace(run=lambda app, **kwargs: None))
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: seen.append(process_store._sharing))
-    monkeypatch.setattr(local_endpoint.KeptRecaller, "warm", lambda self, *args: seen.append(process_store._sharing))
-    root_logger = logging.getLogger()
-    level = root_logger.level
-    try:
-        remote_server.serve(config)
-    finally:
-        for handler in list(root_logger.handlers):
-            if isinstance(handler, logging.handlers.RotatingFileHandler):
-                root_logger.removeHandler(handler)
-                handler.close()
-        root_logger.setLevel(level)
-    assert seen == [True, True], "sharing before the spare helper and before the kept handler is warmed"
 
 
 def test_a_recall_without_its_vector_search_is_named_in_the_server_log(served, tmp_path, monkeypatch):
@@ -961,7 +1054,7 @@ def test_a_request_refused_for_good_neither_stays_nor_stops_the_spool(served, tm
     assert "refused for good: not kept" in (config["state_dir"] / "remote-client.log").read_text(encoding="utf-8")
 
 
-def test_a_client_clock_ahead_neither_hides_its_messages_nor_holds_back_their_work(store):
+def test_a_client_clock_ahead_neither_hides_its_messages_nor_holds_back_their_work(store, committed_prompt_capture):
     """A recall finds nothing dated after its now, and the time a hook carried set when its work fell due: a message
     dated a day ahead by a fast client clock would be found by no recall for a day and embedded a day late.  A time more
     than a minute ahead is this machine's now; within the minute it is kept as sent, so a correct client's hook sent
@@ -1149,7 +1242,7 @@ def test_a_remote_prompt_s_recall_leaves_out_what_the_client_s_model_still_holds
     assert "QX-17。" in held and "KZ-42。" not in held, held
 
 
-def test_a_fast_client_s_turn_keeps_its_order(store, monkeypatch):
+def test_a_fast_client_s_turn_keeps_its_order(store, monkeypatch, committed_prompt_capture):
     """Clamped one time at a time, a client 90 s fast lost its order: a reply said 10 s into the turn kept its time
     (within the minute of the Stop that sent it), the next prompt was clamped to now, and the reply sorted after it
     and joined the next turn.  Every time a request carries moves back by the same lead."""
@@ -2014,3 +2107,77 @@ def test_embedding_failure_phase_reaches_remote_hook_log(served, tmp_path, monke
     assert trace["vector_started"] == trace["vector_finished"] == trace["vector_packet"] == 0
     assert f'"embedding_failure_phase":"{phase}"' in caplog.text
     assert '"embedding_ms":17' in caplog.text
+
+
+def test_remote_compaction_survives_clock_rollback_and_lost_counter(served, tmp_path, monkeypatch):
+    from scope_recall.adapters.clients.session_marks import mark_path
+
+    from tests.host.codex.test_shared_client import _seed_shared_brief
+
+    root, homes, ports = served
+    owner = next(row for row in read_shared_payload(root)["entries"][0]["audiences"] if row["kind"] == "owner_private")
+    claim = _seed_shared_brief((root, {}, homes["claude-code"], owner["capture_scope_id"]))
+    config = _client(tmp_path, "claude-code", ports["claude-code"])
+    start = {"hook_event_name": "SessionStart", "session_id": "TEST-remote-clock-back", "cwd": str(tmp_path)}
+    assert claim.ref in _hook(config, start)["hookSpecificOutput"]["additionalContext"]
+    now = datetime.now(UTC)
+    monkeypatch.setattr(remote_client, "_now", lambda: now.isoformat())
+    assert claim.ref in _hook(config, {**start, "source": "compact"})["hookSpecificOutput"]["additionalContext"]
+    monkeypatch.setattr(remote_client, "_now", lambda: (now - timedelta(seconds=1)).isoformat())
+    assert claim.ref in _hook(config, {**start, "source": "compact"})["hookSpecificOutput"]["additionalContext"]
+    mark_path(config, "compaction-counters", start["session_id"]).unlink()
+    assert claim.ref in _hook(config, {**start, "source": "compact"})["hookSpecificOutput"]["additionalContext"]
+    with closing(sqlite3.connect(root / "memory.sqlite3")) as db:
+        assert (
+            db.execute(
+                "SELECT compacted_seq FROM session_brief_sessions WHERE session_id LIKE ?",
+                ("%:" + start["session_id"],),
+            ).fetchone()[0]
+            == 3
+        )
+    counter = mark_path(config, "compaction-counters", start["session_id"])
+    assert json.loads(counter.read_text(encoding="utf8"))["seq"] == 3
+    from tests.host.codex.test_shared_client import _LEASE_HOLDER
+
+    counter.unlink()
+    holder = subprocess.Popen(
+        [sys.executable, "-c", _LEASE_HOLDER, str(root)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert holder.stdout.readline().strip() == "holding"
+        assert claim.ref in _hook(config, {**start, "source": "compact"})["hookSpecificOutput"]["additionalContext"]
+        assert json.loads(counter.read_text(encoding="utf8"))["seq"] == 4
+        question = {
+            **start,
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "TEST-project ??",
+            "prompt_id": "TEST-rollback-prompt",
+            "turn_id": "TEST-rollback-turn",
+        }
+        answer = _hook(config, question)
+        assert claim.ref in answer.get("hookSpecificOutput", {}).get("additionalContext", "")
+    finally:
+        holder.communicate(input="release\n", timeout=30)
+    assert claim.ref in _hook(config, start)["hookSpecificOutput"]["additionalContext"]
+
+
+def test_remote_hook_receipt_reports_final_injection_usage(store):
+    from scope_recall.core.recall_budget import estimate_tokens
+
+    from tests.host.codex.test_shared_client import _seed_shared_brief
+
+    root, homes = store
+    scope = read_shared_payload(root)["entries"][0]["audiences"][0]["capture_scope_id"]
+    _seed_shared_brief((root, {}, homes["claude-code"], scope))
+    remote_server.write_server_config(
+        homes["claude-code"], "claude-code", listen="127.0.0.1", port=_free_port(), token_sha256="0" * 64
+    )
+    config = remote_server.load_server_config(homes["claude-code"], "claude-code")
+    answer = remote_server.handle_request(
+        config,
+        {"payload": {"hook_event_name": "SessionStart", "session_id": "TEST-usage-receipt", "cwd": "C:/TEST/work"}},
+    )
+    text = answer["result"]["hookSpecificOutput"]["additionalContext"]
+    assert answer["injection"]["injection_tokens"] == estimate_tokens(text)
+    assert answer["injection"]["session_tokens"] == estimate_tokens(text)
+    assert answer["injection"]["session_token_cap"] is None

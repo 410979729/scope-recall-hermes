@@ -6,6 +6,59 @@ import json
 
 from ..contracts import ContractError, validate_payload
 from .evidence_quote import resolve_fragment_summaries
+from .source_qualification import sentence_bounds
+from .worker_outcomes import record_error_detail
+
+
+def grounded_sentences(value, sources, *, originals=None, blocked=None, stats=None, positions=None):
+    """Expand literal excerpts to whole sentences and omit obsolete or over-budget selections.
+
+    Traversing a source is independent of quoting it. Omitted excerpts leave its
+    raw message eligible; they do not spend another request to fill the omission.
+    """
+    if not isinstance(value, dict) or set(value) != {"sentences"} or not isinstance(value["sentences"], list):
+        raise ContractError("DERIVATION_INVALID", "summary_sentences")
+    if not 1 <= len(value["sentences"]) <= 32:
+        raise ContractError("DERIVATION_INVALID", "summary_capacity")
+    by_ref = {(source.ref, source.revision): source for source in sources}
+    spans, sentences = [], []
+    for index, item in enumerate(value["sentences"]):
+        if not isinstance(item, dict) or set(item) != {"text", "source_ref", "source_revision"}:
+            raise ContractError("DERIVATION_INVALID", "summary_sentence")
+        key = (item["source_ref"], item["source_revision"])
+        source, text = by_ref.get(key), item["text"]
+        if (
+            source is None
+            or not isinstance(text, str)
+            or not text.strip()
+            or text.strip() not in source.event["content"]
+        ):
+            raise ContractError("DERIVATION_INVALID", "summary_grounding")
+        text = text.strip()
+        original = originals.get(key, source.event["content"]) if originals is not None else source.event["content"]
+        offset = getattr(source, "consolidation_window", None)
+        positioned = positions[index] if positions is not None else {}
+        at = positioned.get("start")
+        if type(at) is not int:
+            at = source.event["content"].index(text) + (offset.start if offset else 0)
+        if original[at : at + len(text)] != text:
+            raise ContractError("DERIVATION_INVALID", "summary_grounding")
+        start, end = sentence_bounds(original, at, at + len(text))
+        whole = original[start:end]
+        if stats is not None and whole != text:
+            stats["expanded"] = stats.get("expanded", 0) + 1
+        if (
+            any(start < b and a < end for a, b in (blocked or {}).get(key, ()))
+            or len("\n".join([*sentences, whole])) > 1536
+        ):
+            if stats is not None:
+                stats["rejected"] = stats.get("rejected", 0) + 1
+            continue
+        span = dict(source_ref=key[0], source_revision=key[1], quote=whole, start=start, end=end)
+        if span not in spans:
+            spans.append(span)
+            sentences.append(whole)
+    return sentences, spans
 
 
 def _json(value):
@@ -187,9 +240,8 @@ def apply_summary(tx, fence, kind, proposal, scope_id, now):
         if exc.code not in {"DERIVATION_INVALID", "INPUT_INVALID"}:
             raise
         mark_partial(conn, fence.work_id, kind + "_qualification_failed", now)
-        conn.execute(
-            "INSERT INTO work_error_details(work_id,lease_token,stage,error_code,error_field,recorded_at) VALUES (?,?,?,?,?,?)",
-            (fence.work_id, fence.lease_token, "summary", exc.code, exc.field, now),
+        record_error_detail(
+            conn, fence.work_id, fence.lease_token, now=now, stage="summary", code=exc.code, field=exc.field
         )
         return None
     finally:

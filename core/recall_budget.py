@@ -7,11 +7,34 @@ budget units merely because their encoding uses three bytes.
 
 from __future__ import annotations
 
+import functools
 import json
 import math
 import re
 import unicodedata
 from collections import Counter
+
+# Complete saturated host output, including the largest supported briefing,
+# entry guidance, private hints and localized timestamps. Uses the same estimator as release.
+DEFAULT_INJECTION_TOKEN_CAP = 12654
+
+
+def release_reserve_seconds(
+    candidates: int, *, remaining_seconds: float = math.inf, hydration_seconds: float = 0.0, hydrated_count: int = 0
+) -> float:
+    """Keep time for both fresh reads and packet construction, scaled by packet slots.
+
+    Warm synthetic SQLite packets of 1/6/16/30 objects took at most 6.2/7/9.4/13.4 ms
+    at p95. A 6 ms base plus 0.25 ms per object bounds that curve; thirty-two times
+    that cost covers the measured 104-131 ms under CPU contention, plus
+    selection, rendering and scheduler delays. This is a scheduling
+    allowance, not permission to deliver an object without the final fence.
+    Observed hydration can increase it, but every allocation retains at least
+    half the remaining time for retrieval.
+    """
+    prefix = min(1.0, candidates / max(1, hydrated_count))
+    estimate = (0.006 + 0.00025 * candidates) * 32 + 2 * hydration_seconds * prefix
+    return min(max(0.0, remaining_seconds) / 2, estimate)
 
 
 def canonical_render_json(value: object) -> str:
@@ -26,6 +49,21 @@ _CJK = re.compile("[⺀-꓏가-힯豈-﫿\U00020000-\U000323af]+")
 
 
 def estimate_tokens(text: str) -> int:
+    """Reuse the exact estimate of bounded immutable text across ranking and release.
+
+    Entry and character limits bound retained source bodies. Larger serialized
+    packets use the same estimator without retaining their potentially large keys.
+    """
+    return _cached_estimate_tokens(text) if len(text) <= 65536 else _estimate_tokens(text)
+
+
+@functools.lru_cache(maxsize=256)
+def _cached_estimate_tokens(text: str) -> int:
+    """Cache text values, so revisions or different renderings never share a verdict."""
+    return _estimate_tokens(text)
+
+
+def _estimate_tokens(text: str) -> int:
     """Estimate ASCII runs at four chars/token, CJK at one, symbols by bytes.
 
     Counted with string operations rather than one Python step per character: the packet weighs every
@@ -121,7 +159,13 @@ def event_admission_order(ranked, limits):
 
     for pair in ranked:
         candidate, obj = pair
-        if obj.kind == "event" and candidate.source not in {"exact_ref", "background"}:
+        # A first-hand anchor and its attributed retelling form an ordering
+        # boundary: size admission must not invert their evidence priority.
+        if (
+            obj.kind == "event"
+            and candidate.source not in {"exact_ref", "background"}
+            and not {"restatement_of", "restatement_anchor"}.intersection(dict(obj.metadata))
+        ):
             run.append(pair)
         else:
             flush()

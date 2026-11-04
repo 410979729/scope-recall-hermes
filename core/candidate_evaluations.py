@@ -28,11 +28,8 @@ from .evidence_question import (
     rootless,
     unanswerable_reason,
 )
-
-#: Provider failures that keep the ordinary retry limit.  Invalid output and an
-#: uncertain timeout or crash do not: the at-most-once fence must not be
-#: cleared by a failure whose effect is unknown.
-RETRYABLE_CODES = frozenset({"http_429", "rate_limited", "http_500", "http_502", "http_503", "http_504", "http_529"})
+from .failure_policy import PROVIDER_RECHECK, retryable
+from .worker_outcomes import record_error_detail
 
 #: Where deleting or suppressing an object reaches candidate work.
 _FENCED_BY = {
@@ -143,11 +140,14 @@ class CandidateEvaluations(CandidateTables):
         )
 
     def _record_error(self, work_id: int, lease_token: int, code: str, now: str, field: str | None = None) -> None:
-        self._write().execute(
-            """INSERT INTO work_error_details(work_id,lease_token,stage,error_code,error_field,recorded_at)
-               VALUES (?,?,'candidate_evaluation',?,?,?)""",
-            (work_id, lease_token, code, field, now),
+        record_error_detail(
+            self._write(), work_id, lease_token, now=now, stage="candidate_evaluation", code=code, field=field
         )
+
+    def defer_entry(self, evaluation_id: int, work, *, now: str):
+        """Release an uncalled attempt while one of its source entries is paused."""
+        self._release_attempt(evaluation_id, "entry_paused", "entry_paused")
+        return self._tx.work.defer_without_attempt(*work.lease, now=now, error_code="entry_paused", seconds=60)
 
     def defer_budget(self, evaluation_id: int, work, *, now: str, code: str):
         """No verdict was produced: hand the attempt back and park the work for an hour.
@@ -164,7 +164,7 @@ class CandidateEvaluations(CandidateTables):
             work.lease_owner,
             now=now,
             error_code=code,
-            seconds=3600,
+            seconds=PROVIDER_RECHECK.delay(),
         )
 
     def fail(
@@ -185,7 +185,7 @@ class CandidateEvaluations(CandidateTables):
             work.lease_owner,
             error_code=code,
             now=now,
-            recoverable=code in RETRYABLE_CODES,
+            recoverable=retryable(code, candidate_attempted=True),
         )
         if mutation.disposition == "retry":
             self._release_attempt(evaluation_id, "retry_scheduled", code)
@@ -205,44 +205,88 @@ class CandidateEvaluations(CandidateTables):
         )
         return mutation
 
+    def inherit_answer(self, evaluation: CandidateEvaluationSnapshot, revision: int, *, now: str) -> None:
+        """Carry an answered question and collected evidence into the version its verdict produced.
+
+        Evidence arriving during the call is retained too. Its different question
+        fingerprint can schedule a later evaluation; the answered one cannot.
+        """
+        ref, old_revision = evaluation.candidate.ref, evaluation.candidate.revision
+        candidate = self._tx.claims.version(ref, revision)
+        if candidate is None or candidate.current_revision != revision:
+            raise ContractError("VERSION_CONFLICT", "candidate_revision")
+        self._tx.claims.require_target(candidate)
+        conn = self._write()
+        conn.execute(
+            """INSERT INTO candidate_evidence(candidate_ref,candidate_revision,source_ref,source_revision,observed_at)
+            SELECT candidate_ref,?,source_ref,source_revision,observed_at FROM candidate_evidence
+            WHERE candidate_ref=? AND candidate_revision=? ON CONFLICT DO NOTHING""",
+            (revision, ref, old_revision),
+        )
+        conn.execute(
+            """INSERT INTO candidate_evaluations(candidate_ref,candidate_revision,evidence_fingerprint,
+                evidence_refs_json,rule_version,memory_epoch,state,reason,created_at,completed_at,
+                model_attempted_at,result_digest)
+            SELECT candidate_ref,?,evidence_fingerprint,evidence_refs_json,rule_version,memory_epoch,
+                state,'inherited_evaluation',?,completed_at,model_attempted_at,result_digest
+            FROM candidate_evaluations WHERE evaluation_id=? AND state IN ('resolved','waiting_evidence','archived')
+            ON CONFLICT(candidate_ref,candidate_revision,evidence_fingerprint,rule_version) DO NOTHING""",
+            (revision, now, evaluation.evaluation_id),
+        )
+        conn.execute(
+            """UPDATE candidate_lifecycle SET evidence_fingerprint=?,last_evaluated_at=?,
+                last_evidence_at=(SELECT max(observed_at) FROM candidate_evidence
+                    WHERE candidate_ref=? AND candidate_revision=?)
+            WHERE candidate_ref=? AND candidate_revision=?""",
+            (evaluation.evidence_fingerprint, now, ref, revision, ref, revision),
+        )
+
     def obsolete(self, evaluation_id: int, work, *, now: str, reason: str):
         mutation = self._tx.work.mark_obsolete(work.work_id, work.lease_token, work.lease_owner, now=now)
         self._close_evaluation(evaluation_id, "obsolete", reason, now, failure_code=reason)
         self._move_for(evaluation_id, "waiting_evidence", reason, now=now)
         return mutation
 
-    def evaluation_retry_rejection(self, work_id: int) -> str | None:
-        """Read why a failed evaluation cannot reopen, without changing its lifecycle or work item."""
-        row = (
+    def _retry_row(self, work_id: int, *, include_unfinished: bool):
+        """Read an explicit grant's unfinished question only when its work already stopped."""
+        return (
             self._read()
             .execute(
-                "SELECT candidate_ref,candidate_revision FROM candidate_evaluations WHERE work_id=? AND state='failed'",
-                (work_id,),
+                "SELECT evaluation_id,candidate_ref,candidate_revision,state, "
+                "(SELECT last_error_code FROM work_items w WHERE w.work_id=e.work_id) AS work_error FROM candidate_evaluations e "
+                "WHERE work_id=? AND (state='failed' OR (? AND state='queued' AND EXISTS "
+                "(SELECT 1 FROM work_items w WHERE w.work_id=e.work_id AND w.state='failed')))",
+                (work_id, include_unfinished),
             )
             .fetchone()
         )
+
+    def evaluation_retry_rejection(self, work_id: int, *, include_unfinished: bool = False) -> str | None:
+        """Read a grant's refusal without writes; automatic callers require an already failed evaluation."""
+        row = self._retry_row(work_id, include_unfinished=include_unfinished)
         if row is None:
             return "candidate_evaluation_not_failed"
         if self._unresolved_subject_row(row["candidate_ref"], row["candidate_revision"]) is not None:
             return UNRESOLVED_SUBJECT_REASON
         return None
 
-    def reopen_evaluation(self, work_id: int, *, now: str, reason: str = "operator_retry") -> bool:
-        """Put a failed evaluation and its lifecycle back where a retry can run.
+    def reconcile_failed_evaluation(self, work_id: int, *, now: str, dry_run: bool) -> int:
+        """Close unfinished bookkeeping for stopped work without clearing its request mark or granting a retry."""
+        row = self._retry_row(work_id, include_unfinished=True)
+        if row is None or row["state"] != "queued":
+            return 0
+        if not dry_run:
+            self._close_evaluation(row["evaluation_id"], "failed", "work_failed", now, failure_code=row["work_error"])
+            self._move(
+                row["candidate_ref"], row["candidate_revision"], "waiting_evidence", "evaluation_failed", now=now
+            )
+        return 1
 
-        Returns False when there is nothing to move, so the caller leaves the
-        work item alone rather than creating the mismatch it is avoiding.
-        """
+    def reopen_evaluation(self, work_id: int, *, now: str, reason: str = "operator_retry") -> bool:
+        """Reopen a failed question under its caller's bounded grant; automatic callers cannot close queued work."""
         if self.evaluation_retry_rejection(work_id) is not None:
             return False
-        row = (
-            self._read()
-            .execute(
-                "SELECT evaluation_id,candidate_ref,candidate_revision FROM candidate_evaluations WHERE work_id=? AND state='failed'",
-                (work_id,),
-            )
-            .fetchone()
-        )
+        row = self._retry_row(work_id, include_unfinished=False)
         if row is None:
             return False
         if self._requeue_failed(row["evaluation_id"], reason) != 1:
@@ -266,4 +310,4 @@ class CandidateEvaluations(CandidateTables):
         return changed
 
 
-__all__ = ["RETRYABLE_CODES", "CandidateEvaluations"]
+__all__ = ["CandidateEvaluations"]

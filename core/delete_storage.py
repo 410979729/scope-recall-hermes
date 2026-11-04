@@ -10,13 +10,48 @@ from dataclasses import dataclass
 
 from ..contracts import ContractError
 from . import lexical_index, lineage
+from .adoption_storage import purge_adoptions
 from .claims import canonical_time
 from .inbox_rules import deleted_forms, deleted_text, holds, taking_a_new_key
+from .retractions import retraction_after as retraction_after
 from .schema import OBJECT_TABLES
 
 
 def canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def _purge_entity_names(tx, refs):
+    """Erase deleted mentions and unsupported names, compacting their FTS postings before acknowledgement."""
+    conn = tx._check(write=True)
+    encoded = json.dumps(refs)
+    names = tuple(
+        row[0]
+        for row in conn.execute(
+            "SELECT name_id FROM entity_name_mentions WHERE claim_ref IN (SELECT value FROM json_each(?)) "
+            "UNION SELECT name_id FROM entity_names WHERE source_ref IN (SELECT value FROM json_each(?)) "
+            "UNION SELECT name_id FROM entity_names WHERE target_ref IN (SELECT value FROM json_each(?)) "
+            "UNION SELECT name_id FROM entity_names WHERE alias_ref IN (SELECT value FROM json_each(?))",
+            (encoded, encoded, encoded, encoded),
+        )
+    )
+    conn.execute("DELETE FROM entity_alias_labels WHERE claim_ref IN (SELECT value FROM json_each(?))", (encoded,))
+    conn.execute("DELETE FROM entity_name_mentions WHERE claim_ref IN (SELECT value FROM json_each(?))", (encoded,))
+    encoded_names = json.dumps(names)
+    conn.execute(
+        "DELETE FROM entity_names WHERE name_id IN (SELECT value FROM json_each(?)) "
+        "AND NOT EXISTS(SELECT 1 FROM entity_name_mentions m JOIN claims c ON c.claim_id=m.claim_ref "
+        "AND c.current_revision=m.claim_revision JOIN claim_versions v ON v.claim_id=c.claim_id "
+        "AND v.revision=c.current_revision WHERE m.name_id=entity_names.name_id AND c.read_blocked=0 "
+        "AND v.state='active')",
+        (encoded_names,),
+    )
+    # FTS deletes can otherwise leave old term records in unmerged segments of a full backup.
+    conn.execute("INSERT INTO entity_name_search(entity_name_search) VALUES('optimize')")
+    retained = conn.execute(
+        "SELECT 1 FROM entity_names WHERE name_id IN (SELECT value FROM json_each(?)) LIMIT 1", (encoded_names,)
+    ).fetchone()
+    return "shared_authorized_copy_retained" if retained else "removed"
 
 
 @contextmanager
@@ -42,28 +77,6 @@ def watch_mirrored_tombstones(conn):
         yield touched
     finally:
         conn.set_authorizer(None)
-
-
-def retraction_after(conn, scope_ids, epoch: int) -> bool:
-    """Whether a deletion or suppression touching any of ``scope_ids`` was recorded after ``epoch``.
-
-    Every capture and every derived write moves ``memory_epoch``; only these withdraw anything a
-    reader may already hold.  An operation records the epoch it moved the store to, so one recorded
-    above ``epoch`` came after a read at ``epoch`` -- and a restore replays each with its own, so a
-    deletion made after that read still counts once an older file is back.
-    """
-    scopes = sorted(set(scope_ids))
-    if not scopes:
-        return False
-    marks = ",".join("?" for _ in scopes)
-    return (
-        conn.execute(
-            f"""SELECT 1 FROM deletion_operations o WHERE o.memory_epoch>?
-            AND EXISTS(SELECT 1 FROM json_each(o.scope_ids_json) s WHERE s.value IN ({marks})) LIMIT 1""",
-            (epoch, *scopes),
-        ).fetchone()
-        is not None
-    )
 
 
 def purge_work_ref(operation_id: str, scope_id: str) -> str:
@@ -319,6 +332,7 @@ class Deletions:
         delete = request["mode"] == "delete"
         layers = dict(
             sqlite_active="pending" if delete else "retained",
+            entity_name_fts="pending" if delete else "retained",
             sqlite_history="pending" if delete else "retained",
             vector_active="inventory_pending" if delete else "retained",
             vector_history="inventory_pending" if delete else "retained",
@@ -460,6 +474,8 @@ class Deletions:
                 ):
                     conn.execute("DELETE FROM capture_inbox WHERE token=?", (token,))
         for target in targets:
+            if delete and target.kind == "claim":
+                lexical_index.forget_claim(conn, target.ref)
             conn.execute(
                 "DELETE FROM consolidation_fragments WHERE work_id IN (SELECT work_id FROM work_items WHERE subject_ref=?)",
                 (target.ref,),
@@ -512,11 +528,15 @@ class Deletions:
         # therefore idempotent, while the durable purge item remains available
         # for the physical phase.  What the scrub replaces is overwritten with
         # zeros (``truth_connection.require_secure_delete``).
-        if receipt["layers"].get("sqlite_active") == "removed":
+        if receipt["layers"].get("sqlite_active") == "removed" and receipt["layers"].get("entity_name_fts") in {
+            "removed",
+            "shared_authorized_copy_retained",
+        }:
             return receipt
         members = conn.execute(
             "SELECT object_kind,object_ref FROM deletion_members WHERE operation_id=?", (operation_id,)
         ).fetchall()
+        name_layer = _purge_entity_names(self._tx, [ref for kind, ref in members if kind == "claim"])
         # What a purge keeps of each version of a deleted message to know a later copy under its key by, once its
         # words are gone: digests of them spaced otherwise and of their letters and digits (``capture_inbox.
         # deleted_forms``, compared by ``Sources.refuse_under_a_deleted_key``).  Read before any group key below
@@ -572,6 +592,7 @@ class Deletions:
                         ),
                     )
             elif kind == "claim":
+                lexical_index.forget_claim(conn, ref)
                 conn.execute("UPDATE claims SET subject='',predicate='' WHERE claim_id=?", (ref,))
                 conn.execute("UPDATE claim_versions SET payload_json='{}' WHERE claim_id=?", (ref,))
                 # A candidate's trigger terms are words of its subject, predicate and value, and a blocked
@@ -581,6 +602,7 @@ class Deletions:
                 conn.execute(
                     "UPDATE episode_versions SET resume_json=NULL,environment_revision=NULL WHERE episode_id=?", (ref,)
                 )
+                conn.execute("UPDATE handoffs SET resume_json='{}',session_label=NULL WHERE task_ref=?", (ref,))
             elif kind == "artifact":
                 # Keep only opaque retention metadata needed by attachment
                 # cleanup. The public repository is already read-blocked.
@@ -589,9 +611,12 @@ class Deletions:
                 conn.execute("UPDATE reference_versions SET payload_json='{}' WHERE reference_id=?", (ref,))
             else:
                 raise ContractError("DERIVATION_INVALID", "unresolved_purge_kind")
+            purge_adoptions(conn, kind, ref)
+            purge_reflections(conn, kind, ref)
             lineage.purge_quotes(conn, kind, ref)
         layers = receipt["layers"]
         layers["sqlite_active"] = "removed"
+        layers["entity_name_fts"] = name_layer
         conn.execute(
             "UPDATE deletion_operations SET active_content_removed=0,layers_json=? WHERE operation_id=?",
             (canonical(layers), operation_id),
@@ -687,3 +712,14 @@ class Deletions:
                 raise ContractError("STORAGE_UNAVAILABLE", "deletion_receipt")
             return updated
         raise ContractError("STORAGE_UNAVAILABLE", "attachment_physical_phase_required")
+
+
+def purge_reflections(conn, kind, ref):
+    """Erase disposable proposals and dependency manifests beside the normal source purge."""
+    if kind == "event":
+        for table in ("reflection_groups", "observations"):
+            conn.execute(f"DELETE FROM {table} WHERE instr(manifest_json,?)>0", (ref,))
+        conn.execute("DELETE FROM reflection_groups WHERE instr(buffered_json,?)>0", (ref,))
+    elif kind == "claim":
+        conn.execute("DELETE FROM observations WHERE claim_ref=?", (ref,))
+        conn.execute("DELETE FROM reflection_groups WHERE job_ref=?", (ref,))

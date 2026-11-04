@@ -30,6 +30,11 @@ def _stub_runtime_config(*names: str):
     return types.SimpleNamespace(auxiliary=auxiliary)
 
 
+@pytest.fixture(autouse=True)
+def fake_stdio_transport(monkeypatch):
+    monkeypatch.setattr(mcp_entry, "run_stdio", lambda server: server.run(transport="stdio"))
+
+
 def test_host_process_credential_environment_reads_only_declared_names(tmp_path: Path, monkeypatch) -> None:
     runtime_config = tmp_path / "runtime-config.json"
     runtime_config.write_text("{}", encoding="utf-8")

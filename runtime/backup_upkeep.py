@@ -8,22 +8,23 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from ..core.backup_primitives import BackupError, atomic_json, backup_deadline, check_backup_deadline
 from ..core.deletion_mirror import (
     MIRROR_ERRORS,
     catchup_deletion_mirror,
     configured_backup_dir,
     scheduled_snapshots_enabled,
 )
+from ..core.failure_policy import BACKUP_RETRY, MIRROR_RETRY
 from ..core.file_lock import advisory_file_lock
 from ..core.installation_copy import installation_copy_id
 from .backup_bundle import create_backup_bundle
-from .backup_primitives import BackupError, atomic_json, backup_deadline, check_backup_deadline
 from .backup_rotation import rotate_backup_bundles
 
 RESERVE_SECONDS = 2.0
 BACKUP_STATE_FILE = "backup-state.json"
-MIRROR_INTERVAL_SECONDS = 300
-BACKUP_RETRY_SECONDS = 900
+MIRROR_INTERVAL_SECONDS = MIRROR_RETRY.delay()
+BACKUP_RETRY_SECONDS = BACKUP_RETRY.delay()
 BACKUP_JOB_SECONDS = 1800.0
 
 
@@ -114,7 +115,11 @@ def backup_job_problem(directory: Path) -> str | None:
     """Explain a scheduled backup that requires operator action or retention repair."""
     state = read_backup_state(directory)
     if state.get("backup_blocked"):
-        return f"scheduled backup exceeded its {BACKUP_JOB_SECONDS:g} second budget; automatic snapshots are paused"
+        return (
+            f"scheduled backup exceeded its {BACKUP_JOB_SECONDS:g} second budget; automatic snapshots are paused; "
+            "after repair: scope-recall backup create --host <host> --instance-root <home> --output <new-backup.zip>; "
+            "then set backup_blocked to false in backup-state.json"
+        )
     if state.get("last_retention_error"):
         return f"archive published; retention pending: {state['last_retention_error']}"
     return None

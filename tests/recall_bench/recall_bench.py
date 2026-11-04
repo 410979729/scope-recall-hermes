@@ -13,7 +13,7 @@ How it runs:
   * Public MemoryCore calls on a fresh temp store, as in ``tests/known_answer/recall_invariants_check.py``: each
     message is captured at its own time on the world's clock with the principal its host attests, and a worker pass
     runs at the end of every day with a stub consolidation that proposes the world's claims, the shipped SQLite
-    vector companion (sqlite-bruteforce) and a deterministic hashed embedder.  No host, no network, no model.
+    raw SQLite vector companion and a deterministic hashed embedder.  No host, no network, no model.
     Candidate evaluation, the worker's other model call, has no stub: its work stays pending.
   * Every question is asked twice on the same store: as the automatic packet
     a hook or a prefetch puts before a prompt, and as the explicit lookup a recall tool makes.  Questions are not
@@ -75,6 +75,7 @@ if _BOUND != [CHECKOUT]:
         " measures and records only the code beside it"
     )
 
+from bench_clock import WorldClock  # noqa: E402 - the standalone runner binds its checkout first.
 from bench_world import TASKS, Question, World, build_world, local_day  # noqa: E402
 from recall_invariants_check import DIMS, VECTOR_THRESHOLD  # noqa: E402
 from recall_probes import mean_reciprocal_rank  # noqa: E402
@@ -85,8 +86,8 @@ from scope_recall.core.recall_packet import envelope_tokens  # noqa: E402
 from scope_recall.core.recall_policy import RecallPolicy  # noqa: E402
 from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS, CollectionQuery, optional_json  # noqa: E402
 from scope_recall.core.retrieval_storage import scope_digest  # noqa: E402
-from scope_recall.runtime.lance_port import LanceEmbedPort, LancePurgePort, LanceVectorPort  # noqa: E402
-from scope_recall.vector.store import build_vector_store  # noqa: E402
+from scope_recall.runtime.vector_port import VectorEmbedPort, VectorPort, VectorPurgePort  # noqa: E402
+from scope_recall.vector.sqlite_store import SQLiteVectorStore  # noqa: E402
 
 BASELINE = HERE / "baseline.json"
 SPACE = hashlib.sha256(b"recall bench hashed index terms").hexdigest()
@@ -194,28 +195,6 @@ class ManifestConsolidation:
         )
 
 
-class WorldClock:
-    """The world's time, moved by the store's builder, and a monotonic clock that ticks ``TICK`` each time it is read
-    unless ``realtime`` is set.  A recall reads it a few hundred times, so none comes near its deadline of seconds on
-    any machine, and a loop that waits on it still ends."""
-
-    TICK = 1e-6
-
-    def __init__(self, now: str) -> None:
-        self.now = now
-        self.realtime = False
-        self._ticks = 0
-
-    def utc_now(self) -> str:
-        return self.now
-
-    def monotonic(self) -> float:
-        if self.realtime:
-            return time.monotonic()
-        self._ticks += 1
-        return self._ticks * self.TICK
-
-
 # ---------------------------------------------------------------- what answers
 
 
@@ -238,11 +217,16 @@ def _same(left: object, right: object) -> bool:
 
 
 def credits(
-    item: dict, gold: tuple[str, ...], key_of: Mapping[str, str], frames: Mapping[str, tuple[Frame, ...]]
+    item: dict,
+    gold: tuple[str, ...],
+    key_of: Mapping[str, str],
+    frames: Mapping[str, tuple[Frame, ...]],
 ) -> frozenset[str]:
     """The gold messages (parts of an answer) a delivered item gives: the message itself, or a claim drawn from it
     that asserts one of the ``frames`` that message states.  A claim citing the message with another value, a denial
     or a quotation of it gives none."""
+    if item.get("qualification_reason") == "Other-session matches" and item.get("basis") == "derived_summary":
+        return frozenset()
     if item["kind"] == "event":
         return frozenset({key_of.get(item["ref"])} & set(gold))
     payload = optional_json(item["content"]) if item["kind"] in {"claim", "procedure"} else None
@@ -314,18 +298,18 @@ class BenchStore:
         self.world = world
         self.clock = WorldClock(world.messages[0].at)
         self.binding = InstanceBinding(AGENT, INSTALLATION, root / "store", world.scopes, False, "shared")
-        self.companion = build_vector_store(
-            "sqlite-bruteforce", storage_dir=root / "vectors", table_name="bench", dimensions=DIMS, metric="cosine"
+        self.companion = SQLiteVectorStore(
+            root / "vectors" / "vectors.sqlite3", table_name="bench", dimensions=DIMS, clock=self.clock.monotonic
         )
         self.companion.open()
         embedder = TermEmbedder()
-        self.embed = LanceEmbedPort(
+        self.embed = VectorEmbedPort(
             self.companion, embedder, agent_id=AGENT, installation_id=INSTALLATION, embedding_space=SPACE
         )
-        self.purge = LancePurgePort(
+        self.purge = VectorPurgePort(
             self.companion, embedding_spaces=(SPACE,), agent_id=AGENT, installation_id=INSTALLATION
         )
-        port = LanceVectorPort(self.companion, embedder, expected_embedding_space=SPACE, clock=self.clock.monotonic)
+        port = VectorPort(self.companion, embedder, expected_embedding_space=SPACE, clock=self.clock.monotonic)
         self.core = MemoryCore(
             CoreConfig(self.binding),
             clock=self.clock,
@@ -340,7 +324,6 @@ class BenchStore:
         self.entries = {entry.id: entry for entry in world.entries}
         self.key_of: dict[str, str] = {}
         self.scope_of = {message.key: message.scope for message in world.messages}
-        self.text_of = {message.key: message.text for message in world.messages}
         self.frames = {message.key: self._frames(message) for message in world.messages}
         self.claim_scopes: dict[str, str | None] = {}
         with self.core.storage.write(self.worker) as tx:

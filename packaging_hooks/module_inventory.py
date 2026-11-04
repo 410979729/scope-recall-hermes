@@ -27,6 +27,8 @@ import ast
 import json
 from pathlib import Path
 
+from _version import manifest_version
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ALLOWLIST_PATH = REPO_ROOT / "packaging" / "v11-module-allowlist.json"
 
@@ -44,6 +46,7 @@ ENTRY_POINTS = (
     "adapters/codex/resident_entry.py",
     "adapters/hermes/register.py",
     "distribution/hermes/__init__.py",
+    "distribution/docker/entry.py",
     "maintenance/cli.py",
     "maintenance/migrate.py",
     "maintenance/upgrade_cli.py",
@@ -54,13 +57,7 @@ ENTRY_POINTS = (
     "runtime/worker_watchdog.py",
 )
 
-#: Files that ship as data rather than as importable modules.  ``_lance_worker``
-#: is the clearest case: it is launched as an isolated script and installs its
-#: own package alias, so importing it as ``scope_recall._lance_worker`` would
-#: defeat the isolation it exists to provide.
-_DATA_ONLY = ("_lance_worker.py",)
-
-#: Files whose version line is stamped from ``_version.py``.
+#: Files whose version line is stamped from ``_version.py``, in the spelling of ``manifest_version``.
 PLUGIN_MANIFESTS = ("adapters/hermes/plugin.yaml", "distribution/hermes/plugin.yaml")
 
 
@@ -142,7 +139,7 @@ def reachable_modules(repo_root: Path | None = None) -> list[str]:
             init = "/".join(parts[:depth]) + "/__init__.py"
             if (root / init).is_file():
                 seen.add(init)
-    return sorted(seen - set(_DATA_ONLY))
+    return sorted(seen)
 
 
 def reachable_packages(modules: list[str]) -> list[str]:
@@ -176,12 +173,12 @@ def expected_allowlist(repo_root: Path | None = None) -> dict:
 
 
 def stamped_manifest(text: str, version: str) -> str:
-    """Return ``text`` with its ``version:`` line set to ``version``."""
+    """Stamp the host SemVer derived from the distribution version, preserving other fields."""
     lines = text.splitlines(keepends=True)
     for index, line in enumerate(lines):
         if line.startswith("version:"):
             ending = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
-            lines[index] = f"version: {version}{ending}"
+            lines[index] = f"version: {manifest_version(version)}{ending}"
             return "".join(lines)
     raise RuntimeError("plugin manifest has no version line")
 
@@ -196,7 +193,7 @@ def stale_version_files(repo_root: Path | None = None) -> dict[str, str]:
         for line in text.splitlines():
             if line.startswith("version:"):
                 found = line.split(":", 1)[1].strip()
-                if found != version:
+                if found != manifest_version(version):
                     stale[relative] = found
                 break
     listed = json.loads((root / "packaging" / "v11-module-allowlist.json").read_text(encoding="utf-8"))
@@ -234,6 +231,7 @@ __all__ = [
     "PLUGIN_MANIFESTS",
     "REPO_ROOT",
     "expected_allowlist",
+    "manifest_version",
     "reachable_modules",
     "reachable_packages",
     "source_version",

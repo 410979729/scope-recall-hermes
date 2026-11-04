@@ -5,6 +5,33 @@ from __future__ import annotations
 import re
 import unicodedata
 
+#: Where a message's sentences part: after a closing mark, or after a full stop before a space, so that a version or
+#: a domain name (3.11, beat.example.app) stays whole.  A semicolon parts none: a supposition's consequence often
+#: follows one ("Suppose we shard it; the host would then be ...").
+SENTENCE_BREAK = re.compile(r"(?<=[。！？!?\n])|(?<=\.)(?=\s)")
+
+
+def sentence_bounds(content, start, end):
+    """Return the complete sentence or consecutive sentences containing a positioned excerpt.
+
+    Commas and semicolons keep their conditions with the consequence. Whitespace
+    is trimmed without changing any character inside the resulting source span.
+    """
+    left, right = 0, len(content)
+    for boundary in SENTENCE_BREAK.finditer(content):
+        point = boundary.start()
+        if point <= start:
+            left = point
+        elif point >= end:
+            right = point
+            break
+    while left < right and content[left].isspace():
+        left += 1
+    while right > left and content[right - 1].isspace():
+        right -= 1
+    return left, right
+
+
 AUTHORITY_QUESTION = re.compile(
     r"[?？]|是否|能否|可否|要不要|是不是|吗(?:[。.!，,;；\s]|$)|\b(?:whether|is it|(?:can|could|would|should)\s+(?:I|we|you))\b",
     re.I,
@@ -437,16 +464,17 @@ def _pasted_at(content: str, position: int) -> bool:
     return quoted_at(content, position) or _SPEAKER_LABEL.search(_outside_fences(content[:position])[1]) is not None
 
 
-def in_pasted_text(content: str, quote: str) -> bool:
+def in_pasted_text(content: str, quote: str, *, start: int | None = None, end: int | None = None) -> bool:
     """Whether a first person in the quoted words stands in text the owner pasted rather than said, judged in the
     whole message: after a line opening with a speaker's label (``_SPEAKER_LABEL``), inside a fenced block, inside a
     quotation still open across lines, or on a quoted line (``> ...``).  A claim's evidence is read in a context
     narrowed to the quote's sentence, which leaves all of these out (``NameOne:`` ... ``My preference is blue.``), and a
     quote may hold a fence's opening line itself."""
-    at = content.rfind(quote) if quote else -1
+    at = start if start is not None else content.rfind(quote) if quote else -1
+    stop = end if end is not None else at + len(quote)
     if at < 0:
         return False
-    persons = [match.start() for match in _FIRST_PERSON.finditer(content, at, at + len(quote))] or [at]
+    persons = [match.start() for match in _FIRST_PERSON.finditer(content, at, stop)] or [at]
     return any(_pasted_at(content, position) for position in persons)
 
 

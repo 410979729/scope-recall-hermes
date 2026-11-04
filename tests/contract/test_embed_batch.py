@@ -141,7 +141,7 @@ def test_a_group_the_provider_refuses_goes_back_whole_and_unspent(app):
     with sqlite3.connect(core.storage.path) as conn:
         rows = conn.execute("SELECT state, attempt, last_error_code FROM work_items WHERE work_type='embed'").fetchall()
     assert len(rows) == 4 and set(rows) == {("pending", 0, "http_429")}, rows
-    assert (receipt.deferred, receipt.completed) == (1, 0), receipt
+    assert (receipt.deferred, receipt.completed) == (4, 0), receipt
 
 
 def test_a_short_answer_is_not_matched_to_the_wrong_sources(app):

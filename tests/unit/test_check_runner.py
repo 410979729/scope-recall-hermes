@@ -16,6 +16,27 @@ if str(SCRIPTS) not in sys.path:
 import check  # noqa: E402
 
 
+def test_declared_boundary_parent_is_used_by_runner(monkeypatch, tmp_path: Path) -> None:
+    declared = tmp_path / "owned-scratch"
+    monkeypatch.setenv("SCOPE_RECALL_TEST_BOUNDARY_PARENT", str(declared))
+
+    assert check._test_parent() == declared.resolve()
+
+
+def test_pytest_temp_path_stays_short_inside_owned_run(tmp_path: Path) -> None:
+    command = check.pytest_command(["tests/unit/pass_test.py"], tmp_path / "junit.xml")
+
+    assert f"--basetemp={tmp_path / 't'}" in command
+
+
+def test_history_probes_trust_only_the_checkout_in_their_process(tmp_path: Path) -> None:
+    environment = check._test_environment("unit", tmp_path)
+
+    assert environment["GIT_CONFIG_COUNT"] == "1"
+    assert environment["GIT_CONFIG_KEY_0"] == "safe.directory"
+    assert environment["GIT_CONFIG_VALUE_0"] == str(check.ROOT)
+
+
 def _write_fixed_junit(command: list[str]) -> None:
     junit_arg = next(arg for arg in command if arg.startswith("--junitxml="))
     junit = Path(junit_arg.split("=", 1)[1])
@@ -123,17 +144,18 @@ def test_watchdog_seconds_are_bounded_and_release_is_600() -> None:
 
 def test_the_retrieval_tier_s_watchdog_carries_the_recall_bench_s_own_allowance() -> None:
     """The recall bench builds a whole synthetic store before its tests run, more work on a slow runner than the
-    20s a file its tier gives: its allowance comes on top of them, after the release budget has capped them, so a
-    tier the cap already holds still gets all of it, and the sum is still a bound."""
+    20s a file its tier gives: its allowance comes on top of them, after the cap has bounded them, so a tier the
+    cap already holds still gets all of it, and the sum is still a bound."""
     bench = "tests/recall_bench/test_recall_bench.py"
     selected = list(check.SUITES["retrieval"])
-    rest = [path for path in selected if path != bench]
+    rest = [path for path in selected if path not in check.HEAVY_FILE_SECONDS]
+    heavy = sum(check.HEAVY_FILE_SECONDS.get(path, 0) for path in selected)
     assert bench in selected
     assert check.HEAVY_FILE_SECONDS[bench] == 600
     assert check.pytest_watchdog_seconds("retrieval", len(rest), rest) == 180 + 20 * len(rest)
-    assert check.pytest_watchdog_seconds("retrieval", len(selected), selected) == 180 + 20 * len(selected) + 600
+    assert check.pytest_watchdog_seconds("retrieval", len(selected), selected) == 180 + 20 * len(selected) + heavy
     assert check.pytest_watchdog_seconds("retrieval", 1, [bench]) == 800
-    assert check.pytest_watchdog_seconds("retrieval", 40, [bench]) == check.RELEASE_WATCHDOG_SECONDS + 600
+    assert check.pytest_watchdog_seconds("retrieval", 200, [bench]) == check.INTEGRATION_WATCHDOG_SECONDS + 600
 
 
 def test_release_wrapper_records_actual_600s_watchdog(monkeypatch, tmp_path: Path) -> None:
@@ -223,6 +245,7 @@ def test_a_declared_uv_goes_into_the_runs_that_drive_it(monkeypatch, tmp_path: P
     monkeypatch.setenv("SCOPE_RECALL_UV", str(uv))
     monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "build-cache"))
     monkeypatch.setenv("UV_OFFLINE", "1")
+    monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path / "wheelhouse"))
 
     for tier in ("packaging", "release"):
         env = check.packaging_helper_env(tier)
@@ -230,6 +253,7 @@ def test_a_declared_uv_goes_into_the_runs_that_drive_it(monkeypatch, tmp_path: P
         assert env["SCOPE_RECALL_TEST_PACKAGING_HELPER_ROOTS"] == str(uv.parent.resolve())
         assert env["UV_CACHE_DIR"] == str(tmp_path / "build-cache")
         assert env["UV_OFFLINE"] == "1"
+        assert env["UV_FIND_LINKS"] == str(tmp_path / "wheelhouse")
     for tier in ("unit", "native", "host"):
         assert check.packaging_helper_env(tier) == {}
     run = tmp_path / "run"

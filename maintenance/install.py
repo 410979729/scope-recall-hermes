@@ -6,11 +6,12 @@ import json
 import os
 import shutil
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
 
 from . import install_claude_code, install_codex, install_dsh, install_hermes, install_workbuddy
-from .backup import atomic_write, sha256
+from .backup import adjacent_backup, atomic_write, sha256, write_private_configuration
 from .doctor import check_host_registration
 from .install_common import (
     BACKUP_DIRNAME,
@@ -28,6 +29,7 @@ from .install_common import (
     validate_host,
     validate_plugin_name,
     validate_roots,
+    validate_write_path,
     within,
 )
 from .install_purge import purge_guard, purge_identity, purge_inventory, purge_owned_data
@@ -141,6 +143,10 @@ def _written_digest(content: str | bytes) -> str:
 
 def _backup_copy(path: Path, backup_root: Path, plan: InstallPlan | UninstallPlan) -> Path:
     """Copy a file the install is about to overwrite under plugin/, instance/ or other/."""
+    if normalized_path(path) in {
+        normalized_path(p) for p in _HOSTS[plan.host].host_config_files(plan.target_plugin_dir)
+    }:
+        return adjacent_backup(path)
     norm = normalized_path(path)
     if norm.startswith(normalized_path(plan.target_plugin_dir) + os.sep):
         rel = Path("plugin") / path.relative_to(plan.target_plugin_dir)
@@ -152,6 +158,24 @@ def _backup_copy(path: Path, backup_root: Path, plan: InstallPlan | UninstallPla
     backup_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(path, backup_path)
     return backup_path
+
+
+def _validate_install_roots(adapter, target, instance, project, host, host_files):
+    """Permit only each host's designated nested plugin directory; unrelated roots stay disjoint."""
+    roots = ((instance, "instance_root"), *(((project, "project_root"),) if project is not None else ()))
+    home_plugin = adapter.home_plugin_dir(instance)
+    if (
+        (home_plugin is not None and normalized_path(target) == normalized_path(home_plugin))
+        or (host_files and normalized_path(target) == normalized_path(instance))
+        or (host in {"codex", "claude-code"} and target == instance / "skills" / "scope-recall")
+    ):
+        # The one plugin directory a host reads from inside the home it serves; a project root that
+        # overlapped it would overlap the home too.
+        validate_roots(*roots)
+    else:
+        validate_roots((target, "target_plugin_dir"), *roots)
+
+    return home_plugin
 
 
 def plan_install(
@@ -168,47 +192,72 @@ def plan_install(
     local_platforms: tuple[str, ...] | list[str] = (),
     owner_logins: tuple[str, ...] | list[str] = (),
 ) -> InstallPlan:
-    host_choice = validate_host(host)
-    adapter = _HOSTS[host_choice]
-    target = require_absolute(Path(target_plugin_dir), "target_plugin_dir")
-    instance = require_absolute(Path(instance_root), "instance_root")
-    project = require_absolute(Path(project_root), "project_root") if project_root is not None else None
-    python = require_interpreter(Path(python_executable), "python_executable")
-    agent = validate_agent_id(agent_id)
-    workspace, credentials = adapter.validate_options(agent_workspace, env_file)
-    approvals = adapter.validate_local_platforms(local_platforms)
-    logins = adapter.validate_owner_logins(owner_logins)
-    if type(test_mode) is not bool:
+    """Normalize public install options and produce a read-only artifact plan."""
+    return plan_installation(
+        InstallPlan(
+            host=validate_host(host),
+            target_plugin_dir=Path(target_plugin_dir),
+            instance_root=Path(instance_root),
+            project_root=Path(project_root) if project_root is not None else None,
+            agent_id=agent_id,
+            python_executable=Path(python_executable),
+            test_mode=test_mode,
+            agent_workspace=agent_workspace or "",
+            env_file=Path(env_file) if env_file else None,
+            local_platforms=tuple(local_platforms),
+            owner_logins=tuple(owner_logins),
+        )
+    )
+
+
+def _validated_options(options: InstallPlan):
+    """Normalize typed planning inputs through the same host/path rules for both entry paths."""
+    host = validate_host(options.host)
+    adapter = _HOSTS[host]
+    target = require_absolute(options.target_plugin_dir, "target_plugin_dir")
+    instance = require_absolute(options.instance_root, "instance_root")
+    project = require_absolute(options.project_root, "project_root") if options.project_root is not None else None
+    python = require_interpreter(options.python_executable, "python_executable")
+    workspace, credentials = adapter.validate_options(options.agent_workspace or None, options.env_file)
+    if type(options.test_mode) is not bool:
         raise InstallError("test_mode must be a boolean")
     host_files = adapter.host_config_files(target)
     if not host_files:
         validate_plugin_name(target.name)
-    roots = ((instance, "instance_root"), *(((project, "project_root"),) if project is not None else ()))
-    home_plugin = adapter.home_plugin_dir(instance)
-    if home_plugin is not None and normalized_path(target) == normalized_path(home_plugin):
-        # The one plugin directory a host reads from inside the home it serves; a project root that
-        # overlapped it would overlap the home too.
-        validate_roots(*roots)
-    else:
-        validate_roots((target, "target_plugin_dir"), *roots)
-
-    plan = InstallPlan(
-        host=host_choice,
+    home_plugin = _validate_install_roots(adapter, target, instance, project, host, host_files)
+    plan = replace(
+        options,
+        host=host,
         target_plugin_dir=target,
         instance_root=instance,
         project_root=project,
-        agent_id=agent,
+        agent_id=validate_agent_id(options.agent_id),
         python_executable=python,
-        test_mode=test_mode,
         agent_workspace=workspace,
         env_file=credentials,
-        local_platforms=approvals,
-        owner_logins=logins,
+        local_platforms=adapter.validate_local_platforms(options.local_platforms),
+        owner_logins=adapter.validate_owner_logins(options.owner_logins),
+        conflicts=[],
+        changes=[],
+        kept={},
+        reuse_instance=False,
     )
+    return plan, adapter, host_files, home_plugin
+
+
+def plan_installation(options: InstallPlan) -> InstallPlan:
+    """Plan all artifacts without writes; pending shared attachments are never accepted by apply_install."""
+    plan, adapter, host_files, home_plugin = _validated_options(options)
+    instance, target = plan.instance_root, plan.target_plugin_dir
     receipt = load_receipt(instance)
     owned = _receipt_owned(plan, receipt, home_plugin)
 
     planned = adapter.planned_files(plan)
+    for path in (*planned, *host_files, receipt_file(instance)):
+        try:
+            validate_write_path(path)
+        except InstallError as exc:
+            plan.conflicts.append(str(exc))
     target_norm = normalized_path(target)
     adoptable = _adoptable(adapter, target, home_plugin, planned)
     keep = {normalized_path(path) for path in planned} | {norm for norm in owned if within(norm, target_norm)}
@@ -242,10 +291,27 @@ def plan_install(
                     )
                 )
     else:
-        for path in adapter.foreign_instance_entries(instance):
+        foreign = () if plan.pending_attachment else adapter.foreign_instance_entries(instance)
+        for path in foreign:
             plan.conflicts.append(f"foreign instance content: {path}")
         plan.changes.append(PlannedChange("initialize", str(instance), "create empty instance via adapter helper"))
 
+    _plan_wrapper_files(plan, planned, owned, adoptable)
+    _plan_merges(adapter, plan, host_files)
+    plan.changes.append(PlannedChange("write", str(receipt_file(instance)), "install receipt with digest"))
+    if host_files:
+        plan.changes.append(PlannedChange("restart", str(target), adapter.RESTART_NOTE))
+    environment_notes = getattr(adapter, "environment_notes", None)
+    for note in environment_notes(plan, home_plugin) if environment_notes else ():
+        plan.changes.append(PlannedChange("restart", str(target), note))
+
+    if receipt is not None and receipt.get("host") not in {None, plan.host}:
+        plan.conflicts.append("existing receipt host mismatch")
+    return plan
+
+
+def _plan_wrapper_files(plan: InstallPlan, planned: dict, owned: dict, adoptable: set[str]) -> None:
+    """Keep matching artifacts and editable skills while refusing unrelated or changed owned files."""
     for path in sorted(planned, key=str):
         norm = normalized_path(path)
         if path.is_file():
@@ -253,6 +319,10 @@ def plan_install(
                 plan.changes.append(PlannedChange("replace", str(path), "a wrapper put here by hand; backed up first"))
             elif norm not in owned:
                 plan.conflicts.append(f"no-receipt collision: {path}")
+            elif sha256(path) == owned[norm] == _written_digest(planned[path]):
+                plan.kept[norm] = owned[norm]
+                plan.changes.append(PlannedChange("keep", str(path), "installed artifact already matches"))
+                continue
             elif sha256(path) != owned[norm]:
                 # A Hermes agent keeps what it learns in its skills, and may edit its memory skill between two
                 # releases that leave that skill as it was: refused, the upgrade would stop before its apply, leaving
@@ -266,14 +336,6 @@ def plan_install(
                     continue
                 plan.conflicts.append(f"edited prior file: {path}")
         plan.changes.append(PlannedChange("write", str(path), "install host wrapper artifact"))
-    _plan_merges(adapter, plan, host_files)
-    plan.changes.append(PlannedChange("write", str(receipt_file(instance)), "install receipt with digest"))
-    if host_files:
-        plan.changes.append(PlannedChange("restart", str(target), adapter.RESTART_NOTE))
-
-    if receipt is not None and receipt.get("host") not in {None, host_choice}:
-        plan.conflicts.append("existing receipt host mismatch")
-    return plan
 
 
 def _plan_merges(adapter: ModuleType, plan: InstallPlan, host_files: tuple[Path, ...]) -> None:
@@ -326,6 +388,15 @@ def _stop_residents(host: str, instance_root: Path) -> None:
         )
 
 
+def _reuse_installation(adapter: ModuleType, plan: InstallPlan) -> str:
+    """Preserve host authorization evidence before the common installer replaces its receipt."""
+    identity = adapter.installation_id(plan.instance_root)
+    prepare = getattr(adapter, "prepare_reuse", None)
+    if prepare is not None:
+        prepare(plan)
+    return identity
+
+
 def apply_install(plan: InstallPlan) -> InstallResult:
     plan = plan_install(
         target_plugin_dir=plan.target_plugin_dir,
@@ -354,7 +425,7 @@ def apply_install(plan: InstallPlan) -> InstallResult:
     instance_initialized = False
     try:
         if plan.reuse_instance:
-            installation_id = adapter.installation_id(plan.instance_root)
+            installation_id = _reuse_installation(adapter, plan)
             if adapter.unapproved_local_platforms(plan) or adapter.unapproved_owner_logins(plan):
                 # The manifest is the adapter's, not a wrapper: it is rewritten in
                 # place, with the copy the rollback below restores, and the receipt
@@ -386,10 +457,10 @@ def apply_install(plan: InstallPlan) -> InstallResult:
             merged_content = adapter.merged_file(plan, path)
             if merged_content is None:
                 continue
-            backup_path = _backup_copy(path, backup_root, plan) if path.is_file() else None
+            backup_path = adjacent_backup(path) if path.is_file() else None
             if backup_path is not None:
                 backups.append(str(backup_path))
-            atomic_write(path, merged_content)
+            write_private_configuration(path, merged_content)
             merged.append(str(path))
             touched.append((path, backup_path))
 
@@ -526,7 +597,7 @@ def apply_uninstall(plan: UninstallPlan, *, purge: bool = False) -> UninstallRes
         if content is None:
             continue
         backups.append(str(_backup_copy(path, backup_root, plan)))
-        atomic_write(path, content)
+        write_private_configuration(path, content)
         unmerged.append(path_text)
 
     purged_paths: list[str] = []

@@ -12,13 +12,16 @@ import json
 import math
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import tzinfo
 from typing import Literal
 
 from ..contracts import ContractError, RecallRequest, TrustedContext, utc_timestamp, validate_model_request
 from .events import capture_content_digests
 from .recall_scope import QueryScope, QueryTime
+
+# The legacy packet ceiling also bounds optional release-time additions.
+MAX_PACKET_ITEMS = 30
 
 ObjectKind = Literal["event", "claim", "episode", "artifact", "reference"]
 CandidateChannel = Literal[
@@ -97,7 +100,7 @@ class SearchLimits:
 
     def __post_init__(self) -> None:
         checks = {
-            "max_items": (self.max_items, 1, 30),
+            "max_items": (self.max_items, 1, MAX_PACKET_ITEMS),
             "budget_tokens": (self.budget_tokens, 64, 8000),
             "candidate_pool": (self.candidate_pool, 1, 200),
             "recent_items": (self.recent_items, 0, 24),
@@ -123,6 +126,14 @@ def _require_distinct_refs(refs, limit: int, longest: int, field: str) -> None:
         raise ContractError("INPUT_INVALID", field)
     if len(set(refs)) != len(refs):
         raise ContractError("INPUT_INVALID", field)
+
+
+def validate_host_memory_entries(entries: tuple[str, ...] | frozenset[str]) -> None:
+    """Keep the adapter-supplied snapshot bounded before any comparison."""
+    if type(entries) not in (tuple, frozenset) or any(type(item) is not str for item in entries):
+        raise ContractError("INPUT_INVALID", "host_memory_entries")
+    if sum(len(item) for item in entries) > 65536:
+        raise ContractError("INPUT_INVALID", "host_memory_entries")
 
 
 @dataclass(frozen=True)
@@ -156,6 +167,15 @@ class SearchContext:
     #: or the session's start when it has had none.  An automatic recall leaves out what stands only on those turns
     #: (``RetrievalPipeline._in_context``).  A trusted caller's word, never a request field; None when unknown.
     in_context_since: str | None = None
+    #: Versioned name proofs rechecked by the final read-only release fence.
+    entity_fence: tuple[tuple[str, int], ...] = ()
+    #: A literal miss is frozen too: downstream stages must use this entry snapshot.
+    entity_names_resolved: bool = False
+    #: Only the packet compiler can finish summary/original selection against
+    #: the full envelope. Direct retrieval keeps its ordinary result limits.
+    packet_selection: bool = False
+    #: Host text attested by the trusted adapter, never supplied by a model request.
+    host_memory_entries: tuple[str, ...] | frozenset[str] = ()
 
     @property
     def automatic_injection(self) -> bool:
@@ -179,6 +199,8 @@ class SearchContext:
             raise ContractError("INPUT_INVALID", "scope")
         if self.time is not None and not isinstance(self.time, QueryTime):
             raise ContractError("INPUT_INVALID", "time")
+        validate_host_memory_entries(self.host_memory_entries)
+
         if self.in_context_since is not None:
             object.__setattr__(self, "in_context_since", utc_timestamp(self.in_context_since))
         if self.mode not in {"auto", "current", "history", "as_of", "method"}:
@@ -313,6 +335,8 @@ class RetrievedObject:
     source_kinds: tuple[str, ...] = ()
     relation_refs: tuple[str, ...] = ()
     metadata: tuple[tuple[str, str], ...] = ()
+    #: Internal body verdict participates in cache identity, never public rendering.
+    content_secret_scan: tuple[str, str, tuple[str, ...]] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if type(self.ref) is not str or not self.ref or type(self.revision) is not int or self.revision < 1:
@@ -337,9 +361,23 @@ class RetrievalResult:
     answerability_hint: Answerability = "unknown"
     candidate_count: int = 0
     admitted_count: int = 0
-    diagnostics: tuple[tuple[str, str], ...] = ()
+    diagnostics: tuple[tuple[str, str], ...] = field(default=(), compare=False)
     request_id: str = ""
     unmet_needs: tuple[str, ...] = ()
+    release_deadline: float | None = field(default=None, compare=False)
+    # Release-only matching candidates; neither field extends the public packet.
+    # Defaults preserve callers that construct results without optional excerpts.
+    overflow_candidates: tuple[CandidateRef, ...] = field(default=(), compare=False, repr=False)
+    overflow_policy_revision: int | None = field(default=None, compare=False, repr=False)
+    # Private identities deduplicate content-free withholding diagnostics across
+    # fresh release snapshots. They are never rendered into the public packet.
+    withheld_evidence: tuple[tuple[str, int], ...] = field(default=(), compare=False, repr=False)
+
+    def release_context(self, context: SearchContext) -> SearchContext:
+        """Carry the effective total cutoff into every compiler entry point."""
+        if self.release_deadline is None:
+            return context
+        return replace(context, deadline=min(context.deadline, self.release_deadline))
 
 
 @dataclass(frozen=True)

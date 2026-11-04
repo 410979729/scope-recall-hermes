@@ -11,11 +11,47 @@ from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.management import MemoryManagement
 from scope_recall.core.management_query import MemoryFilter
 from scope_recall.core.restore import InstallationMaintenance
+from scope_recall.core.storage import SQLiteStorage
 
 from .restore import RestoreError, store_to_restore
 
 FORMAT = "scope-recall-management/1"
 _FILTERS = ("kind", "scope", "agent", "session", "since", "until")
+
+
+def entry_grants(args):
+    """Read the selected installation's configured audience grants on demand."""
+    if args.root:
+        from scope_recall.adapters.shared_entries import read_shared_payload
+
+        records = read_shared_payload(Path(args.root).resolve())["entries"]
+        return {
+            record["entry_id"]: {
+                "read_scopes": sorted({scope for row in record["audiences"] for scope in row["allowed_scope_ids"]}),
+                "write_scopes": sorted({scope for row in record["audiences"] for scope in row["writable_scope_ids"]}),
+            }
+            for record in records
+        }
+    home = Path(args.instance_root).resolve()
+    if args.host == "hermes":
+        from scope_recall.adapters.shared_entries import load_binding_for_home
+
+        rows = load_binding_for_home(home).audiences
+        return {
+            "local": {
+                "read_scopes": sorted({scope for row in rows for scope in row["allowed_scope_ids"]}),
+                "write_scopes": sorted({scope for row in rows for scope in row["writable_scope_ids"]}),
+                "host": args.host,
+            }
+        }
+    from scope_recall.adapters.clients.config import load_codex_config
+
+    config = load_codex_config(home / "codex-installation.json")
+    scopes = {config.audience_scopes["shared"], *config.project_roots.values()}
+    if config.allow_owner_private:
+        scopes.add(config.audience_scopes["owner_private"])
+    scopes &= config.scope_ids
+    return {"local": {"read_scopes": sorted(scopes), "write_scopes": sorted(scopes), "host": args.host}}
 
 
 def open_management(args, *, initialize: bool = True):
@@ -31,11 +67,11 @@ def open_management(args, *, initialize: bool = True):
     )
     if not (binding.data_directory / "memory.sqlite3").is_file():
         raise ContractError("SOURCE_MISSING", "database")
-    core = MemoryCore(CoreConfig(binding))
+    core = MemoryCore(CoreConfig(binding), storage=SQLiteStorage(binding, upgrade_on_open=initialize))
     if initialize:
         core.initialize()
     context = TrustedContext(binding, "local-management", binding.scope_ids, "host_generated")
-    return MemoryManagement(core, InstallationMaintenance(context))
+    return MemoryManagement(core, InstallationMaintenance(context), entry_grants=lambda: entry_grants(args))
 
 
 def _common(parser):
@@ -50,6 +86,40 @@ def _filters(parser):
         parser.add_argument("--" + name)
 
 
+def _entry_arguments(command, action):
+    """Add entry selectors and transition arguments to owner commands."""
+    if action in {"entry", "entry-state"}:
+        command.add_argument("entry_id")
+    if action == "entry-state":
+        command.add_argument("state", choices=("normal", "read-only", "paused"))
+        command.add_argument("--actor", required=True)
+
+
+def _instruction_arguments(command, action):
+    """Expose scope instruction fields only on management commands."""
+    if action in {"instruction-get", "instruction-set"}:
+        command.add_argument("--scope", required=True)
+    if action == "instruction-set":
+        command.add_argument("--text", required=True, help="instruction text, at most 2000 characters")
+
+
+def _health_arguments(command, action):
+    """Add arguments for the on-demand health commands."""
+    if action == "health":
+        command.add_argument("--limit", type=int, default=30)
+        command.add_argument("--cursor")
+    if action in {"health-entity", "health-merge", "health-choose"}:
+        command.add_argument("first_ref")
+        command.add_argument("first_revision", type=int)
+        command.add_argument("second_ref")
+        command.add_argument("second_revision", type=int)
+        if action == "health-entity":
+            command.add_argument("--name")
+    if action == "health-undo":
+        command.add_argument("action_id")
+        command.add_argument("versions", help="JSON object mapping references to expected revisions")
+
+
 def parser():
     """Build command arguments without opening a database or calling a provider."""
     root = argparse.ArgumentParser(prog="scope-recall memory", description=__doc__)
@@ -60,29 +130,65 @@ def parser():
         "show",
         "history",
         "revise",
+        "importance",
         "mute",
         "unmute",
         "forget",
         "forget-session",
         "export",
         "secrets",
+        "recalls",
+        "entries",
+        "entry",
+        "entry-state",
+        "import",
+        "instruction-get",
+        "instruction-set",
+        "health",
+        "health-entity",
+        "health-merge",
+        "health-choose",
+        "health-undo",
+        "reviews",
+        "review-decide",
+        "review-undo",
+        "review-actions",
+        "review-policy",
+        "review-policy-set",
     ):
         command = commands.add_parser(action)
         _common(command)
+        _entry_arguments(command, action)
+        _review_arguments(command, action)
+
+        _instruction_arguments(command, action)
+        if action == "recalls":
+            command.add_argument("--session")
+            command.add_argument("--request-id")
+            command.add_argument("--before", type=int)
+        _health_arguments(command, action)
+        if action == "import":
+            from .memory_import import add_arguments
+
+            add_arguments(command)
         if action in {"list", "search", "forget-session", "export"}:
             _filters(command)
-        if action in {"list", "search", "history"}:
+        if action in {"list", "search", "history", "recalls"}:
             command.add_argument("--limit", type=int, default=30)
         if action in {"list", "search"}:
             command.add_argument("--cursor")
         if action == "search":
             command.add_argument("query", help="literal substring, without a model or network request")
-        if action in {"show", "history", "revise"}:
+        if action in {"show", "history", "revise", "importance"}:
             command.add_argument("ref")
-        if action == "show":
-            command.add_argument("--revision", type=int)
-        if action == "history":
-            command.add_argument("--before", type=int)
+        if action == "importance":
+            command.add_argument("--expected-revision", type=int, required=True)
+            command.add_argument("--score", type=int, choices=range(1, 6))
+            pin = command.add_mutually_exclusive_group()
+            pin.add_argument("--pin", dest="pinned", action="store_true", default=None)
+            pin.add_argument("--unpin", dest="pinned", action="store_false")
+        if action in {"show", "history"}:
+            command.add_argument("--revision" if action == "show" else "--before", type=int)
         if action == "revise":
             command.add_argument("--expected-revision", type=int, required=True)
             value = command.add_mutually_exclusive_group(required=True)
@@ -98,6 +204,47 @@ def parser():
             command.add_argument("--out", required=True, help="new directory, or a new file ending in .zip")
             command.add_argument("--with-attachments", action="store_true", help="include retained attachments")
     return root
+
+
+def _review_arguments(command, action):
+    """Expose the identical native review contract to local operators."""
+    if action in {"reviews", "review-actions"}:
+        command.add_argument("--limit", type=int, default=30)
+        command.add_argument(
+            "--cursor" if action == "reviews" else "--before", type=str if action == "reviews" else int
+        )
+    if action == "reviews":
+        command.add_argument("--source", choices=("import", "adoption", "observation", "health", "fact"))
+    if action in {"review-policy", "review-policy-set"}:
+        command.add_argument("--scope", required=True)
+    if action == "review-policy-set":
+        command.add_argument("state", choices=("on", "off"))
+        command.add_argument("--expected-version", type=int, required=True)
+    if action in {"review-decide", "review-undo"}:
+        command.add_argument("--expected-version", required=True)
+        command.add_argument("key" if action == "review-decide" else "action_id")
+    if action == "review-decide":
+        command.add_argument("decision", choices=("approve", "reject"))
+        command.add_argument("--selection", default="null", help="JSON object with fragment_ids or keep")
+
+
+def _execute_review(api, args):
+    """Dispatch source-owned review reads and version-checked owner writes."""
+    if args.action == "reviews":
+        return api.reviews(source=args.source, limit=args.limit, cursor=args.cursor)
+    if args.action == "review-actions":
+        return api.review_actions(limit=args.limit, before=args.before)
+    if args.action == "review-policy":
+        return api.review_policy(args.scope)
+    if args.action == "review-policy-set":
+        return api.set_review_policy(args.scope, args.state == "on", expected_version=args.expected_version)
+    if args.action == "review-undo":
+        return api.review_undo(args.action_id, expected_version=args.expected_version)
+    try:
+        key, selection = json.loads(args.key), json.loads(args.selection)
+    except ValueError as exc:
+        raise ContractError("INPUT_INVALID", "review_json") from exc
+    return api.review_decide(key, args.decision, expected_version=args.expected_version, selection=selection)
 
 
 def _preview(api, args):
@@ -116,13 +263,75 @@ def _preview(api, args):
     return dict(preview=plan, applied=True, result=api.apply(plan))
 
 
-def execute(api, args):
-    """Translate one parsed command to the same methods used by the local UI."""
+def _inventory(api, args):
+    """Translate bounded inventory reads, including history and diagnostic metadata."""
+    if args.action == "recalls":
+        return api.recalls(session=args.session, request_id=args.request_id, before=args.before, limit=args.limit)
     if args.action == "secrets":
         return api.secrets()
-    if args.action in {"list", "search"}:
-        filters = MemoryFilter(**{key: getattr(args, key) for key in _FILTERS}, query=getattr(args, "query", ""))
-        return api.list(filters, limit=args.limit, cursor=args.cursor)
+    filters = MemoryFilter(**{key: getattr(args, key) for key in _FILTERS}, query=getattr(args, "query", ""))
+    return api.list(filters, limit=args.limit, cursor=args.cursor)
+
+
+def _entry_command(api, args):
+    """Dispatch entry inventory and owner-only transitions."""
+    if args.action == "entries":
+        return {"entries": api.entries()}
+    if args.action == "entry":
+        return api.entry(args.entry_id)
+    return api.set_entry_state(args.entry_id, args.state, actor=args.actor)
+
+
+def _execute_health(api, args):
+    """Route health actions through the same owner methods as the UI."""
+    if args.action == "health":
+        return api.health(limit=args.limit, cursor=args.cursor)
+    if args.action in {"health-entity", "health-merge", "health-choose"}:
+        fn = {
+            "health-entity": api.health_merge_entity,
+            "health-merge": api.health_merge_facts,
+            "health-choose": api.health_choose_fact,
+        }[args.action]
+        values = (args.first_ref, args.first_revision, args.second_ref, args.second_revision)
+        return fn(*values, name=args.name) if args.action == "health-entity" else fn(*values)
+    if args.action == "health-undo":
+        return api.health_undo(args.action_id, json.loads(args.versions))
+    raise ContractError("INPUT_INVALID", "action")
+
+
+def _execute_instruction_or_health(api, args):
+    """Route scope instructions and reviewed health actions through management."""
+    if args.action.startswith("health"):
+        return _execute_health(api, args)
+    if args.action == "instruction-get":
+        return {"instructions": api.memory_instructions(args.scope)}
+    return api.set_memory_instruction(args.scope, args.text)
+
+
+def _execute_owner(api, args):
+    """Route related owner controls without growing the inventory dispatcher."""
+    if args.action == "reviews" or args.action.startswith("review-"):
+        return _execute_review(api, args)
+    if args.action in {"entries", "entry", "entry-state"}:
+        return _entry_command(api, args)
+    return _execute_instruction_or_health(api, args)
+
+
+def execute(api, args):
+    """Translate one parsed command to the same methods used by the local UI."""
+    entry_action = args.action in {"entries", "entry", "entry-state"}
+    if (
+        entry_action
+        or args.action in {"reviews", "instruction-get", "instruction-set"}
+        or args.action.startswith(("review-", "health"))
+    ):
+        return _execute_owner(api, args)
+    if args.action in {"recalls", "secrets", "list", "search"}:
+        return _inventory(api, args)
+    if args.action == "importance":
+        return api.importance(
+            args.ref, expected_revision=args.expected_revision, importance=args.score, pinned=args.pinned
+        )
     if args.action == "show":
         return api.show(args.ref, revision=args.revision)
     if args.action == "history":
@@ -173,6 +382,10 @@ def _render_scan(data):
 
 def _render_items(data):
     """Render inventory and history rows with their respective continuation."""
+    if any("source" in item for item in data["items"]):
+        # Review identities and evidence must remain complete enough to reuse.
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return
     rows = [
         dict(
             kind=item.get("kind", ""),
@@ -197,7 +410,24 @@ def render(payload, *, as_json):
         print(f"{payload['code']}: {payload.get('field', '')}")
         return
     data = payload["data"]
-    if "preview" in data:
+    if "import_preview" in data:
+        plan = data["import_preview"]
+        table(
+            plan["items"],
+            ("key", "project", "write_project", "occurred_at", "role", "original_origin", "review_required"),
+        )
+        print(
+            f"Source: {plan['source']}; records: {plan['count']}; skipped: {plan['skipped']}"
+            f"; time: {plan['time_range']}"
+        )
+        print(f"Projects: {plan['projects']}; preview: {plan['preview_id']}")
+        print("Target: " + json.dumps(plan["target"], ensure_ascii=False))
+        if not data["applied"]:
+            print("Review this selection, then repeat with --yes --preview-id " + plan["preview_id"])
+            print("Import permission does not confirm the content or identify its author as the local owner.")
+        else:
+            print(json.dumps(data["result"], ensure_ascii=False, indent=2))
+    elif "preview" in data:
         plan = data["preview"]
         table(plan["affected"], ("kind", "ref", "revision", "scope_id"))
         entries = sorted({s["entry_id"] for s in plan["sources"]})
@@ -230,10 +460,18 @@ def render(payload, *, as_json):
 def main(argv=None):
     """Run a local owner command; refused inputs or stale selections exit with code 2."""
     args = parser().parse_args(argv)
+    data: dict
     try:
-        api = open_management(args, initialize=args.action != "secrets")
-        payload = dict(format=FORMAT, action=args.action, status="ok", data=execute(api, args))
-        code = 0
+        if args.action == "import":
+            from .import_progress import run_import
+            from .memory_import import execute_import
+
+            data = execute_import(args, open_store=open_management, resolve_store=store_to_restore, run=run_import)
+        else:
+            api = open_management(args, initialize=args.action not in {"secrets", "recalls"})
+            data = execute(api, args)
+        payload = dict(format=FORMAT, action=args.action, status="ok", data=data)
+        code = 2 if data.get("result", {}).get("error") else 0
     except ContractError as exc:
         payload = dict(format=FORMAT, action=args.action, status="error", code=exc.code, field=exc.field)
         code = 2

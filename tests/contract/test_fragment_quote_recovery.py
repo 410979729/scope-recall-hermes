@@ -263,3 +263,32 @@ def test_chunk_claim_recovery_uses_the_current_page_even_when_an_older_literal_m
     saved = claims(core)
     assert len(saved) == 1 and saved[0][1] == "active"
     assert saved[0][0]["evidence_spans"][0]["quote"] == current
+
+
+@pytest.mark.parametrize("earlier_page", [False, True])
+def test_positioned_chunk_is_bound_to_its_current_page(worker_app, earlier_page):
+    core, ctx, _clock = worker_app
+    text = "TEST-project 配色 蓝色。"
+    source = long_source(core, ctx, text + "\n" + "这是一段归档资料；" * 700 + "\n" + text)
+    windows = []
+
+    def build(sources, **_kwargs):
+        page = sources[0]
+        found = []
+        window = page.consolidation_window
+        if window.start and text in page.event["content"]:
+            windows.append(window)
+            claim = proposal(page, text)
+            start = 0 if earlier_page else window.start + page.event["content"].index(text)
+            claim["evidence_spans"][0].update(start=start, end=start + len(text))
+            found.append(claim)
+        return consolidation_payload(page, claims=found)
+
+    model = FakeConsolidation(build)
+    for _ in range(30):
+        result = core.drain_worker(ctx, consolidation=model, max_items=1, remaining_seconds=5)
+        if result.retried or result.failed or row(core, source)[0] == "done":
+            break
+    assert windows and windows[-1].start > len(text)
+    assert result.retried == 0 and row(core, source)[0] == "done"
+    assert claims(core)[0][0]["evidence_spans"][0]["start"] == source.event["content"].rfind(text)

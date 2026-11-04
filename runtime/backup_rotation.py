@@ -14,8 +14,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from ..core.backup_primitives import atomic_json, check_backup_deadline, first_link, safe_path
 from .backup_bundle import BackupBundleError, verify_backup_bundle
-from .backup_primitives import atomic_json, check_backup_deadline, first_link, safe_path
 
 BUNDLE_FILENAME_PATTERN = re.compile(
     r"^scope-recall-backup-(?P<year>\d{4})(?P<month>\d{2})(?P<day>\d{2})T"

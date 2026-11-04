@@ -272,6 +272,24 @@ def test_a_session_start_on_an_entry_reads_nothing_of_the_store(store, monkeypat
         hook.close()
 
 
+def test_claude_session_start_accepts_compaction_signal(store):
+    """A compacted session must reach the same start path as a new session."""
+    _root, _homes, client, _capture = store
+    hook = _hook(client)
+    try:
+        hook.handle_payload(
+            {
+                "hook_event_name": "SessionStart",
+                "session_id": "TEST-cc-session",
+                "source": "compact",
+                "cwd": "C:/anywhere",
+            }
+        )
+        assert hook.diagnostics.last_reason != "unsupported_event"
+    finally:
+        hook.close()
+
+
 def _codex_client(root, tmp_path):
     owner = next(row for row in read_shared_payload(root)["entries"][0]["audiences"] if row["kind"] == "owner_private")
     home = tmp_path / "TEST-codex-home"
@@ -290,6 +308,413 @@ def _codex_client(root, tmp_path):
         now=NOW,
     )
     return home
+
+
+def _seed_shared_brief(store):
+    """Prepare a synthetic decision through the shared store's real worker."""
+    from scope_recall.core.worker import WorkerConfig, drain_worker
+
+    root, _homes, client, capture_scope = store
+    writer = _hook(client)
+    payload = _prompt("TEST-project 配色 蓝色。")
+    try:
+        writer.handle_payload(payload)
+        context = writer.context(writer.audience_of(payload), payload["session_id"], "human_direct")
+        [(ref, revision)] = _rows(root, "SELECT event_id,source_revision FROM source_events WHERE role='user'")
+        source = writer.core.source(context, ref, revision)
+        proposal = {
+            "kind": "decision",
+            "subject": "TEST-project",
+            "predicate": "配色",
+            "value_text": "蓝色",
+            "conditions": [],
+            "statement_kind": "decision",
+            "valid_from": source.event["occurred_at"],
+            "valid_to": None,
+            "evidence_spans": [{"source_ref": ref, "source_revision": revision, "quote": source.event["content"]}],
+        }
+        accepted = writer.core.records.accept_claim_proposals(
+            context,
+            {
+                "protocol_version": "1.1",
+                "source_refs": [f"{ref}@{revision}"],
+                "claim_proposals": [proposal],
+                "resume_proposals": [],
+                "reference_proposals": [],
+            },
+            scope_id=capture_scope,
+            remaining_seconds=10,
+        )
+        claim = accepted.items[0]
+        assert claim.state == "active"
+        drain_worker(
+            writer.core.storage,
+            writer.core.clock,
+            context,
+            config=WorkerConfig("TEST-brief-worker"),
+            remaining_seconds=30,
+        )
+    finally:
+        writer.close()
+    return claim
+
+
+def test_question_injection_records_what_the_host_received(store):
+    """A question result is recorded only after it has become host output."""
+    from dataclasses import replace
+
+    claim = _seed_shared_brief(store)
+    root, _homes, client, _scope = store
+    hook = _hook(client)
+    hook.core.config = replace(hook.core.config, session_brief_enabled=False)
+    try:
+        output = hook.handle_payload(_prompt("TEST-project 配色是什么？", session="TEST-question-delivery"))
+        text = output.get("hookSpecificOutput", {}).get("additionalContext", "")
+        assert claim.ref in text
+        rows = _rows(
+            root,
+            "SELECT object_ref,source FROM session_brief_injections WHERE session_id LIKE '%TEST-question-delivery'",
+        )
+        assert (claim.ref, "question") in rows
+    finally:
+        hook.close()
+
+
+def test_injection_caps_apply_to_the_host_text_and_session(store):
+    """Both limits count rendered host text, including its guidance."""
+    from dataclasses import replace
+
+    from scope_recall.core.recall_budget import estimate_tokens
+
+    _seed_shared_brief(store)
+    _root, _homes, client, _scope = store
+    hook = _hook(client)
+    hook.core.config = replace(
+        hook.core.config, session_brief_enabled=False, injection_token_cap=100, session_token_cap=100
+    )
+    try:
+        response = hook.handle_payload(_prompt("TEST-project 配色是什么？", session="TEST-budget"))
+        text = response.get("hookSpecificOutput", {}).get("additionalContext", "")
+        assert not text or estimate_tokens(text) <= 100
+        payload = _prompt("TEST-project 配色是什么？", session="TEST-budget", prompt_id="TEST-budget-next")
+        context = hook.context(hook.audience_of(payload), payload["session_id"], "human_direct")
+        hook.core.record_session_recall(context, tokens=100, elapsed_ms=0, remaining_seconds=1)
+        assert not hook.handle_payload(payload).get("hookSpecificOutput", {}).get("additionalContext", "")
+        assert hook.diagnostics.last_reason == "session_injection_budget_exhausted"
+    finally:
+        hook.close()
+
+
+def test_injection_receipt_reports_actual_host_usage(store):
+    """The receipt reflects the delivered text, not the internal packet."""
+    from scope_recall.core.recall_budget import estimate_tokens
+
+    _seed_shared_brief(store)
+    _root, _homes, client, _scope = store
+    hook = _hook(client)
+    try:
+        output = hook.handle_payload(_prompt("TEST-project 配色是什么？", session="TEST-usage"))
+        text = output["hookSpecificOutput"]["additionalContext"]
+        assert hook.diagnostics.injection_tokens == estimate_tokens(text)
+        assert hook.diagnostics.session_tokens == estimate_tokens(text)
+        assert hook.diagnostics.injection_token_cap >= estimate_tokens(text)
+        assert hook.diagnostics.session_token_cap is None
+    finally:
+        hook.close()
+
+
+def test_briefed_correction_reaches_each_session_once(store):
+    """A new fact version alerts each session that saw the old version."""
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    claim = _seed_shared_brief(store)
+    _root, _homes, client, _scope = store
+    hook = _hook(client)
+    try:
+        for session in ("TEST-notice-a", "TEST-notice-b"):
+            start = {"hook_event_name": "SessionStart", "session_id": session, "cwd": "C:/anywhere"}
+            assert claim.ref in hook.handle_payload(start)["hookSpecificOutput"]["additionalContext"]
+        payload = _prompt("TEST-project 配色是什么？", session="TEST-notice-a")
+        context = hook.context(hook.audience_of(payload), payload["session_id"], "human_direct")
+        MemoryManagement(hook.core, InstallationMaintenance(context)).revise(
+            claim.ref, expected_revision=claim.revision, value="green"
+        )
+        for session in ("TEST-notice-a", "TEST-notice-b"):
+            response = hook.handle_payload(_prompt("继续", session=session, prompt_id="TEST-notice-1"))
+            text = response.get("hookSpecificOutput", {}).get("additionalContext", "")
+            assert claim.ref in text and "green" in text
+            response = hook.handle_payload(_prompt("继续", session=session, prompt_id="TEST-notice-2"))
+            assert claim.ref not in response.get("hookSpecificOutput", {}).get("additionalContext", "")
+    finally:
+        hook.close()
+
+
+@pytest.mark.parametrize("host", ["claude-code", "codex"])
+def test_session_brief_is_delivered_again_after_compaction(store, tmp_path, host, monkeypatch):
+    """The actual hook returns a stored, source-backed decision at both starts."""
+    claim = _seed_shared_brief(store)
+    root, _homes, client, _capture_scope = store
+    home = client if host == "claude-code" else _codex_client(root, tmp_path)
+    hook = CodexHookHandler.from_home(str(home), host)
+    monkeypatch.setattr(
+        "scope_recall.adapters.clients.prompt_recall.read_host_memory",
+        lambda *a, **kw: pytest.fail("brief read host memory"),
+    )
+    start = {"hook_event_name": "SessionStart", "session_id": "TEST-new-session", "cwd": "C:/anywhere"}
+    try:
+        first = hook.handle_payload({**start, "source": "startup"})
+        assert claim.ref in first["hookSpecificOutput"]["additionalContext"]
+        assert hook.handle_payload(start) == {}
+        compacted = hook.handle_payload({**start, "source": "compact"})
+        assert claim.ref in compacted["hookSpecificOutput"]["additionalContext"]
+    finally:
+        hook.close()
+
+
+@pytest.mark.parametrize("host", ["claude-code", "codex"])
+def test_compaction_mark_survives_another_process_holding_writer(store, tmp_path, host):
+    from scope_recall.adapters.clients.session_marks import mark_path
+    from scope_recall.core.retrieval import CandidateRef, SearchContext
+    from scope_recall.core.session_brief import already_injected
+
+    from tests.v11_support import recall_request
+
+    claim = _seed_shared_brief(store)
+    root, _homes, client, _capture_scope = store
+    home = client if host == "claude-code" else _codex_client(root, tmp_path)
+    hook = CodexHookHandler.from_home(str(home), host)
+    start = {"hook_event_name": "SessionStart", "session_id": "TEST-locked-compact", "cwd": "C:/anywhere"}
+    holder = None
+    try:
+        assert claim.ref in hook.handle_payload(start)["hookSpecificOutput"]["additionalContext"]
+        with closing(sqlite3.connect(root / "memory.sqlite3")) as db:
+            before = db.execute(
+                "SELECT delivered_at FROM session_brief_injections WHERE object_ref=?", (claim.ref,)
+            ).fetchone()[0]
+        holder = subprocess.Popen(
+            [sys.executable, "-c", _LEASE_HOLDER, str(root)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+        )
+        assert holder.stdout.readline().strip() == "holding"
+        assert (
+            claim.ref in hook.handle_payload({**start, "source": "compact"})["hookSpecificOutput"]["additionalContext"]
+        )
+        assert mark_path(hook.config, "compactions", start["session_id"]).exists()
+        assert claim.ref in hook.handle_payload(start)["hookSpecificOutput"]["additionalContext"]
+        ctx = hook.context(hook.audience_of(start), start["session_id"], "human_direct")
+        with hook.core.storage.read(ctx) as tx:
+            assert not already_injected(tx, "claim", claim.ref, claim.revision)
+            search = SearchContext.from_request(
+                recall_request(query="TEST-project color", mode="auto"),
+                ctx,
+                now=hook.core.clock.utc_now(),
+                deadline=hook.core.clock.monotonic() + 10,
+            )
+            assert hook.core.recall_pipeline._hydrate_admit(
+                tx, CandidateRef("claim", claim.ref, claim.revision, "lexical"), search
+            )
+        holder.stdin.write("release\n")
+        holder.stdin.flush()
+        holder.communicate(timeout=30)
+        holder = None
+        hook.handle_payload(start)
+        assert not mark_path(hook.config, "compactions", start["session_id"]).exists()
+        with closing(sqlite3.connect(root / "memory.sqlite3")) as db:
+            after = db.execute(
+                "SELECT delivered_at FROM session_brief_injections WHERE object_ref=?", (claim.ref,)
+            ).fetchone()[0]
+            assert after > before
+    finally:
+        if holder is not None:
+            holder.communicate(input="release\n", timeout=30)
+        hook.close()
+
+
+def test_compaction_ack_does_not_remove_a_newer_concurrent_mark(store, monkeypatch):
+    import threading
+
+    from scope_recall.adapters.clients.session_marks import clear_compaction, compaction_at, mark_compaction, mark_path
+
+    _root, _homes, client, _capture_scope = store
+    hook = _hook(client)
+    session = "TEST-concurrent-compact"
+    older = "2026-09-01T00:00:00Z"
+    newer = "2026-09-01T00:00:01Z"
+    mark = mark_path(hook.config, "compactions", session)
+    original = Path.unlink
+    try:
+        acknowledged = mark_compaction(hook.config, session, older)
+        fired = []
+
+        def race(path, *args, **kwargs):
+            if path == mark and not fired:
+                fired.append(True)
+                thread = threading.Thread(target=mark_compaction, args=(hook.config, session, newer))
+                thread.start()
+                thread.join(5)
+                assert not thread.is_alive()
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", race)
+        clear_compaction(hook.config, session, acknowledged)
+        assert fired and compaction_at(hook.config, session).startswith("2026-09-01T00:00:01")
+    finally:
+        hook.close()
+
+
+def test_pending_compaction_is_persisted_on_the_next_stop_write(store):
+    from scope_recall.adapters.clients.session_marks import mark_path
+
+    claim = _seed_shared_brief(store)
+    root, _homes, client, _capture_scope = store
+    hook = _hook(client)
+    start = {"hook_event_name": "SessionStart", "session_id": "TEST-stop-compaction", "cwd": "C:/anywhere"}
+    holder = None
+    try:
+        assert claim.ref in hook.handle_payload(start)["hookSpecificOutput"]["additionalContext"]
+        holder = subprocess.Popen(
+            [sys.executable, "-c", _LEASE_HOLDER, str(root)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+        )
+        assert holder.stdout.readline().strip() == "holding"
+        hook.handle_payload({**start, "source": "compact"})
+        holder.stdin.write("release\n")
+        holder.stdin.flush()
+        holder.communicate(timeout=30)
+        holder = None
+        mark = mark_path(hook.config, "compactions", start["session_id"])
+        assert mark.exists()
+        hook.handle_payload({**start, "hook_event_name": "Stop", "last_assistant_message": "TEST answer"})
+        assert not mark.exists()
+        with closing(sqlite3.connect(root / "memory.sqlite3")) as db:
+            assert (
+                db.execute("SELECT count(*) FROM session_brief_injections WHERE object_ref=?", (claim.ref,)).fetchone()[
+                    0
+                ]
+                == 0
+            )
+    finally:
+        if holder is not None:
+            holder.communicate(input="release\n", timeout=30)
+        hook.close()
+
+
+@pytest.mark.parametrize("host", ["workbuddy", "dsh"])
+def test_first_prompt_delivers_the_shared_brief_once(store, request, host):
+    claim = _seed_shared_brief(store)
+    entry = request.getfixturevalue(host)
+    home = entry[1]
+    if host == "workbuddy":
+        first, _ = _wb(home, _wb_prompt("继续"))
+        second, _ = _wb(home, _wb_prompt("继续下一步"))
+    else:
+        first, _ = _dsh(home, {"hook_event_name": "UserPromptSubmit", "turn_id": "1", "prompt": "继续"})
+        second, _ = _dsh(home, {"hook_event_name": "UserPromptSubmit", "turn_id": "2", "prompt": "继续下一步"})
+    assert claim.ref in first["hookSpecificOutput"]["additionalContext"]
+    assert claim.ref not in second.get("hookSpecificOutput", {}).get("additionalContext", "")
+
+
+def test_hermes_prefetch_delivers_again_after_compression_signal(store):
+    claim = _seed_shared_brief(store)
+    _root, homes, _client, _capture_scope = store
+    provider = _hermes(homes["agent3"])
+    try:
+        assert claim.ref in provider.prefetch("继续")
+        assert claim.ref not in provider.prefetch("继续")
+        provider.on_pre_compress([])
+        assert claim.ref in provider.prefetch("继续")
+    finally:
+        provider.shutdown()
+
+
+def test_hermes_retries_brief_after_compaction_when_storage_is_busy(store, monkeypatch):
+    claim = _seed_shared_brief(store)
+    _root, homes, _client, _capture_scope = store
+    provider = _hermes(homes["agent3"])
+    try:
+        assert claim.ref in provider.prefetch("继续")
+        provider.on_pre_compress([])
+        core = provider._require_core()
+        real = core.session_brief
+
+        def unavailable(*args, **kwargs):
+            raise ContractError("DEADLINE_EXCEEDED")
+
+        monkeypatch.setattr(core, "session_brief", unavailable)
+        assert claim.ref not in provider.prefetch("继续")
+        monkeypatch.setattr(core, "session_brief", real)
+        assert claim.ref in provider.prefetch("继续")
+    finally:
+        provider.shutdown()
+
+
+def test_hermes_compaction_recall_retries_after_another_process_holds_writer(store):
+    claim = _seed_shared_brief(store)
+    root, homes, _client, _scope = store
+    provider = _hermes(homes["agent3"])
+    holder = None
+    try:
+        assert claim.ref in provider.prefetch("继续")
+        holder = subprocess.Popen(
+            [sys.executable, "-c", _LEASE_HOLDER, str(root)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+        )
+        assert holder.stdout.readline().strip() == "holding"
+        provider.on_pre_compress([])
+        assert claim.ref in provider.prefetch("TEST-project 配色")
+        assert provider._brief_compactions
+        holder.stdin.write("release\n")
+        holder.stdin.flush()
+        holder.communicate(timeout=30)
+        holder = None
+        assert claim.ref in provider.prefetch("继续")
+        assert not provider._brief_compactions
+    finally:
+        if holder is not None:
+            holder.communicate(input="release\n", timeout=30)
+        provider.shutdown()
+
+
+def test_hermes_preserves_a_second_compaction_during_brief_delivery(store, monkeypatch):
+    claim = _seed_shared_brief(store)
+    _root, homes, _client, _capture_scope = store
+    provider = _hermes(homes["agent3"])
+    try:
+        assert claim.ref in provider.prefetch("继续")
+        provider.on_pre_compress([])
+        core = provider._require_core()
+        real = core.session_brief
+
+        def compact_again(*args, **kwargs):
+            result = real(*args, **kwargs)
+            provider.on_pre_compress([])
+            monkeypatch.setattr(core, "session_brief", real)
+            return result
+
+        monkeypatch.setattr(core, "session_brief", compact_again)
+        assert claim.ref in provider.prefetch("继续")
+        assert claim.ref in provider.prefetch("继续")
+        assert claim.ref not in provider.prefetch("继续")
+    finally:
+        provider.shutdown()
+
+
+def test_session_brief_runtime_switch_and_limit_apply_at_the_hook(store):
+    claim = _seed_shared_brief(store)
+    _root, _homes, client, _capture_scope = store
+    config_path = client / "scope-recall" / "runtime-config.json"
+    for index, settings, expected in (
+        (1, {"session_brief_enabled": False}, False),
+        (2, {"session_brief_tokens": 1}, False),
+        (3, {"session_brief_tokens": 1024}, True),
+    ):
+        config_path.write_text(json.dumps(settings), encoding="utf-8")
+        hook = _hook(client)
+        try:
+            result = hook.handle_payload(
+                {"hook_event_name": "SessionStart", "session_id": f"TEST-option-{index}", "cwd": "C:/anywhere"}
+            )
+        finally:
+            hook.close()
+        assert (claim.ref in result.get("hookSpecificOutput", {}).get("additionalContext", "")) is expected
 
 
 def test_a_client_s_prompt_runs_the_entry_s_budget(store, tmp_path):
@@ -443,9 +868,17 @@ def test_only_a_client_that_names_its_conversation_is_offered_the_tools_that_cha
     offered = [tool.name for tool in server.server._tool_manager.list_tools()]
     if host == "codex":
         writes = ["propose_memory", "revise", "forget"]
-        assert offered == [*READ_TOOLS[:5], *writes, "status"]
+        assert offered == [
+            *READ_TOOLS[:5],
+            *writes,
+            "status",
+            "handoff_write",
+            "handoff_list",
+            "handoff_accept",
+            "handoff_cancel",
+        ]
     else:
-        assert offered == READ_TOOLS
+        assert offered == [*READ_TOOLS, "handoff_write", "handoff_list", "handoff_accept", "handoff_cancel"]
 
 
 # -- the session record ------------------------------------------------------
@@ -1533,60 +1966,16 @@ def test_what_counts_as_a_recall_without_its_vector_search():
     assert recall_without_vectors(["sqlite_unavailable:INPUT_INVALID"]) == "sqlite_unavailable:INPUT_INVALID"
 
 
-def test_a_prompt_hook_starts_the_vector_helper_before_it_stores_the_prompt(monkeypatch):
-    """Each hook is a new process, and a vector helper started when the recall reached its vector search spent the
-    rest of the recall's budget importing LanceDB: Claude Code and Codex recalled from words alone."""
-    from scope_recall.adapters.clients import hook_entry
-    from scope_recall.vector import process_store
-
-    started = []
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: started.append(kwargs))
-    monkeypatch.setattr(hook_entry.sys, "platform", "win32")
-    hook_entry._prestart_vector_helper(json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": "TEST"}).encode())
-    hook_entry._prestart_vector_helper(
-        json.dumps({"hook_event_name": "Stop", "last_assistant_message": "UserPromptSubmit"}).encode()
-    )
-    hook_entry._prestart_vector_helper(b"not json")
-    assert started == [{}]
-
-
 @pytest.fixture
 def resident(store, monkeypatch):
-    """The Claude Code entry's MCP server answering its prompts' recall, without a LanceDB helper process."""
+    """The client entry's MCP server answering its prompts through the local recall endpoint."""
     from scope_recall.adapters.clients import local_endpoint
-    from scope_recall.vector import process_store
 
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
     root, _homes, client, _capture = store
     endpoint = local_endpoint.serve(client, "claude-code", warm=False)
     assert endpoint is not None
     try:
         yield root, client, endpoint
-    finally:
-        endpoint.stop()
-
-
-@pytest.mark.skipif(os.name != "nt", reason="the LanceDB helper process is Windows'")
-def test_the_mcp_server_shares_one_vector_store_among_its_recalls_before_it_serves(store, monkeypatch):
-    """The kept handler, a handler made for a prompt that comes meanwhile and the tools search one store, through one
-    LanceDB helper (``process_store.share``), from the first prompt it serves."""
-    from scope_recall.adapters.clients import local_endpoint
-    from scope_recall.vector import process_store
-
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
-    sharing_when_served = []
-
-    class Server(local_endpoint._Server):
-        def __init__(self, *args, **kwargs):
-            sharing_when_served.append(process_store._sharing)
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr(local_endpoint, "_Server", Server)
-    _root, _homes, client, _capture = store
-    endpoint = local_endpoint.serve(client, "claude-code", warm=False)
-    assert endpoint is not None
-    try:
-        assert sharing_when_served == [True]
     finally:
         endpoint.stop()
 
@@ -1801,9 +2190,7 @@ def test_a_server_names_itself_again_only_once_no_recall_is_stuck(store, monkeyp
     import time
 
     from scope_recall.adapters.clients import local_endpoint
-    from scope_recall.vector import process_store
 
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
     monkeypatch.setattr(local_endpoint, "ADVERTISE_SECONDS", 0.2)
     _root, _homes, client, _capture = store
     endpoint = local_endpoint.serve(client, "claude-code")
@@ -1869,9 +2256,7 @@ def test_credentials_rotated_or_removed_in_the_env_file_are_taken_up(store, monk
     import time
 
     from scope_recall.adapters.clients import local_endpoint
-    from scope_recall.vector import process_store
 
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
     monkeypatch.delenv("TEST_SCOPE_RECALL_KEY", raising=False)
     monkeypatch.delenv("TEST_SCOPE_RECALL_OLD", raising=False)
     _root, _homes, client, _capture = store
@@ -1955,26 +2340,12 @@ def test_a_server_answer_that_ran_out_of_time_is_not_the_last_word(
         assert f"CODEX_RECALL_RESIDENT:{said}\n" in captured.err
 
 
-def test_a_prompt_whose_server_runs_still_starts_its_helper(resident, small_reserve, monkeypatch):
-    """Prompt hooks prepare their own vector helper even when a recall server is available."""
-    from scope_recall.adapters.clients import hook_entry
-
-    _root, client, _endpoint = resident
-    started = []
-    monkeypatch.setattr(hook_entry, "_prestart_vector_helper", started.append)
-    raw = json.dumps(_prompt("TEST 仍然自己预热。", prompt_id="TEST-prompt-prestart")).encode()
-    assert _hook_entry(monkeypatch, raw, client) == 0
-    assert started == [raw]
-
-
 def test_a_failed_read_of_the_env_file_keeps_the_keys(store, monkeypatch, tmp_path):
     """One failed read (a file locked just after a save) dropped the key for the rest of the session."""
     import os
 
     from scope_recall.adapters.clients import local_endpoint
-    from scope_recall.vector import process_store
 
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
     monkeypatch.delenv("TEST_SCOPE_RECALL_KEEP", raising=False)
     _root, _homes, client, _capture = store
     env_file = tmp_path / "TEST.env"
@@ -2114,9 +2485,7 @@ def test_a_first_read_of_the_env_file_that_failed_is_tried_again(store, monkeypa
     import os
 
     from scope_recall.adapters.clients import local_endpoint
-    from scope_recall.vector import process_store
 
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
     monkeypatch.delenv("TEST_SCOPE_RECALL_LATE", raising=False)
     _root, _homes, client, _capture = store
     env_file = tmp_path / "TEST.env"
@@ -2143,9 +2512,7 @@ def test_a_key_the_runtime_config_comes_to_name_is_taken_up(store, monkeypatch, 
     import os
 
     from scope_recall.adapters.clients import local_endpoint
-    from scope_recall.vector import process_store
 
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
     names = ("TEST_SCOPE_RECALL_A", "TEST_SCOPE_RECALL_B")
     for name in names:
         monkeypatch.delenv(name, raising=False)
@@ -2302,9 +2669,7 @@ def test_a_runtime_config_that_will_not_load_keeps_the_keys(store, monkeypatch, 
     import os
 
     from scope_recall.adapters.clients import local_endpoint
-    from scope_recall.vector import process_store
 
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
     monkeypatch.delenv("TEST_SCOPE_RECALL_STAYS", raising=False)
     _root, _homes, client, _capture = store
     env_file, runtime_config = tmp_path / "TEST.env", tmp_path / "TEST-runtime-config.json"
@@ -2444,9 +2809,7 @@ def test_a_first_read_of_the_key_that_raised_does_not_stop_the_server(store, mon
     import os
 
     from scope_recall.adapters.clients import local_endpoint
-    from scope_recall.vector import process_store
 
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
     monkeypatch.delenv("TEST_SCOPE_RECALL_FIRST", raising=False)
     _root, _homes, client, _capture = store
     env_file = tmp_path / "TEST.env"
@@ -2584,9 +2947,7 @@ def test_a_server_names_itself_again_only_when_its_check_comes_back_in_time(stor
     import time
 
     from scope_recall.adapters.clients import local_endpoint
-    from scope_recall.vector import process_store
 
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
     monkeypatch.setattr(local_endpoint, "ADVERTISE_SECONDS", 0.2)
     real = local_endpoint._hello
 
@@ -2741,15 +3102,17 @@ def test_a_kept_recaller_uses_one_handler_until_its_files_change():
     assert _KeptFake.made[1].closed and kept(_prompt("TEST closed"), (), (), 5.0) is None
 
 
-def test_a_kept_recaller_counts_its_time_from_the_request_s_arrival():
-    import time
+def test_a_kept_recaller_counts_its_time_from_the_request_s_arrival(monkeypatch):
+    from scope_recall.adapters.clients import local_endpoint
 
-    from scope_recall.adapters.clients.local_endpoint import KeptRecaller
-
+    monkeypatch.setattr(local_endpoint, "time", SimpleNamespace(monotonic=lambda: 100.0))
     _KeptFake.made = []
-    kept = KeptRecaller(_KeptFake)
-    kept(_prompt("TEST late"), (), (), 5.0, received=time.monotonic() - 2.0)
-    assert 2.9 < _KeptFake.made[0].calls[0] <= 3.0
+    kept = local_endpoint.KeptRecaller(_KeptFake)
+    try:
+        kept(_prompt("TEST late"), (), (), 5.0, received=98.0)
+        assert _KeptFake.made[0].calls == [3.0]
+    finally:
+        kept.close()
 
 
 class _WarmedFake(_KeptFake):
@@ -2814,35 +3177,39 @@ def test_a_kept_recaller_that_could_not_make_its_handler_makes_none_to_keep_warm
 
 
 def test_closing_a_recaller_does_not_wait_for_its_keep_warm_search_and_its_handler_is_closed(monkeypatch):
-    """Closing a recaller does not wait for an active keep-warm search;
-    that search closes its handler when it finishes."""
+    """Closing returns while a search is held; that search closes its handler after release."""
     import threading
-    import time
+    from concurrent.futures import ThreadPoolExecutor
 
     from scope_recall.adapters.clients import local_endpoint
 
     monkeypatch.setattr(local_endpoint, "KEEP_WARM_IDLE_SECONDS", 0.1)
     monkeypatch.setattr(local_endpoint, "KEEP_WARM_CHECK_SECONDS", 0.02)
-    monkeypatch.setattr(local_endpoint, "CLOSE_WAIT_SECONDS", 0.5)
-    searching, closed = threading.Event(), []
+    searching, release, closed = threading.Event(), threading.Event(), []
 
     class Slow(_WarmedHandler):
         searches = 0
 
         def warm_vectors(self, seconds):
             Slow.searches += 1
-            if Slow.searches == 2:  # the first search after the start's
+            if Slow.searches == 2:
                 searching.set()
-                time.sleep(1.5)
+                assert release.wait(30)
 
     kept = local_endpoint.KeptRecaller(lambda: Slow(closed))
-    kept.warm()
-    assert searching.wait(10)
-    started = time.monotonic()
-    kept.close()
-    waited = time.monotonic() - started
-    assert _eventually(lambda: len(closed) == 1), f"the handler was never closed (closing waited {waited:.2f} s)"
-    assert waited < 0.3, f"closing waited {waited:.2f} s for the keep-warm search"
+    try:
+        kept.warm()
+        assert searching.wait(30)
+        with ThreadPoolExecutor(1) as executor:
+            try:
+                executor.submit(kept.close).result(timeout=10)
+                assert closed == [], "the active search still owns its handler"
+            finally:
+                release.set()
+        assert _eventually(lambda: len(closed) == 1)
+    finally:
+        release.set()
+        kept.close()
 
 
 def test_a_keep_warm_search_that_failed_is_tried_again_at_once(monkeypatch):
@@ -3045,26 +3412,38 @@ def test_a_server_without_a_runtime_config_makes_a_handler_for_each_recall(resid
 
 
 def test_a_replaced_kept_handler_is_closed_off_the_request_s_time():
-    """Replaced handlers close outside the request's recall budget."""
-    import time
+    """A replacement answers while the old handler is still held inside close."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
 
     from scope_recall.adapters.clients.local_endpoint import KeptRecaller
 
     _KeptFake.made = []
+    closing, release = threading.Event(), threading.Event()
 
     class SlowClose(_KeptFake):
         def close(self):
-            time.sleep(1.0)
+            closing.set()
+            assert release.wait(30)
             super().close()
 
     stamp = ["one"]
     kept = KeptRecaller(SlowClose, stamp=lambda: stamp[0])
-    kept(_prompt("TEST first"), (), (), 5.0)
-    stamp[0] = "two"
-    started = time.monotonic()
-    assert kept(_prompt("TEST second"), (), (), 5.0)[0] == {"TEST": "TEST second"}
-    assert time.monotonic() - started < 0.5
-    assert _eventually(lambda: _KeptFake.made[0].closed)
+    try:
+        kept(_prompt("TEST first"), (), (), 5.0)
+        stamp[0] = "two"
+        with ThreadPoolExecutor(1) as executor:
+            try:
+                answer = executor.submit(kept, _prompt("TEST second"), (), (), 5.0).result(timeout=10)
+                assert closing.wait(30)
+                assert answer[0] == {"TEST": "TEST second"}
+                assert not _KeptFake.made[0].closed
+            finally:
+                release.set()
+        assert _eventually(lambda: _KeptFake.made[0].closed)
+    finally:
+        release.set()
+        kept.close()
 
 
 def test_a_kept_handler_is_made_anew_when_the_entry_s_pointer_or_grants_change(resident):
@@ -3386,21 +3765,34 @@ class _WarmedHandler:
 
 
 def test_closing_a_recaller_does_not_wait_for_its_warming():
-    """Closing a recaller does not wait for startup warming;
-    warming closes the handler after observing closure."""
-    import time
+    """Closing returns while startup warming is held, which then releases its own handler."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
 
     from scope_recall.adapters.clients.local_endpoint import KeptRecaller
 
-    closed = []
-    kept = KeptRecaller(lambda: _WarmedHandler(closed, seconds=1.5))
-    kept.warm()
-    time.sleep(0.2)
-    started = time.monotonic()
-    kept.close()
-    assert time.monotonic() - started < 1.0, "closing did not wait for the warming"
-    assert kept._warming.wait(10) and kept._handler is None
-    assert _eventually(lambda: len(closed) == 1), "the warming closed the handler it made"
+    entered, release, closed = threading.Event(), threading.Event(), []
+
+    class Warming(_WarmedHandler):
+        def warm_vectors(self, seconds):
+            entered.set()
+            assert release.wait(30)
+
+    kept = KeptRecaller(lambda: Warming(closed))
+    try:
+        kept.warm()
+        assert entered.wait(30)
+        with ThreadPoolExecutor(1) as executor:
+            try:
+                executor.submit(kept.close).result(timeout=10)
+                assert not kept._warming.is_set() and closed == []
+            finally:
+                release.set()
+        assert kept._warming.wait(30) and kept._handler is None
+        assert _eventually(lambda: len(closed) == 1)
+    finally:
+        release.set()
+        kept.close()
 
 
 def test_a_warming_takes_its_stamp_before_its_build():
@@ -3424,9 +3816,7 @@ def test_a_warming_takes_its_stamp_before_its_build():
 
 def test_the_mcp_server_warms_its_kept_handler_when_it_starts(store, monkeypatch):
     from scope_recall.adapters.clients import local_endpoint
-    from scope_recall.vector import process_store
 
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
     _root, _homes, client, _capture = store
     endpoint = local_endpoint.serve(client, "claude-code")
     assert endpoint is not None
@@ -4003,9 +4393,7 @@ def test_a_workbuddy_prompt_whose_server_answers_too_late_is_stored_once(
     import threading
 
     from scope_recall.adapters.clients import hook_entry, local_endpoint
-    from scope_recall.vector import process_store
 
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
     root, home, _projects = workbuddy
     endpoint = local_endpoint.serve(home, "workbuddy", warm=False)
     assert endpoint is not None
@@ -4068,9 +4456,7 @@ def test_a_workbuddy_prompt_hook_answers_within_its_budget(
 
     from scope_recall.adapters.clients import handler as handler_module
     from scope_recall.adapters.clients import hook_entry, local_endpoint
-    from scope_recall.vector import process_store
 
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
     monkeypatch.setattr(CodexHookHandler, "ensure_runtime", lambda self, audience=None, **kwargs: None)
     _root, home, _projects = workbuddy
     if configured is not None:
@@ -4108,9 +4494,7 @@ def test_a_workbuddy_hook_with_nothing_to_add_writes_nothing(workbuddy, tmp_path
     import io
 
     from scope_recall.adapters.clients import hook_entry
-    from scope_recall.vector import process_store
 
-    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
     _root, home, _projects = workbuddy
 
     def answer(payload, where, host):
@@ -4838,11 +5222,8 @@ def test_a_sweep_that_fails_stops_at_the_first_session_and_waits_longer(dsh, tmp
     _root, home = dsh
     spool = tmp_path / "TEST-spool"
     spool.mkdir()
-    gone = int(
-        subprocess.run(
-            [sys.executable, "-c", "import os; print(os.getpid())"], capture_output=True, text=True, check=True
-        ).stdout
-    )
+    # The reserved pid cannot be reused while the plugin starts; owner liveness is tested separately.
+    gone = 0
     now = int(datetime.now(timezone.utc).timestamp() * 1000)
     idle = datetime.now(timezone.utc).timestamp() - 600
     names = []
@@ -4881,9 +5262,443 @@ def test_a_sweep_that_fails_stops_at_the_first_session_and_waits_longer(dsh, tmp
     )
     untouched = [name for name in names if name in result["files"]]
     taken = [name for name in result["files"] if name not in names]
-    assert len(untouched) == 1 and len(taken) == 1, result["files"]
+    assert len(untouched) == 1 and len(taken) == 1, result
     assert taken[0].endswith(f".{result['pid']}.jsonl"), "the first is taken into this process's file and kept"
     assert taken[0].split(".")[0] != untouched[0].split(".")[0]
     assert (
         result["status"]["retryAfter"] and result["status"]["lastStore"]["error"] and result["status"]["backlog"] == 2
     )
+
+
+def test_a_shared_duplicate_capture_preserves_entry_activity_and_all_database_bytes(store):
+    from tests.v11_support import source_event
+
+    _root, _homes, client, _scope = store
+    hook = _hook(client)
+    try:
+        audience = hook.audience_of(_prompt("TEST shared replay"))
+        ctx = hook.context(audience, "TEST-byte-replay", "human_direct")
+        event = source_event(content="TEST ordinary shared blue paint")
+        hook.core.record_event(ctx, event, scope_id=_scope, remaining_seconds=10)
+        with hook.core.storage.read(ctx) as tx:
+            before = tx._check().serialize()
+        replay = hook.core.record_event(ctx, event, scope_id=_scope, remaining_seconds=10)
+        assert replay.disposition == "duplicate"
+        with hook.core.storage.read(ctx) as tx:
+            assert tx._check().serialize() == before
+    finally:
+        hook.close()
+
+
+def test_hermes_returns_brief_when_question_recall_fails(store, monkeypatch):
+    claim = _seed_shared_brief(store)
+    _root, homes, _client, _capture_scope = store
+    provider = _hermes(homes["agent3"])
+    try:
+        core = provider._require_core()
+
+        def unavailable(*args, **kwargs):
+            raise ContractError("STORAGE_UNAVAILABLE")
+
+        monkeypatch.setattr(core, "recall_packet", unavailable)
+        assert claim.ref in provider.prefetch("TEST-project color question")
+    finally:
+        provider.shutdown()
+
+
+def test_hermes_render_failure_does_not_confirm_brief_delivery(store, monkeypatch):
+    from scope_recall.adapters.hermes import prefetch
+
+    claim = _seed_shared_brief(store)
+    _root, homes, _client, _capture_scope = store
+    provider = _hermes(homes["agent3"])
+    original = prefetch.render_host_recall_context
+    try:
+
+        def fail_render(*args, **kwargs):
+            raise ValueError("TEST synthetic render failure")
+
+        monkeypatch.setattr(prefetch, "render_host_recall_context", fail_render)
+        with pytest.raises(ValueError, match="synthetic render failure"):
+            provider.prefetch("TEST-project color question")
+        monkeypatch.setattr(prefetch, "render_host_recall_context", original)
+        assert claim.ref in provider.prefetch("TEST-project color question")
+    finally:
+        provider.shutdown()
+
+
+def test_hermes_late_prefetch_does_not_confirm_for_an_ended_turn(store, monkeypatch):
+    claim = _seed_shared_brief(store)
+    _root, homes, _client, _capture_scope = store
+    provider = _hermes(homes["agent3"])
+    try:
+        core = provider._require_core()
+        original = core.recall_packet
+        initial_turn = provider._active_turn_id
+
+        def late(*args, **kwargs):
+            packet = original(*args, **kwargs)
+            provider._active_turn_id = "TEST-next-turn"
+            return packet
+
+        monkeypatch.setattr(core, "recall_packet", late)
+        provider.prefetch("TEST-project color question")
+        monkeypatch.setattr(core, "recall_packet", original)
+        provider._active_turn_id = initial_turn
+        assert claim.ref in provider.prefetch("TEST-project color question")
+    finally:
+        provider.shutdown()
+
+
+@pytest.mark.parametrize("failure", ["exception", "expired"])
+def test_brief_confirmation_failure_never_releases_prepared_text(store, monkeypatch, failure):
+    claim = _seed_shared_brief(store)
+    _root, _homes, client, _scope = store
+    hook = CodexHookHandler.from_home(str(client), "claude-code")
+    start = {"hook_event_name": "SessionStart", "session_id": "TEST-unsafe-release", "cwd": "C:/anywhere"}
+    original = hook.core.confirm_session_brief
+
+    def fail(context, brief, **_kwargs):
+        if failure == "exception":
+            raise sqlite3.OperationalError("TEST safety read failed")
+        with hook.core.storage.write(context) as tx:
+            source = (
+                tx._check()
+                .execute(
+                    "SELECT source_ref,source_revision FROM evidence_links WHERE object_ref=? LIMIT 1", (claim.ref,)
+                )
+                .fetchone()
+            )
+            tx._check(write=True).execute(
+                "INSERT INTO source_safety(source_ref,source_revision,state,rules_json,scanned_at) VALUES(?,?,?,?,?)",
+                (*source, "quarantined", "[]", hook.core.clock.utc_now()),
+            )
+        return original(context, brief, remaining_seconds=0)
+
+    try:
+        monkeypatch.setattr(hook.core, "confirm_session_brief", fail)
+        result = hook.handle_payload(start)
+        assert claim.ref not in result.get("hookSpecificOutput", {}).get("additionalContext", "")
+        assert hook.diagnostics.last_reason == "brief_safety_unconfirmed"
+    finally:
+        hook.close()
+
+
+@pytest.mark.parametrize("host", ["claude-code", "codex"])
+def test_compaction_counter_survives_clock_rollback_and_counter_loss(store, tmp_path, monkeypatch, host):
+    from scope_recall.adapters.clients.session_marks import mark_path
+
+    claim = _seed_shared_brief(store)
+    root, _homes, client, _scope = store
+    home = client if host == "claude-code" else _codex_client(root, tmp_path)
+    hook = CodexHookHandler.from_home(str(home), host)
+    start = {"hook_event_name": "SessionStart", "session_id": "TEST-clock-back", "cwd": "C:/anywhere"}
+    try:
+        assert claim.ref in hook.handle_payload(start)["hookSpecificOutput"]["additionalContext"]
+        monkeypatch.setattr(hook.clock, "utc_now", lambda: "2026-09-06T12:00:00Z")
+        assert (
+            claim.ref in hook.handle_payload({**start, "source": "compact"})["hookSpecificOutput"]["additionalContext"]
+        )
+        monkeypatch.setattr(hook.clock, "utc_now", lambda: "2026-09-06T11:59:59Z")
+        assert (
+            claim.ref in hook.handle_payload({**start, "source": "compact"})["hookSpecificOutput"]["additionalContext"]
+        )
+        counter = mark_path(hook.config, "compaction-counters", start["session_id"])
+        counter.unlink()
+        assert (
+            claim.ref in hook.handle_payload({**start, "source": "compact"})["hookSpecificOutput"]["additionalContext"]
+        )
+        with closing(sqlite3.connect(root / "memory.sqlite3")) as db:
+            assert (
+                db.execute(
+                    "SELECT compacted_seq FROM session_brief_sessions WHERE session_id LIKE ?",
+                    ("%:" + start["session_id"],),
+                ).fetchone()[0]
+                == 3
+            )
+        assert json.loads(counter.read_text(encoding="utf8"))["seq"] == 3
+        counter.unlink()
+        holder = subprocess.Popen(
+            [sys.executable, "-c", _LEASE_HOLDER, str(root)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+        )
+        try:
+            assert holder.stdout.readline().strip() == "holding"
+            assert (
+                claim.ref
+                in hook.handle_payload({**start, "source": "compact"})["hookSpecificOutput"]["additionalContext"]
+            )
+            assert json.loads(counter.read_text(encoding="utf8"))["seq"] == 4
+            from scope_recall.core.retrieval import CandidateRef, SearchContext
+            from scope_recall.core.session_brief import already_injected
+
+            from tests.v11_support import recall_request
+
+            context = hook.context(hook.audience_of(start), start["session_id"], "human_direct")
+            with hook.core.storage.read(context) as tx:
+                assert not already_injected(tx, "claim", claim.ref, claim.revision)
+                search = SearchContext.from_request(
+                    recall_request(query="TEST-project color", mode="auto"),
+                    context,
+                    now=hook.core.clock.utc_now(),
+                    deadline=hook.core.clock.monotonic() + 10,
+                )
+                assert hook.core.recall_pipeline._hydrate_admit(
+                    tx, CandidateRef("claim", claim.ref, claim.revision, "lexical"), search
+                )
+        finally:
+            holder.communicate(input="release\n", timeout=30)
+        assert claim.ref in hook.handle_payload(start)["hookSpecificOutput"]["additionalContext"]
+    finally:
+        hook.close()
+
+
+def test_hermes_compaction_counter_ignores_clock_rollback(store, monkeypatch):
+    claim = _seed_shared_brief(store)
+    _root, homes, _client, _scope = store
+    provider = _hermes(homes["agent3"])
+    try:
+        assert claim.ref in provider.prefetch("继续")
+        core = provider._require_core()
+        now = datetime.now(UTC) + timedelta(seconds=10)
+        monkeypatch.setattr(core.clock, "utc_now", lambda: now.isoformat())
+        provider.on_pre_compress([])
+        assert claim.ref in provider.prefetch("继续")
+        monkeypatch.setattr(core.clock, "utc_now", lambda: (now - timedelta(seconds=1)).isoformat())
+        provider.on_pre_compress([])
+        assert claim.ref in provider.prefetch("继续")
+    finally:
+        provider.shutdown()
+
+
+def test_hermes_failed_safety_confirmation_does_not_release_brief(store, monkeypatch):
+    claim = _seed_shared_brief(store)
+    _root, homes, _client, _scope = store
+    provider = _hermes(homes["agent3"])
+    try:
+        core = provider._require_core()
+        original = core.confirm_session_brief
+
+        def failed(*_args, **_kwargs):
+            raise RuntimeError("TEST safety check failed")
+
+        monkeypatch.setattr(core, "confirm_session_brief", failed)
+        assert claim.ref not in provider.prefetch("继续")
+        monkeypatch.setattr(core, "confirm_session_brief", original)
+        assert claim.ref in provider.prefetch("继续")
+    finally:
+        provider.shutdown()
+
+
+@pytest.mark.parametrize("host", ["claude-code", "codex", "workbuddy", "dsh"])
+@pytest.mark.parametrize("style", ["json", "compact", "outline"])
+def test_question_delivery_and_correction_on_each_client(store, tmp_path, host, style):
+    from dataclasses import replace
+
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    claim = _seed_shared_brief(store)
+    root, _homes, _client, capture_scope = store
+    home = tmp_path / f"TEST-injection-{host}"
+    attach_shared_record(
+        root,
+        client_entry_record(
+            host=host,
+            home=home,
+            entry_id=f"test-{host}",
+            display_name="TEST reader",
+            attached_at=NOW,
+            allowed_scope_ids=[capture_scope],
+            writable_scope_ids=[capture_scope],
+            capture_scope_id=capture_scope,
+        ),
+        now=NOW,
+    )
+    hook = CodexHookHandler.from_home(str(home), host)
+    hook.core.config = replace(hook.core.config, session_brief_enabled=False, injection_format=style)
+    payload = _prompt("TEST-project 配色是什么？", session="TEST-each-client")
+    payload["turn_id"] = "TEST-turn-1"
+    try:
+        response = hook.handle_payload(payload)
+        assert claim.ref in response["hookSpecificOutput"]["additionalContext"]
+        assert hook.diagnostics.injection_format == style
+        assert ("claim", claim.ref, claim.revision) in hook.diagnostics.injection_refs
+        assert (claim.ref, "question") in _rows(
+            root, "SELECT object_ref,source FROM session_brief_injections WHERE source='question'"
+        )
+        context = hook.context(hook.audience_of(payload), payload["session_id"], "human_direct")
+        MemoryManagement(hook.core, InstallationMaintenance(context)).revise(
+            claim.ref, expected_revision=claim.revision, value="green"
+        )
+        hook.core.config = replace(hook.core.config, session_token_cap=0)
+        updated = hook.handle_payload(dict(payload, prompt="继续", prompt_id="TEST-next", turn_id="TEST-turn-2"))
+        text = updated["hookSpecificOutput"]["additionalContext"]
+        assert claim.ref in text and "green" in text and "蓝色" not in text
+        assert hook.diagnostics.last_reason == "session_injection_budget_exhausted"
+        repeated = hook.handle_payload(dict(payload, prompt="继续", prompt_id="TEST-again", turn_id="TEST-turn-3"))
+        assert claim.ref not in repeated.get("hookSpecificOutput", {}).get("additionalContext", "")
+    finally:
+        hook.close()
+
+
+@pytest.mark.parametrize("style", ["json", "compact", "outline"])
+def test_hermes_question_delivery_and_correction_with_exhausted_budget(store, style):
+    from dataclasses import replace
+
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.recall_budget import estimate_tokens
+    from scope_recall.core.restore import InstallationMaintenance
+
+    claim = _seed_shared_brief(store)
+    root, homes, _client, _scope = store
+    provider = _hermes(homes["agent3"])
+    try:
+        core = provider._require_core()
+        core.config = replace(core.config, session_brief_enabled=False, injection_format=style)
+        assert claim.ref in provider.prefetch("TEST-project 配色是什么？")
+        assert (claim.ref, "question") in _rows(
+            root, "SELECT object_ref,source FROM session_brief_injections WHERE source='question'"
+        )
+        context = provider._require_identity().trusted_context(session_id="TEST-session-1")
+        MemoryManagement(core, InstallationMaintenance(context)).revise(claim.ref, expected_revision=1, value="green")
+        core.config = replace(core.config, session_token_cap=0)
+        text = provider.prefetch("继续")
+        assert claim.ref in text and "green" in text and "蓝色" not in text
+        assert provider.diagnostics.injection_tokens == estimate_tokens(text)
+        assert provider.diagnostics.session_token_cap == 0
+        assert claim.ref not in provider.prefetch("继续")
+    finally:
+        provider.shutdown()
+
+
+def test_question_returns_without_delivery_mark_when_writer_is_busy(store):
+    from dataclasses import replace
+
+    claim = _seed_shared_brief(store)
+    root, _homes, client, _scope = store
+    hook = _hook(client)
+    hook.core.config = replace(hook.core.config, session_brief_enabled=False)
+    # The configured prompt allowance leaves time after the bounded capture wait.
+    hook._prompt_budget = 6
+    holder = None
+    try:
+        holder = subprocess.Popen(
+            [sys.executable, "-c", _LEASE_HOLDER, str(root)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+        )
+        assert holder.stdout.readline().strip() == "holding"
+        response = hook.handle_payload(_prompt("TEST-project 配色", session="TEST-question-locked"))
+        assert claim.ref in response["hookSpecificOutput"]["additionalContext"]
+        assert hook.diagnostics.delivery_reason == "injection_delivery_unconfirmed"
+        assert not _rows(
+            root, "SELECT object_ref FROM session_brief_injections WHERE session_id LIKE '%TEST-question-locked'"
+        )
+        holder.communicate(input="release\n", timeout=30)
+        holder = None
+        response = hook.handle_payload(
+            _prompt("TEST-project 配色", session="TEST-question-locked", prompt_id="TEST-retry")
+        )
+        assert claim.ref in response["hookSpecificOutput"]["additionalContext"]
+        assert hook.diagnostics.delivery_reason == "brief_delivered"
+    finally:
+        if holder is not None:
+            holder.communicate(input="release\n", timeout=30)
+        hook.close()
+
+
+@pytest.mark.parametrize("host", ["claude-code", "codex", "workbuddy", "dsh", "hermes"])
+def test_default_cap_covers_complete_host_assembly_with_private_hint(
+    store, tmp_path, monkeypatch, record_property, host
+):
+    from types import SimpleNamespace
+
+    from scope_recall.core.recall_budget import DEFAULT_INJECTION_TOKEN_CAP, estimate_tokens
+    from v11_support import recall_packet
+
+    from tests.unit.test_recall_budget import saturated_legacy_host_texts
+
+    brief_text, question, _bound = max(
+        saturated_legacy_host_texts(), key=lambda parts: estimate_tokens(parts[0] + "\n\n" + parts[1])
+    )
+    root, homes, _client, scope = store
+    provider = None
+    hook = None
+    if host == "hermes":
+        provider = _hermes(homes["agent3"])
+        core = provider._require_core()
+        monkeypatch.setattr(
+            "scope_recall.adapters.hermes.prefetch.render_host_recall_context", lambda *a, **k: question
+        )
+    else:
+        home = tmp_path / f"TEST-assembled-{host}"
+        attach_shared_record(
+            root,
+            client_entry_record(
+                host=host,
+                home=home,
+                entry_id=f"test-{host}",
+                display_name="TEST reader",
+                attached_at=NOW,
+                allowed_scope_ids=[scope],
+                writable_scope_ids=[scope],
+                capture_scope_id=scope,
+            ),
+            now=NOW,
+        )
+        hook = CodexHookHandler.from_home(str(home), host)
+        hook._prompt_budget = 6
+        monkeypatch.setattr(hook, "ensure_runtime", lambda *a, **k: None)
+        monkeypatch.setattr(hook, "launch_worker", lambda *a, **k: None)
+        monkeypatch.setattr(
+            "scope_recall.adapters.clients.prompt_recall.render_host_recall_context", lambda *a, **k: question
+        )
+        core = hook.core
+    captured = []
+
+    def brief(*args, **kwargs):
+        return dict(text=brief_text, items=[], tokens=estimate_tokens(brief_text), elapsed_ms=0, _epoch=0)
+
+    def final(context, text, *, brief=None, **kwargs):
+        captured.append(text)
+        prepared = brief or dict(text="", tokens=0, elapsed_ms=0)
+        prepared["_injection"] = dict(
+            text=text,
+            tokens=estimate_tokens(text),
+            session_tokens=0,
+            injection_token_cap=DEFAULT_INJECTION_TOKEN_CAP,
+            session_token_cap=None,
+            reason=None,
+        )
+        return prepared
+
+    monkeypatch.setattr(core, "private_mode", lambda *a, **k: "read-only")
+    monkeypatch.setattr(core, "session_brief", brief)
+    monkeypatch.setattr(core, "recall_packet", lambda *a, **k: recall_packet())
+    monkeypatch.setattr(core, "recall_packet_current", lambda *a, **k: True)
+    monkeypatch.setattr(
+        core,
+        "prepare_recall_render",
+        lambda *a, **k: SimpleNamespace(canonical_text="TEST-rendered", context={}, render_ref="TEST-render"),
+    )
+    monkeypatch.setattr(core, "prepare_session_injection", final)
+    monkeypatch.setattr(core, "confirm_session_brief", lambda *a, **k: "brief_delivered")
+    try:
+        if provider:
+            provider.prefetch("TEST question")
+        else:
+            if host in {"claude-code", "codex"}:
+                hook.handle_payload(
+                    dict(hook_event_name="SessionStart", session_id="TEST-full-host", cwd="C:/TEST/work")
+                )
+            payload = _prompt("TEST question", session="TEST-full-host")
+            hook.handle_payload(dict(payload, turn_id="TEST-turn"))
+        assert any("read-only" in text for text in captured)
+        assert any(question in text for text in captured)
+        assert any(brief_text in text for text in captured)
+        measured = max(estimate_tokens(text) for text in captured)
+        record_property("complete_host_tokens", f"{host}:{measured}")
+        assert DEFAULT_INJECTION_TOKEN_CAP >= measured
+    finally:
+        if provider:
+            provider.shutdown()
+        if hook:
+            hook.close()

@@ -29,6 +29,8 @@ and English otherwise. The language selector switches between both languages.
 - **Overview** shows database and vector size, source count, pending work and
   failures, using the same measurements as doctor. Refresh reads the current
   status; it does not start or retry background work.
+- **Entries** shows each entry's scopes, recent activity and state. The owner can choose normal, read-only or
+  paused and review each change before confirming it. Existing memories remain in the store.
 - **Browse and search** accepts literal words and the memory command's kind,
   scope, agent, session and inclusive UTC time filters. Continue follows the
   same bounded scan, including pages with no match while more objects remain.
@@ -46,6 +48,18 @@ and English otherwise. The language selector switches between both languages.
   ten minutes; if the underlying selection changes, create a new preview.
   Each confirmed action displays its receipt. Deletion uses the existing
   deletion and background purge process; a receipt can still show pending work.
+- **Held content** lists source text with the rules that quarantined it or left it pending review.
+  Capture screens up to 128 windows shared by message bodies and metadata (2048 owned characters per window).
+  Larger messages resume on the local background queue. The caller's remaining deadline is the wall-clock fallback;
+  doctor reports its retained occurrence count as `injection_scan_deadlines`. Replaying a captured message preserves
+  its verdict and continuation; it does not request a new review.
+  These sources are excluded from search, recall, summaries and background extraction. Ordinary explicit
+  inspection returns only their state and rule names. Choose Review release, inspect the source revision,
+  then confirm to restore normal admission. Delete uses the existing reviewed deletion flow and does
+  not require releasing the source first. Actions are recorded without copying the source text.
+  Deletion and scope restrictions still apply. External and unattributed sources without a completed safety review stay
+  pending; no model is called for this review. A hold on an older revision also withholds later revisions
+  of the same source identity until the owner reviews each held version.
 - **Private mode** shows the current whole-store mode and active rules. Choose
   an exact session, absolute project directory, or the whole store to inspect,
   enable or close its rules. Full mode blocks capture, recall and outbound work;
@@ -103,3 +117,66 @@ A busy or unavailable store returns a clear error so you can retry. Other
 request failures use fixed messages without revealing stored content. Malformed
 requests receive the same browser protections as ordinary responses. Language
 changes also update labels on browse results already on the page.
+
+
+**Recall history** filters attempts by session and request ID. Each row shows delivered references, excerpt rows,
+ranking signals, processing counts and reasons for an empty packet. Private attempts are excluded. Open an
+available item to correct, mute or delete it with the same preview and confirmation as **Browse and search**.
+Deleted, held, private, stale or unauthorized references have no action link. See [Recall history](manage.md#recall-history)
+for retention settings and command-line lookup.
+
+
+## Review
+
+The Review page reads pending imported material, ambiguous proposal adoptions,
+observations, health findings and extracted facts directly from their source
+records. Each item includes its source, content, evidence and timestamp. Approve
+or reject an item; Decisions offers Undo while the affected versions are unchanged.
+The existing source pages reflect the same decisions. If a scheduled consolidation
+or adoption job has advanced, Undo returns a version conflict. It cannot report
+success while already executed work remains in effect.
+
+Review before publication is a per-scope switch, disabled by default. Enter a
+scope on the Review page to read or change its versioned setting. New extractions
+in an enabled scope wait for approval without replacing existing facts. Recall,
+explicit lookups, session briefs and current-fact exports withhold the held facts;
+original messages remain searchable. Automatic entity aliases wait for the same
+review, and approving an adoption retires matching older decisions only at that
+point. Undo restores those decisions together with the reviewed item. Turning
+the switch off leaves existing
+pending items waiting. Rejected records remain in history. Session correction
+notices wait until a held fact is approved; they do not disclose the proposed value.
+
+An ambiguous adoption requires the owner's selected fragment IDs. Approval resumes
+the existing extraction stages; imported material keeps its original authorship
+and existing fact-qualification rules. Observations retain their inductive basis
+and dependency signature. A health finding about an unused fact is acknowledged
+without automatically deleting or muting that fact.
+
+The CLI uses the same owner API:
+
+```text
+scope-recall memory reviews --source fact --json --root /path/to/store
+scope-recall memory review-policy --scope SCOPE --json --root /path/to/store
+scope-recall memory review-policy-set on --scope SCOPE --expected-version 0 --json --root /path/to/store
+scope-recall memory review-decide '["fact","claim-REFERENCE",1]' approve --expected-version TOKEN --json --root /path/to/store
+scope-recall memory review-actions --json --root /path/to/store
+scope-recall memory review-undo ACTION_ID --expected-version TOKEN --json --root /path/to/store
+```
+
+Add the installation selector used by the other memory commands. Adoption approval
+accepts `--selection '{"fragment_ids":[2]}'`; a conflicting health pair accepts
+`--selection '{"keep":"claim-REFERENCE"}'`. Pages continue with `--cursor`;
+decision history continues with `--before`. HTTP reads use `reviews`,
+`review-actions` and `review-policy`; writes use `review-decide`, `review-undo`
+and `review-policy-set` through the existing preview/confirm endpoints. Each write
+requires the version displayed by its corresponding read.
+
+## Handoffs
+
+The Handoffs page lists task reports, their sending and receiving entries,
+lifecycle, expiry, confirmation state and injection safety state. Pending reports
+have a Cancel button using the same preview and confirmation flow as other owner
+operations. Content whose source is deleted, hidden or outside the selected
+installation's authority is withheld. Accepting a handoff belongs to an
+agent's authenticated tool entry.

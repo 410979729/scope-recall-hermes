@@ -1,759 +1,205 @@
 # Configuration
 
-Scope Recall 3.x reads two files. The **installation record** is written by the
-installer and describes identity: `<instance-root>\scope-recall\installation.json`
-for Hermes, `<instance-root>\codex-installation.json` for Codex. The
-**runtime config**, `runtime-config.json`, is written by you and describes
-behaviour: budgets, the vector companion, and the external model routes. This
-document is a reference for the second file.
+This reference is generated from runtime input definitions and their readers.
+Regenerate with `python scripts/generate_configuration_docs.py --write`; `--check` detects drift.
 
-## Where the file goes
+Setup preserves existing routes and grants. New installations have no model routes and zero model budget.
+Credentials are environment variable references. Never put their values in a route file.
 
-`runtime-config.json` belongs in the Core data directory, beside `memory.sqlite3`:
+## Setup options
 
-| Host | Core data directory |
-|------|---------------------|
-| Hermes | `<instance-root>\scope-recall\` |
-| Codex | `<instance-root>\data\` |
+| Option | Meaning |
+|---|---|
+| `--host` | Host to configure; repeat to select several. Default: discovered hosts. |
+| `--home` | Host home override; requires exactly one host. |
+| `--store` | Create or join this shared store. Default: the existing attachment or ~/.scope-recall/shared. |
+| `--share-with` | Copy owner grants from this registered shared entry when grants differ. |
+| `--project` | Project directory to bind or inspect. Default: current directory. |
+| `--python` | Override the interpreter; default: a host venv, then setup's Python. |
+| `--configure-models` | Guide endpoint, model, environment reference, pricing and budget choices before confirmation. |
+| `--models` | JSON with auxiliary routes, budget and vector configuration; credentials must be environment references. |
+| `--worker` | Use bounded host-triggered workers, or print a manual command; no system service is registered. |
+| `--dry-run` | Print the plan without writing or running checks. |
+| `--plan-json` | Print the plan as JSON; combine with --dry-run for automation. |
+| `--yes` | Apply the displayed plan without an interactive confirmation. |
+| `--register-project-copy` | Explicitly approve the matching project copy shown by setup; --yes alone never grants it. |
+| `--test-mode` | Bind synthetic test installations; never use with a personal store. |
 
-Nothing generates this file. The installer does not create it, and it is never
-discovered from the current directory, a parent directory or a credential
-location. When a host adapter attaches, it looks only at
-`<data-directory>\runtime-config.json` (`RUNTIME_CONFIG_FILENAME` in
-`adapters/runtime_wiring.py`). Without the file the Core still runs with basic
-capability and the adapter reports the gap `capability_gap:trusted_runtime_unconfigured`.
+## RuntimeInstanceConfig
 
-Three more gaps come from the same code path:
-
-- `capability_gap:trusted_runtime_invalid` — the path is not absolute, or is a
-  symlink, reparse point or non-regular file, or the JSON does not parse or does
-  not validate, or an auto-discovered file is not directly inside the data directory.
-- `capability_gap:trusted_runtime_binding_mismatch` — the `binding` block does not
-  match the identity the host bound: `agent_id`, `installation_id`,
-  `data_directory`, `scope_ids`, `test_mode` and `installation_kind` must all agree.
-- `capability_gap:trusted_runtime_worker_busy` / `..._audience_capacity` — runtime
-  is configured, but no further background worker could be started right now.
-
-The background worker takes the path on the command line instead
-(`--config`, `runtime/worker_entry.py`), and accepts any absolute JSON file. The
-supported location is still the one above, and `autostart` enforces it: a config
-whose parent directory is not the binding's `data_directory` is refused with
-`autostart_config_outside_binding`.
-
-Changes take effect the next time a process loads the file. Nothing reloads it
-in place.
-
-## How values are read
-
-Every field is checked exactly, with no coercion (`runtime/validation.py`):
-
-- `true` is not `1`, and a count field rejects a boolean.
-- `"45"` is not `45.0`. Second fields accept an `int` or a `float`; count fields
-  accept only `int`.
-- Every path must be absolute. On Windows, write `"C:\\path\\to\\dir"` or
-  `"C:/path/to/dir"` — JSON needs the backslash escaped.
-- All bounds are closed intervals: the stated minimum and maximum are both legal.
-- A bad value fails the whole file. The error message is the field name.
-
-One trap: the readers take the keys they know and ignore the rest
-(`RuntimeInstanceConfig.from_mapping`, `AuxiliaryRuntimeConfig.from_mapping`,
-`VectorRuntimeConfig.from_mapping` all use `raw.get(...)`). A misspelled
-top-level key is silently ignored, not reported. After an edit, confirm the
-value you meant to change actually took effect with `doctor`.
-
-## Minimal file
-
-This is the smallest file that validates. It configures no external model route
-and no vector companion, so recall stays lexical.
-
-```json
-{
-  "binding": {
-    "agent_id": "default",
-    "installation_id": "<installation id from the installation record>",
-    "data_directory": "C:/path/to/instance-root/scope-recall",
-    "scope_ids": ["<scope id>"],
-    "test_mode": false
-  },
-  "session_id": "local-worker",
-  "allowed_scope_ids": ["<scope id>"]
-}
-```
-
-## `binding` (required)
-
-Identity, not preference. Copy these values from the installation record the
-installer wrote; do not invent them. A mismatch is a capability gap, not a
-silent rebind.
-
-| Key | Type | Default | Meaning |
-|-----|------|---------|---------|
-| `agent_id` | string, non-blank, ≤ 240 chars | required | The agent identity the host sends. Must equal the installed `agent_id`. |
-| `installation_id` | string, non-blank, ≤ 240 chars | required | The installation identity from the installation record. |
-| `data_directory` | absolute path | required | The Core data directory holding `memory.sqlite3`. |
-| `scope_ids` | array of strings | required | Every scope this installation owns. In a shared store, an entry's own scopes, or every scope of the store for its worker. |
-| `test_mode` | boolean | `false` | Isolated TEST binding semantics. Production installs are `false`. |
-| `installation_kind` | `"local"` or `"shared"` | `"local"` | `"shared"` in the configs `attach` writes for an entry of a shared store and for the store's worker ([shared-store.md](shared-store.md)). A store opens only for its own kind. An entry's config sits beside its pointer in `<home>/scope-recall/`, its `data_directory` is the store's, and it never starts a worker. |
-
-## Identity and partition
-
-| Key | Type | Default | Meaning |
-|-----|------|---------|---------|
-| `session_id` | string, non-blank, ≤ 240 chars | required | Attribution and de-duplication key stamped onto rows the worker writes. It is not an auth token. |
-| `allowed_scope_ids` | array of strings | required | The scopes this config may act in. Must be non-empty and a subset of `binding.scope_ids`; otherwise the file is rejected with `ACCESS_DENIED`. |
-| `actor_origin` | one of `human_direct`, `tool_observation`, `external_document`, `imported` | `human_direct` | Provenance the worker's own writes carry. Leave it at `human_direct`: the drain's deferred-source refill only accepts `human_direct`, so any other value makes every pass refuse with `ACCESS_DENIED` on `schedule_origin`. |
-| `project_id` | string or `null` | `null` | Partition filter. Work rows carrying a non-null `project_id` are only visible when it equals this value. The capture inbox is replayed by exact partition: a config that names a project or branch replays only captures of that project and branch, and hook captures carry none. |
-| `branch_id` | string or `null` | `null` | The same filter on the branch axis. |
-| `host_adapter` | `"hermes"`, `"codex"` or `null` | `null` | Selects the ingress authorizer that replays the durable capture inbox. Left unset, pending inbox rows can only be reported, with the gaps `capture_gap:durable_ingress_authorizer_unconfigured` and `capture_gap:durable_ingress_pending`. Set it to the host that owns this instance. |
-| `owner_id` | string, non-blank, ≤ 240 chars | `"scope-recall-worker"` | The lease holder name written onto claimed work rows and echoed in the worker receipt. Change it only to tell two deliberately separate workers apart. |
-
-Hosts override `session_id`, `allowed_scope_ids`, `host_adapter`, `project_id`
-and `branch_id` per session when they attach, so the stored values are the
-defaults a standalone worker pass uses.
-
-## Pass and budget knobs
-
-| Key | Type | Default | Bounds | Meaning |
-|-----|------|---------|--------|---------|
-| `max_items` | int | `32` | 1–1000 | Most work items one pass may reserve and claim. Also caps an operator retry, which takes at most `min(8, max_items)`. A pass claims its embedding group in one page of up to this many items: sources and claims each go a hundred to a request and into one commit, and the group is recorded together. What it cannot finish inside `drain_seconds` or its lease, or what the provider refuses for capacity, is handed back unspent and claimed again by a later pass. A value far above the default is for a one-off drain of a large embedding backlog and buys nothing once that is gone: put it back afterwards. |
-| `drain_seconds` | number | `120.0` | 0.001–120.0; up to 900.0 only with a `model_request_seconds` above 110 | Wall budget for the whole pass. The drain, the lock wait and the finalize share this one deadline, and it is the watchdog's kill budget. With `model_request_seconds` set it must be at least that plus 10 seconds, or no consolidation could ever be claimed. |
-| `request_seconds` | number | `45.0` | 0.001–45.0 | Per-call ceiling clamped onto every model and native boundary: consolidation, candidate evaluation, embedding, vector purge, and the vector-open slice. |
-| `model_request_seconds` | number or absent | absent | 0.001–600.0 | The worker's own ceiling for a consolidation or candidate-evaluation request, for a model that needs longer than `request_seconds`, such as one that reasons before it answers. It bounds only those background requests: recall, capture, embedding and every other boundary keep `request_seconds`. Raise `drain_seconds` and `lease_seconds` with it, and give the route a `max_output_tokens` its reasoning cannot use up (`auxiliary.consolidation`). |
-| `lease_seconds` | number | `60.0` | `request_seconds`–3600.0 | How long a claimed item stays leased to `owner_id` before a later pass may reclaim it as stale. Must be at least `request_seconds`, and at least `model_request_seconds` when that is set. |
-| `worker_min_interval_seconds` | number | `30.0` | 1–3600 | Minimum gap between two passes. A supervised window sleeps out the remainder; a host coalesces wake-ups against it. On a drain the passes themselves are short, so this gap is most of what an edit can win back. |
-| `supervisor_enabled` | boolean | `true` | — | When true, a scheduled wake runs a finite supervise loop of several passes. When false, a scheduled wake refuses to launch at all — this is the switch that turns background work off without unregistering it. |
-| `supervisor_seconds` | number | `21600.0` (6 h) | 1–86400 | Total lifetime of one supervised window. On expiry the window suspends. |
-| `supervisor_max_drains` | int | `256` | 1–1024 | Most passes one supervised window may run before it suspends. |
-| `daily_work_limit` | int | `0` | 0–1000000 | Queue items a UTC day may attempt. **`0` means no cap** and is the default. When a cap is spent, the pass runs deletion cleanup only, reports the gap `daily_queue_budget`, and the next wake moves to the next UTC midnight. |
-| `storage_budget_bytes` | int | `0` | 0–2^50 | Bytes `memory.sqlite3` and `vectors/` together may occupy before `doctor` reports the gap `storage_budget_exceeded`. **`0` sets no budget.** Nothing is deleted for it; it is a warning, and `doctor` reports the bytes and the day's growth either way. |
-| `auto_retry_cooldown_seconds` | number | `3600.0` | 60–86400 | Delay added before a recoverable failure becomes due again. The same value, clamped to 300 s, is the stand-down for a work type a pass reported unavailable. |
-| `max_auto_recoveries` | int | `2` | 0–4 | Automatic retries a recoverable failure gets. `0` disables automatic recovery; the failure then waits for `retry-failures`. |
-| `auto_recall_seconds` | number | `5.0` | 0.001–5.0 | Deadline for *automatic* recall on the read path. On timeout, recall degrades to lexical. |
-| `hook_processing_seconds` | number | `6.0` | 0.001–6.0 | Total budget a trusted-host hook has to answer. Must be at least `auto_recall_seconds`, so the hook can cover a full automatic recall; a smaller value fails the file with `hook_processing_seconds_must_cover_auto_recall`. |
-| `resident_recall_minutes` | int | unset | 0–1440 | For a client attached to a shared store: minutes its resident recall server stays up after the last prompt's recall and the last of the client's running MCP servers. Unset, the client's default applies: 120 for WorkBuddy, which runs the entry's MCP server only with a conversation's process, 120 for dsh, whose plugin runs each hook as a process of its own and whose headless runs are one process each, and none for Claude Code and Codex, whose server runs as long as the client. An entry with no runtime config file keeps none. **`0` keeps none**: a running server reads the value every 30 s and ends at 0. Each of the client's MCP servers decides at its own start whether it answers the hooks itself (0) or keeps the resident server, so a change reaches that side when the client starts it again: for Claude Code, Codex and dsh at the client's restart, for WorkBuddy with each conversation's process. While it runs the server holds a vector helper, about 1 GB. Under WorkBuddy it also ends with the conversation's agent process that started it, since that process ends every process it started. Read from the entry's own runtime config; a value outside the bounds or of another type (`true`, `"60"`, `2.0`) fails the whole runtime config, as any field's does. See [install.md](install.md), sections 12 and 13. |
-
-A running supervisor reads the file again before each pass, so an edited setting takes effect at
-its next pass. Only a file that names another store ends it, as `suspended` with the reason
-`config_changed`; the next wake starts that store's own supervisor.
-
-`daily_work_limit` is not the spend guard. Money, calls and tokens are enforced
-per request by the auxiliary ledger (`runtime/model_budget.py`), which cannot see
-this counter, and this counter cannot see cost. A daily limit below the incoming
-work rate causes a growing backlog.
-
-The maxima above are protections, not recommendations. `request_seconds` at
-45 seconds and `drain_seconds` at 120 seconds are the contract ceilings; a
-shorter value is honoured and is often the better setting on a slow link.
-Only a consolidation model that needs longer moves them, and only for its own
-requests: for example `"model_request_seconds": 150`, `"drain_seconds": 300`,
-`"lease_seconds": 180` for a model measured at up to two minutes a request.
-
-## `vector`
-
-Omit the whole block to run without a vector companion; recall is then lexical.
-The block is a mapping:
-
-| Key | Type | Default | Meaning |
-|-----|------|---------|---------|
-| `backend` | `"lancedb"` or `"sqlite-bruteforce"` | `"lancedb"` | `lancedb` needs the `lancedb` extra installed. Both backends serve recall while the worker writes. `sqlite-bruteforce` is dependency-free and scans; it is meant for hosts where LanceDB or PyArrow is unsafe, and for small to medium memory sets. Recall reads through SQLite's write-ahead log and sees each embedding as soon as the worker commits it; a read needs `vector.sqlite3-wal` and `vector.sqlite3-shm` beside the file, or permission to create them there, as the worker has. A reader that closes last leaves them behind; a writer removes them when it is the last connection and closes cleanly. Any other value, including `"pgvector"`, is refused. |
-| `storage_dir` | absolute path | required | Must be exactly `<data_directory>/vectors/<embedding space id>`, or the file is refused with `VECTOR_STORAGE_OUTSIDE_BINDING`. The backend creates its own store below it: a `lancedb/` directory, or a `vector.sqlite3` file. |
-| `table_name` | string, non-blank, ≤ 240 chars | required | Table or collection name inside the store. |
-| `dimensions` | int | required, 1–8192 | Must equal the active embedding space's width, or the file is refused with `VECTOR_DIMENSIONS_MISMATCH`. The shipped space is 3072. |
-| `metric` | `"cosine"` | `"cosine"` | The only supported metric. |
-| `test_injection_override` | boolean | `false` | A test seam. It is refused unless `binding.test_mode` is true, and it skips the dimension and path checks above. Do not set it in a real installation. |
-| `tool_output_retention_days` | int | `180` | Days a tool output's vector is kept after its source entered the store. A worker pass then deletes the vector, up to 2,000 per pass and hourly once caught up, and the following compaction reclaims the space. The same pass deletes at once, whatever their age, the vectors of a tool output that repeats an earlier one in the same scope (the earliest copy keeps its vector) and of the summary the capture filter leaves in place of an output it withheld. The source text, its lexical index and everything derived from it stay, so the output is still found by its words and through what cites it, never again by meaning alone. `0` turns the pass off entirely. |
-
-The embedding space id is the SHA-256 digest of the active space descriptor. For
-the shipped space it is
-`93ba90c7d52b3574462d6751e2e077a411f1095727862abb4cc80d3780d2e30c`. Naming an
-embedding route changes the digest, and therefore the directory — see
-[Pointing a route at another provider](#pointing-a-route-at-another-provider).
-
-On Windows keep the data directory short, for example `C:\ScopeRecall\my-agent`.
-LanceDB appends index, table and temporary file names to `storage_dir`; when the
-resulting native path is too long the worker reports
-`native_vector_path_too_long` before starting LanceDB or calling the embedding API.
-
-## `vector_threshold`
-
-A top-level field: the lowest cosine similarity, from `-1.0` to `1.0`, at which a
-vector hit is admitted into recall. It is compared with a `1e-6` float tolerance.
-
-Automatic recall also applies three top-level policy fields. Explicit tool
-lookups, including those requesting `mode: auto`, and history and as-of reads
-keep their admission thresholds and do not skip conversational queries.
-
-| Field | Default | Meaning |
+| Field | JSON input type | Default when omitted |
 |---|---|---|
-| `auto_lexical_min_coverage` | `0.20` | Minimum share of the query's meaningful terms a lexical candidate matches, from `0.0` to `1.0`. |
-| `auto_lexical_min_terms` | `2` | Minimum matched terms for queries with at least this many terms; an integer of at least `2`. Shorter queries must match every term. |
-| `auto_vector_threshold` | `0.30` | Minimum cosine similarity for automatic vector hits, from `-1.0` to `1.0`; `vector_threshold` must also be met. |
-
-Calibrate lexical coverage and vector similarity independently on synthetic or
-copied data for the configured embedding space. Reciprocal rank fusion orders
-candidates that clear their channel's floor; it cannot admit a weak match.
-For a long Chinese prompt with multiple substantive clauses, a clause that
-meets the core lexical-specificity rule can clear the same coverage floor on
-its own. An attachment cannot dilute an independently matched question.
-The vector default preserves the synthetic word-hashing benchmark's admission
-floor. A store configured with `vector_threshold: 0.70` still requires at least
-`0.70`; set `auto_vector_threshold` higher to tighten automatic injection alone.
-Exact references pass directly. A relation-expanded item inherits a passing
-seed's admission. A named day's scoped conversation is selected by its day and
-entry. Packet gaps report rejected candidate counts per channel as
-`auto_relevance_below_floor:<channel>:<count>`, without their contents.
-
-Automatic packets contain zero to six items. Preferences, constraints and the
-current task accompany query evidence only when at least one item passed. A
-resume request can still receive its grounded current task without query hits.
-Every host uses the core's prompt decision: blank input and slash commands skip
-recall; acknowledgments, approvals, thanks, praise, bare continuation requests
-and questions about this session's execution state skip it after an earlier
-human prompt in the same entry's stored session. The captured current prompt does
-not count as an earlier message. First prompts retain resume behavior, and
-questions about the owner, a named topic or the past still search. A skipped
-prompt starts neither search nor query embedding; diagnostics record
-`auto_recall_skipped:<reason>`.
-
-`vector_threshold` has no default and no installer writes it. Without it, recall refuses every
-vector hit with `vector_threshold_unconfigured` and answers degrade to lexical,
-while sources and queries are still embedded and metered. `doctor` reports that
-state as the gap `vector_threshold_unconfigured` when a `vector` store and an
-approved embedding route are configured but the threshold is not.
-
-A threshold is calibrated for one embedding space and does not carry over. The
-shipped space — `gemini-embedding-2` at 3072 dimensions, the space used when
-`auxiliary.embedding` names no model — was accepted at `0.653189984350642`, and
-that is the value the tests pin. The acceptance covers that frozen model,
-encoder and space descriptor only. A route that states `model`, `endpoint`,
-`dimensions` and `dialect` is a different space with its own digest and vector
-directory, **even when it repeats the shipped values**, and falls outside it.
-Any other model needs its own calibration on labelled relevant and irrelevant
-query-memory pairs embedded with that model. Until one exists, leave the field
-unset and let recall stay lexical; a guessed threshold either admits noise as
-evidence or admits nothing at all.
-
-On a shared store (`docs/shared-store.md`) in the shipped space, the accepted
-value admits too much: the store holds every entry's memories, so a question
-with no answer meets far more unrelated memories just above `0.653`, while the
-replies that do answer the owner's questions score well above `0.70`. On a
-shared store in the shipped space whose runtime configs hold `0.653`, set `0.70`
-in each entry's runtime config. A store in
-another space, or one whose threshold was calibrated on it, keeps its own.
-`attach` copies the attached instance's value as it is.
-
-## `owner_names`
-
-A top-level list of the names the store's owner goes by, at most eight, each 2 to
-64 printable characters with no space at either end: `"owner_names": ["NameOne", "名字一"]`.
-Optional; no installer writes it.
-
-An agent may ask about the owner by name, for example "What does NameOne prefer?",
-while relevant messages from the owner use the first person and omit the name.
-Such a question is searched by meaning twice: as asked, which finds what
-names the owner, and as the owner would ask it ("我对动画的运镜有什么要求？",
-"What does I prefer?"), which finds their own words, each search with the vector
-channel's slots. When the embedding route supports multiple texts per request,
-both forms are embedded together to avoid serial network requests consuming the
-recall budget. The Gemini and OpenAI-compatible routes support this batching. By its words,
-a candidate is admitted by the question as asked or by the question without the
-name, so a short question's other words are enough for an answer in the owner's
-own words. A question that names no listed name, or asks nothing besides the name
-("NameOne 是谁？"), is recalled as asked.
-
-Besides this list, recall reads the name a host attests for the person asking, in
-reads only, never in a capture: a Hermes gateway passes the user's name for a
-verified person (Telegram's first and last name, such as `NameOne SurnameOne`), which gives
-the whole name and, when it has several words, the first: a middle name or a surname is as
-often someone else's. A name that looks like an account id (12 or more letters and
-digits with a digit among them) is not taken. Claude Code, Codex, WorkBuddy, dsh
-and the remote clients attest no name: list it here in each of their runtime
-configs.
-
-A Latin-letter name is matched as a word of its own and with its case, so
-`NameOneville`, `nameone-hub`, `/opt/NameOne`, `C:\NameOne` and the word "nameone" are not
-the name, nor is the first word of another person's name (`NameOne SurnameTwo`,
-`NameOne SURNAMETWO`) unless the next word is a listed name too. Chinese runs words
-together, so a Chinese name is matched where what follows it goes on with a question about the person (a
-particle, a preposition, a common verb or adverb, a time: `王芳对…`, `王芳喜欢…`,
-`王芳的…`), and not where more characters run it on into someone's longer name
-(`王芳芳`, `王芳林`); a name followed by a word outside that list is recalled as
-asked. List the name as it is written. A name of one character is never matched.
-
-The second search brings more of the owner's own messages into the top results
-for questions that name the owner, and loses none; questions that name no one
-are recalled as they would be without it.
-
-## `auxiliary`
-
-External model routes. Omit the block entirely and it defaults to
-`{"external_embedding": false, "external_consolidation": false}` — no external
-call is possible and no credential is read.
-
-| Key | Type | Default | Meaning |
-|-----|------|---------|---------|
-| `external_embedding` | boolean | required when the block is present | Approval switch for the embedding route. It must be exactly `true` to enable one; anything else yields the gap `external_embedding_not_approved`. |
-| `external_consolidation` | boolean | required when the block is present | The same switch for the consolidation route; the gap is `external_consolidation_not_approved`. |
-| `installation_dir` | absolute path or absent | absent | Base directory used to derive a default `ledger_path` of `<installation_dir>/auxiliary-budget.sqlite3`. It has no other effect. |
-| `ledger_path` | absolute path or absent | derived from `installation_dir`, else absent | The SQLite budget ledger every external request is metered against. Without it, both routes report `auxiliary_budget_ledger_unconfigured` and no request is made. |
-| `budget` | mapping or absent | fail-closed defaults | Spend, token and call policy. See below. |
-| `embedding` | mapping or absent | absent | The embedding route. Absent with `external_embedding: true` gives the gap `external_embedding_unconfigured`. |
-| `consolidation` | mapping or absent | absent | The consolidation route. Absent with `external_consolidation: true` gives the gap `external_consolidation_unconfigured`. |
-| `consolidation_reserve_input` | int ≥ 1 | `32768` | Input tokens reserved against the ledger before a consolidation request, before the real usage is known. |
-
-Enabling a route takes four things together: the switch `true`, the route
-mapping, a `ledger_path` whose file exists, and a `budget` that approves and
-prices the model. Miss any one and the route stays off with a named gap; nothing
-half-works.
-
-### `auxiliary.budget`
-
-Omitted, the policy is deliberately fail-closed: `cap_micro_usd`,
-`total_input_cap`, `total_output_cap` and `total_call_cap` are all `0`, and
-`approved_models` and `pricing` are empty, so no request is permitted. A present
-`budget` mapping **must** state `pricing` and `approved_models`.
-
-| Key | Type | Default | Meaning |
-|-----|------|---------|---------|
-| `batch` | string, non-empty | `"auxiliary"` | Label the ledger records requests under. |
-| `period` | `"lifetime"` or `"monthly"` | `"lifetime"` | Apply all API spend, call and token caps to the whole ledger or the current local calendar month. |
-| `time_zone` | IANA time-zone name | `"UTC"` | Calendar zone for monthly caps, for example `"Asia/Shanghai"`. With `"period": "monthly"`, a zone that is invalid or that the host's time-zone database (the system's, or the `tzdata` package) does not have refuses the configuration; `"UTC"` needs no database, and a lifetime budget does not read the zone. |
-| `pricing` | mapping of model to `{"input_usd_per_million", "output_usd_per_million"}` | required | Rates used to charge each request. Each rate is a non-negative amount given as an int or an exact decimal string, for example `"0.15"`. |
-| `approved_models` | array of strings | required | The only models any route may call. Every entry must also appear in `pricing`, or the file is refused with `approved_model_pricing`. |
-| `cap_micro_usd` | int ≥ 0 or `null` | `0` | Selected-period spend cap in micro-USD. `0` means no spend at all; `null` means uncapped. |
-| `total_input_cap` | int ≥ 0 or `null` | `0` | Selected-period input-token cap. Same `0` versus `null` distinction. |
-| `total_output_cap` | int ≥ 0 or `null` | `0` | Selected-period output-token cap. Same distinction. |
-| `total_call_cap` | int ≥ 0 or `null` | `0` | Selected-period request-count cap. Same distinction. |
-| `max_request_bytes` | int ≥ 1 | `128000` | Largest request body the ledger lets out, counted after JSON encoding. A candidate evaluation's messages may hold 64,000 bytes, and the request escapes their quotes, backslashes and line breaks again: measured at the full budget, about 66,000 bytes for prose and 85,000 for code or JSON, and at most twice the messages. A cap below that refuses such evaluations: the item fails as `request_too_large` and `retry-failures` re-opens it once the cap is raised. |
-| `default_reserve_input` | int ≥ 1 | `32768` | Input tokens reserved before usage is known. |
-| `default_reserve_output` | int ≥ 1 | `4096` | Output tokens reserved before usage is known. |
-| `model_reserve_output` | mapping of model to int ≥ 1 | one shipped entry | Per-model override of the output reservation. |
-| `model_token_caps` | mapping of model to `{"input", "output"}` | `{}` | Per-model selected-period token caps. Both sides must be stated; an explicit `null` on a side means uncapped, `0` means no spend. |
-
-For a natural-month API budget, add `"period": "monthly"` and optionally
-`"time_zone": "Asia/Shanghai"` to the existing budget mapping. Keep its approved
-models, prices, reservation settings and explicit caps. Missing numeric caps still
-default to `0`; booleans are not numeric caps. CLI subscription budgets are separate.
-
-Each request belongs to the month of its `started_ns`, sampled after acquiring
-the SQLite reservation lock. Outstanding reservations count against that month;
-settling an older request later does not move it into the new month. The next month
-naturally has fresh headroom without deleting history, replacing the ledger,
-adding credit rows, or running a reset task. Historical `meter_breach` records
-remain blocking across months under the existing authorization rules.
-
-The doctor reports the selected month's window, caps and usage alongside lifetime
-usage. `read_auxiliary_budget_status(path)` remains lifetime accounting; callers
-may explicitly pass `policy=cfg.budget` for the configured window. IANA time-zone
-data must be available to Python (`zoneinfo`); if it is missing, configuration
-fails closed rather than silently switching to a different zone.
-
-The ledger file is never created as a side effect of reading it — a missing file
-refuses every request with `ledger_not_initialized`, and no CLI command in this
-distribution creates it. Create it once with the exported helper, using the
-interpreter the host uses:
-
-```powershell
-C:\path\to\python.exe -c "import json, pathlib; from scope_recall.runtime import initialize_auxiliary_budget_ledger; from scope_recall.runtime.auxiliary import AuxiliaryRuntimeConfig; raw = json.loads(pathlib.Path(r'C:\path\to\instance-root\scope-recall\runtime-config.json').read_text(encoding='utf-8')); cfg = AuxiliaryRuntimeConfig.from_mapping(raw['auxiliary']); initialize_auxiliary_budget_ledger(cfg.ledger_path, cfg.budget); print(cfg.ledger_path)"
-```
-
-```bash
-/path/to/python -c "import json, pathlib; from scope_recall.runtime import initialize_auxiliary_budget_ledger; from scope_recall.runtime.auxiliary import AuxiliaryRuntimeConfig; raw = json.loads(pathlib.Path('/path/to/instance-root/scope-recall/runtime-config.json').read_text(encoding='utf-8')); cfg = AuxiliaryRuntimeConfig.from_mapping(raw['auxiliary']); initialize_auxiliary_budget_ledger(cfg.ledger_path, cfg.budget); print(cfg.ledger_path)"
-```
-
-### `auxiliary.embedding`
-
-| Key | Type | Default | Meaning |
-|-----|------|---------|---------|
-| `credential_env` | string matching `^[A-Z][A-Z0-9_]{0,127}$` | required | **Name** of the environment variable holding the API key. The key itself never appears in this file. |
-| `model` | string, 1–200 chars | absent | Model name sent on the wire. |
-| `endpoint` | URL, ≤ 2048 chars | absent | Full request URL. Not a base URL: no path is appended. `https://` to any host; `http://` to a loopback host (a local model server), or to a non-loopback host only with `allow_insecure_endpoint`. User-info, fragments, and credential-bearing query keys (including encoded aliases) are refused on both HTTP and HTTPS; safe parameters such as `api-version` are allowed. Configure credentials through `credential_env`, never in the URL. |
-| `dimensions` | int, 8–16384 | absent | Vector width. It is sent in the request and the response length is checked against it. |
-| `dialect` | `"gemini"` or `"openai"` | absent | Wire shape. See the next section. |
-| `dimensions_field` | string, a JSON field name | `"dimensions"` | The request field the `openai` dialect sends the width in. Voyage calls it `output_dimension` and refuses `dimensions`. A wire detail: it does not change the embedding space. |
-| `allow_insecure_endpoint` | literal `true` or `false` | `false` | Permits plaintext `http://` to a host that is not loopback — a container reaching a model server on its host, over a bridge address that is not loopback. **The text being embedded, your memory, then crosses the network unencrypted: turn it on only for a server on a network you trust, and leave it off otherwise.** A local model server on a loopback host needs no opt-in. Only the literal boolean opens it: a quoted `"true"` is refused, so a string cannot grant it. On a plaintext connection the credential-bearing headers (`authorization`, `x-api-key`, `x-goog-api-key`, `cookie`, …) are stripped before the request leaves, so a server that needs a key is reachable only over HTTPS. |
-
-`model`, `endpoint`, `dimensions` and `dialect` move together. Omit all four and
-the route addresses the shipped Gemini space, so an existing installation keeps
-its vector directory. State all four to address another provider. State some but
-not all and the file is refused with `embedding_route_partial_space`, because
-half a descriptor would silently mix a new model with the old width or dialect
-and the digest would not reveal it.
-
-### `auxiliary.consolidation`
-
-The default kind is an OpenAI-compatible chat-completions route
-(`kind` absent, or `"openai"`):
-
-| Key | Type | Default | Meaning |
-|-----|------|---------|---------|
-| `model` | string, non-empty | required | Model name. It must also be in `budget.approved_models` and `budget.pricing`. |
-| `endpoint` | URL | required | Full chat-completions URL. `https://` to any host; `http://` to a model server on this machine (a loopback host), or to another host only with `allow_insecure_endpoint`: the embedding route's rule. User-info, fragments and credential-bearing query keys are refused. Over plain HTTP the key is not sent, so a local server that needs none still names a `credential_env` holding any value. |
-| `credential_env` | string matching `^[A-Z][A-Z0-9_]{0,127}$` | required | Name of the environment variable holding the API key. |
-| `output_limit_field` | `"max_tokens"` or `"max_completion_tokens"` | required | Which field this provider expects the output limit in. |
-| `max_output_tokens` | int, 1–131072 | required | Value sent in that field. |
-| `thinking` | mapping of string to string, or absent | absent | Provider-specific reasoning control, for example `{"type": "disabled"}`. |
-| `response_format` | mapping or absent | absent | Passed through after validation, for example `{"type": "json_object"}`. |
-| `reasoning_effort` | string or absent | absent | Passed through after validation. |
-| `temperature` | finite number, 0–2, or absent | unset | Sent only when set, on chat and Responses routes. Some providers refuse a temperature for reasoning models; the `codex_cli` route refuses this setting. |
-| `stream` | boolean | `false` | Must stay `false`; streaming is refused. |
-| `n` | int | `1` | Must stay `1`. |
-| `headers` | mapping or absent | absent | Extra request headers, validated before use. A second `Authorization` cannot be smuggled in this way. |
-| `allow_insecure_endpoint` | literal `true` or `false` | `false` | Permits plaintext `http://` to a host that is not loopback, as in `auxiliary.embedding`. **What is consolidated, your memory, then crosses the network unencrypted: turn it on only for a server on a network you trust.** A model server on a loopback host needs no opt-in, and a quoted `"true"` is refused. |
-
-A chat answer is the text of the one choice's assistant message. One cut off at
-the output limit (`finish_reason: "length"`) fails as `DERIVATION_INVALID` on
-`model_output_truncated`. One the provider's policy stopped
-(`finish_reason: "content_filter"`, whatever text the message holds), or that
-the model refused (a `refusal` beside a `content` with no answer text: absent,
-blank, or a list of parts without text), fails as `model_refused`: no output
-limit is involved, so the item is not asked again. It is a terminal failure
-(`retry-failures` in [install.md](install.md)), and `--include-terminal` runs
-it again once the model, the route or the provider's policy has changed. One
-the provider ended without finishing
-(`finish_reason: "insufficient_system_resource"` or `"aborted"`, whatever text
-the message holds) fails as `model_output_interrupted`: a transient fault, not
-a failure by design. A consolidation is asked again as after a timeout and
-re-opened by the automatic recovery (`max_auto_recoveries`); a candidate
-evaluation, which is asked once, fails at once. A plain `retry-failures` run
-re-opens what is left. A pass that meets an interrupted answer stops asking
-for that kind of work for the rest of the pass, as after a 429, so an outage
-costs one request a pass; unlike a refusal, it was a billed answer, and counts
-as an attempt of its item.
-
-Setting `"kind": "openai_responses"` selects a Responses-API route instead of
-chat completions. It targets the documented contract of DeepSeek
-`POST https://api.deepseek.com/responses`; nothing about it is claimed for
-another provider, and streaming is not implemented:
-
-| Key | Type | Default | Meaning |
-|-----|------|---------|---------|
-| `model` | string, non-empty | required | Model name, for example `deepseek-flash`. It must also be in `budget.approved_models` and `budget.pricing`. |
-| `endpoint` | URL | required | Full Responses URL. Not a base URL: no path is appended. `https://` to any host; `http://` to a model server on this machine (a loopback host), or to another host only with `allow_insecure_endpoint`: the embedding route's rule. User-info, fragments and credential-bearing query keys are refused. Over plain HTTP the key is not sent, so a local server that needs none still names a `credential_env` holding any value. |
-| `credential_env` | string matching `^[A-Z][A-Z0-9_]{0,127}$` | required | Name of the environment variable holding the API key. It is read per request and never written to the ledger; the key travels only in the `Authorization` header, as a `Bearer` token that extra `headers` cannot override. |
-| `max_output_tokens` | int, 1–131072 | required | Sent as `max_output_tokens`. On a thinking route this bounds the visible answer **and** the reasoning tokens. |
-| `reasoning_effort` | `"none"`/`"low"`/`"high"`/`"max"`, or absent | absent | Sent as `reasoning.effort`; absent leaves the provider's own default. |
-| `temperature` | finite number, 0–2, or absent | unset | Sent only when set. Some providers refuse a temperature for reasoning models. |
-| `text_format` | `{"type": "json_object"}` or absent | absent | Sent as `text.format`. Plain text is the default and is expressed by omitting the key; a JSON schema is refused rather than forwarded unvalidated. |
-| `stream` | boolean | `false` | Must stay `false`; streaming is refused. |
-| `kind` | `"openai_responses"` | required | Selects this route. |
-| `allow_insecure_endpoint` | literal `true` or `false` | `false` | Permits plaintext `http://` to a host that is not loopback, as in `auxiliary.embedding`. **What is consolidated, your memory, then crosses the network unencrypted: turn it on only for a server on a network you trust.** A model server on a loopback host needs no opt-in, and a quoted `"true"` is refused. |
-
-Unknown keys in this block are rejected (`consolidation_unknown_config`) rather
-than ignored, as in the `codex_cli` block: this dialect has no legacy key to stay
-compatible with.
-
-The request explicitly carries `store: false`. DeepSeek documents this parameter
-as unsupported/ignored and its API as stateless; this flag is not a substitute
-for checking another provider's retention policy. Context must be supplied on
-every call. Each message becomes one `input` item in its original position,
-including interleaved `system` messages. Text parts use `input_text` for `system`
-and `user`, and `output_text` for `assistant`. A `tool` message is refused
-(`input_invalid`): function-call item pairs are not implemented by this adapter.
-
-Only a response whose own `status` is `completed` is an answer. An `incomplete`
-one says why in `incomplete_details.reason`: `max_output_tokens`, or no reason
-at all, fails as `DERIVATION_INVALID` on `model_output_truncated`, exactly like
-a chat answer cut off at the output limit; `content_filter` fails as
-`model_refused`, like a chat answer the provider's policy stopped; any other
-reason fails as `unsupported_response_shape`. `failed` fails as
-`response_status_failed`, a transient fault recovered like a timeout: asked
-again, then re-opened by the automatic recovery (`max_auto_recoveries`). From a completed response the
-adapter reads only the `output_text` parts of `assistant` message items —
-`reasoning` items and `reasoning_text` parts are never treated as an answer, a
-refusal part fails as `model_refused`, and an answer with no text fails as
-`empty_output`. The text is handed to the proposal validator unchanged, with
-no JSON repair.
-
-Usage is read as `input_tokens`/`output_tokens`, with
-`input_tokens_details.cached_tokens` recorded for observation.
-`output_tokens` already counts the reasoning tokens the provider reports
-separately in `output_tokens_details.reasoning_tokens`, so those are never
-billed a second time. A missing or malformed `usage` block keeps the reserved
-charge, and a `200` that carries an error object is not a free call either.
-
-Setting `"kind": "codex_cli"` selects the local Codex CLI subscription route
-instead, which calls a signed local executable rather than an HTTP endpoint. Its
-keys are `executable` (absolute path), `executable_sha256` (64 lowercase hex
-characters), optional `model`, and an optional `subscription_budget` mapping
-whose defaults are 4 calls, 131072 input tokens and 32768 output tokens per UTC
-day. Unknown keys in this block are rejected rather than ignored. See
-[codex-cli-consolidation.md](codex-cli-consolidation.md) for the model
-constraints and what it does and does not cover.
-
-### Where the credential actually comes from
-
-`credential_env` names a variable; the process environment supplies the value.
-How it gets there differs by process:
-
-- The Hermes gateway passes its own environment down, so exporting the variable
-  where the host starts is enough.
-- Codex starts the MCP server and the hooks with its own environment, which does
-  not carry the name. Pass `--env-file <absolute file>` at install time; the
-  installer writes it into `.mcp.json`, `hooks.json` and the Windows hook launcher.
-- A background worker started by `autostart` receives it through the autostart
-  control file, so pass the same `--env-file` to `autostart enable`.
-- A worker pass you run by hand has no `--env-file`. Export the variable in your
-  shell first.
-
-The env file is read under a narrow contract (`runtime/resume_entry.py`): UTF-8
-with an optional BOM, at most 1 MiB, absolute, not a symlink, one
-`NAME=value` per line with an optional `export ` prefix. Only names the runtime
-config declares are read; everything else in the file is ignored. One matching
-pair of surrounding quotes is stripped, otherwise the value is truncated at the
-first ` #`. There is no shell execution and no `${VAR}` interpolation — it is not
-a dotenv loader.
-
-## Pointing a route at another provider
-
-### Embedding
-
-Two dialects are supported (`EMBEDDING_DIALECTS` in `core/recall_policy.py`).
-
-**`"openai"`** is the `/v1/embeddings` shape that most providers accept. The
-request carries `Authorization: Bearer <credential>` and a body of
-`{"model", "input", "dimensions"}`; the vector is read from
-`data[0].embedding` and usage from `usage.prompt_tokens`. `endpoint` is the full
-URL, for example `https://api.example.com/v1/embeddings`.
-
-```json
-"auxiliary": {
-  "external_embedding": true,
-  "external_consolidation": false,
-  "ledger_path": "C:/path/to/instance-root/scope-recall/auxiliary-budget.sqlite3",
-  "budget": {
-    "approved_models": ["your-embedding-model"],
-    "pricing": {"your-embedding-model": {"input_usd_per_million": "0.02", "output_usd_per_million": "0"}},
-    "cap_micro_usd": 2000000,
-    "total_call_cap": null,
-    "total_input_cap": null,
-    "total_output_cap": null
-  },
-  "embedding": {
-    "credential_env": "YOUR_EMBEDDING_API_KEY",
-    "model": "your-embedding-model",
-    "endpoint": "https://api.example.com/v1/embeddings",
-    "dimensions": 1024,
-    "dialect": "openai"
-  }
-}
-```
-
-Voyage AI is OpenAI-shaped in every respect but one: the width field is
-`output_dimension`, and a request carrying `dimensions` is refused. Name the
-field on the route; nothing else changes, and the space digest is the same as
-for the field's default name.
-
-```json
-"embedding": {
-  "credential_env": "VOYAGE_API_KEY",
-  "model": "voyage-4-large",
-  "endpoint": "https://api.voyageai.com/v1/embeddings",
-  "dimensions": 2048,
-  "dialect": "openai",
-  "dimensions_field": "output_dimension"
-}
-```
-
-**`"gemini"`** is Google's native `batchEmbedContents` shape. The request carries
-an `x-goog-api-key` header and a `requests[0]` body with
-`embedContentConfig.outputDimensionality`; the vector is read from
-`embeddings[0].values` and usage from `usageMetadata.promptTokenCount`.
-`endpoint` is the full `...:batchEmbedContents` URL.
-
-### Changing the embedding model rebuilds the vector store
-
-The embedding space descriptor — model, width, endpoint, request encoding, the
-prompt encoding and the NFKC preprocessing id — is hashed, and that digest is the
-name of the vector directory. Change the model, the dimensionality or the
-dialect and the digest changes. The consequences are all deliberate:
-
-1. `vector.storage_dir` must be updated to the new
-   `<data_directory>/vectors/<new space id>`, or the config is refused with
-   `VECTOR_STORAGE_OUTSIDE_BINDING`.
-2. `vector.dimensions` must match the new width, or it is refused with
-   `VECTOR_DIMENSIONS_MISMATCH`.
-3. The old directory is left alone and its vectors are refused at admission as
-   coming from a different space, rather than being compared across incompatible
-   geometries. The new store starts empty, and only what is captured or
-   changed from then on is embedded into it. What was embedded in the old space
-   is embedded again only when you ask, because every source and claim is then
-   embedded again and paid for once more. While the old route still answers,
-   let the embeddings waiting come down first (`waiting` in the command's
-   preview), then switch and at once run
-   `respace-embeddings --config <file> --start --apply` with the config the
-   worker runs (in a shared store, the shared worker's). The run reopens
-   everything finished before it starts, so whatever waited at the switch or
-   was embedded into the new space before the start is paid for twice, and
-   waiting after the switch only adds to it. Each worker pass then
-   reopens a page of the store's finished embeddings, newest first and only
-   while the embedding queue has room, until it reaches the oldest; `doctor`
-   shows the run (`embedding_respace`), and the command without `--start`
-   shows it and what is left. Until then, SQLite remains the authority, so
-   nothing is lost, but older memory is found by its words alone. A tool output
-   whose vector the retention window removed stays without one.
-4. `vector_threshold` no longer applies. Recalibrate it, or unset it and accept
-   lexical recall in the meantime.
-
-Stating the shipped Gemini values explicitly is still a *named* route with its
-own digest, because its request-encoding id differs from the frozen
-descriptor's. If you want to keep an existing vector directory, omit all four
-fields and give only `credential_env`.
-
-To print the digest a config's embedding route resolves to, before a host loads
-it. This reads the route only, so it still answers while `vector.storage_dir`
-points at the old space:
-
-```powershell
-C:\path\to\python.exe -c "import json,pathlib;from scope_recall.core.recall_policy import EMBEDDING_SPACE,embedding_space_id;from scope_recall.runtime.auxiliary import AuxiliaryRuntimeConfig;raw=json.loads(pathlib.Path(r'C:\path\to\instance-root\scope-recall\runtime-config.json').read_text(encoding='utf-8'));r=AuxiliaryRuntimeConfig.from_mapping(raw.get('auxiliary') or {'external_embedding':False,'external_consolidation':False}).embedding;print(embedding_space_id(r.space() if r else dict(EMBEDDING_SPACE)))"
-```
-
-```bash
-/path/to/python -c "import json,pathlib;from scope_recall.core.recall_policy import EMBEDDING_SPACE,embedding_space_id;from scope_recall.runtime.auxiliary import AuxiliaryRuntimeConfig;raw=json.loads(pathlib.Path('/path/to/instance-root/scope-recall/runtime-config.json').read_text(encoding='utf-8'));r=AuxiliaryRuntimeConfig.from_mapping(raw.get('auxiliary') or {'external_embedding':False,'external_consolidation':False}).embedding;print(embedding_space_id(r.space() if r else dict(EMBEDDING_SPACE)))"
-```
-
-### Consolidation
-
-The consolidation route has no dialect switch: it is the OpenAI-compatible
-chat-completions shape (`kind` absent or `"openai"`), the Responses-API shape
-(`"kind": "openai_responses"`, see `auxiliary.consolidation` above), or the
-local `codex_cli` kind. To move it to another
-provider, change `model`, `endpoint` and `credential_env`, set
-`output_limit_field` to whichever of `max_tokens` / `max_completion_tokens` that
-provider accepts, and add the model to `budget.approved_models` and
-`budget.pricing`. Reasoning controls differ between providers: `thinking`,
-`reasoning_effort` and `response_format` are validated, and a value a route does
-not accept is refused rather than sent. The Responses kind states
-`max_output_tokens` instead of `output_limit_field`, and its reasoning and text
-controls are `reasoning_effort` and `text_format`.
-
-Changing the consolidation model does **not** touch the vector store. Only the
-embedding space feeds the digest.
-
-## Recall budgets
-
-These two budgets are core and host defaults. They are not `runtime-config.json`
-leaves unless noted.
-
-### Automatic recall packet budget
-
-Automatic recall defaults to `4096` character-calibrated token-estimate units,
-and the automatic ceiling is the same value. `core/recall_budget.py` applies one
-estimator to admission and to the complete canonical packet: ASCII letters,
-digits and whitespace cost a quarter unit each; CJK and other letters, numbers,
-combining marks and punctuation cost one unit; other symbols use their UTF-8 byte
-length. The combined quarter-unit total is rounded up once. This is a
-deterministic approximation, not a provider tokenizer measurement. UTF-8 bytes
-are reported separately and do not penalise each CJK character by its encoded
-byte length. Explicit smaller `budget_tokens` values keep their cap. Automatic
-recall also delivers at most six items whatever the request asked for; explicit
-modes keep their own `max_items`, which ranges from 1 to 30. None of these is a
-`runtime-config.json` key — they are per-query retrieval limits.
-
-Codex MCP `recall` advertises the same whole-packet estimate, including packet
-and source metadata. Omission defaults to `4096` for explicit retrieval; small
-explicit values can still clip every item. A packet that cannot fit even the
-minimal honest envelope is rejected. On `budget_token_cap` or
-`budget_packet_cap`, retry at most once with `4096`; this does not raise the
-automatic ceiling. The separate `profile` and `entity` read views keep their own
-documented UTF-8 byte budgets.
-
-### Automatic recall latency budget
-
-Automatic remote semantic recall defaults to `auto_recall_seconds=5.0`, which is
-also the hard maximum. The trusted-host fallback hook budget defaults to
-`hook_processing_seconds=6.0`, which is also the hard maximum, so the hook can
-cover a full automatic recall. Both are settable in `runtime-config.json` and are
-validated against those ceilings. A remote query embedding has to finish inside
-the automatic budget, so a value well below the default is the usual reason
-semantic recall silently stops contributing: timeouts stay in force and degrade
-to lexical recall. A caller may also pass a stricter deadline, and that explicit
-shorter deadline is honoured, clamped by the configured automatic budget. None of
-this raises a money, token, call, packet or source cap, disables TLS validation,
-or changes `vector_threshold`.
-
-### Hermes hooks and the host's timeout
-
-Host capture budgets cover successive store operations, including first-seen
-lookups, inbox writes and source commits. SQLite refuses a transaction entered
-with no caller time remaining. An admitted transaction finishes its commit or
-rollback and releases its connection and writer lease; those operations preserve
-atomicity and cannot be abandoned at the deadline. A statement already running
-can exceed its budget. Each following stage uses the time left and the preceding
-store operation's duration to decide whether to defer.
-
-Client hooks use a 2 s default total budget and 1 s per capture. A capture already
-written to the durable inbox stays there when its source commit cannot fit.
-Runtime attachment and worker start wait only for the hook's remaining time;
-with less than 0.3 s for attachment or 0.1 s for worker start they are skipped.
-The next session start, captured turn end, session end or queued prompt with time
-remaining wakes the worker. A shared store's scheduled worker also replays its
-inbox. A runtime finishing after its hook returns has its resources closed by
-its owning background call.
-
-Hermes compression and session-end retries and steers share a 2 s capture pass.
-Unwritten steers stay in the retry buffer for its next pass. A finished turn
-writes its own captures before retrying older buffered captures. Shutdown's last
-retry pass takes at most 2 s of store work, apart from an already-running
-transaction and the filesystem work needed to keep its remaining captures.
-Its diagnostic pending count is skipped when another read cannot fit.
-
-Unstored captures at shutdown, captures past the retry window, and buffer
-overflow are kept under `kept-captures/` beside `memory.sqlite3`. These files
-hold sanitized, unadmitted capture envelopes, with their original session,
-actor, scope and occurrence time. The next adapter start loads them and wakes
-the retry thread; replay checks the installation and current grants before
-SQLite admits them. A file is removed only after persistence, durable inbox
-acceptance or a terminal refusal, including revoked authorization. Unreadable
-files remain for inspection and produce a warning. Shutdown reports captures it
-could not persist with `pending_capture_status` `unpersisted` and
-`pending_capture_durability` `memory_only`. Those in-memory copies cannot be
-recovered after the process exits. Include this directory when
-backing up pending host captures; SQLite remains the authority for admitted
-memory. The spool holds at most 256 files, each with at most 256 KiB of event
-data plus 64 KiB of envelope metadata.
-
-Hermes abandons a plugin's hook call after its own `plugins.hook_callback_timeout`
-(30 s by default) and, on Hermes 0.21.5, skips that callback for the next 60 s.
-Scope Recall registers one callback per hook for the whole gateway, so that skip
-reaches every session. A hook therefore waits for its own session, a capture or
-a finished turn still being written, at most a third of that timeout and never
-more than 10 s; a prefetch waits at most 2 s for its session to read the turn's
-state, and recalls without holding it. With a timeout of 0 or less, which Hermes
-reads as none, a hook waits at most 10 s. A finished turn is written one capture
-at a time, so the next turn's hooks get in between; its message and reply are
-dated when its writing began, and a shutdown waits for it. A tool result is written
-without holding its session, so a step's parallel tool calls do not
-wait for one another's writes; those still take turns at the store's one writer,
-each within its own budget. After its write a tool hook takes its session back once
-more, which can wait behind a message being captured. A shutdown waits up to 10 s
-for a tool result being written and counts one still writing after that. What
-could not wait is not taken, and the gateway log says so:
-
-```text
-scope-recall: post_tool_call not taken: this session has been busy in observe_pre_llm for 10.0 s
-```
-
-A hook that still ran past the host's timeout is reported as:
-
-```text
-scope-recall: post_tool_call took 31.2 s, past the host's 30 s hook timeout; the host skips it for every session for the next minute
-```
-
-Both are counted per session in the `status` tool's `host_backpressure` and in the
-adapter's shutdown state. Hermes' own timeout and skip lines name these callbacks
-`scope_recall_<hook>`. A `post_tool_call` not taken loses that tool's output, an
-`api_request_error` its failure mark; a `pre_llm_call` not taken leaves its turn id
-for the turn's start, and the turn's message is stored when the turn ends. None of
-this is a `runtime-config.json` key.
-
-## Checking a change
-
-`doctor` reads the file back and reports what it found:
-
-```powershell
-scope-recall doctor --host hermes --instance-root C:\path\to\instance-root --python C:\path\to\python.exe
-```
-
-It exits `0` only when `status` is `ok`; both `attention` and `degraded` exit `1`.
-See [install.md](install.md) for the report and the common gaps.
+| <a id="binding"></a>`binding` | `InstanceBinding` | `required` |
+| <a id="session_id"></a>`session_id` | `str` | `required` |
+| <a id="allowed_scope_ids"></a>`allowed_scope_ids` | `frozenset[str]` | `required` |
+| <a id="actor_origin"></a>`actor_origin` | `Origin` | `"human_direct"` |
+| <a id="project_id"></a>`project_id` | `str &#124; None` | `null` |
+| <a id="branch_id"></a>`branch_id` | `str &#124; None` | `null` |
+| <a id="host_adapter"></a>`host_adapter` | `str &#124; None` | `null` |
+| <a id="owner_id"></a>`owner_id` | `str` | `"scope-recall-worker"` |
+| <a id="request_seconds"></a>`request_seconds` | `float` | `45.0` |
+| <a id="model_request_seconds"></a>`model_request_seconds` | `float &#124; None` | `null` |
+| <a id="drain_seconds"></a>`drain_seconds` | `float` | `120.0` |
+| <a id="auto_recall_seconds"></a>`auto_recall_seconds` | `float` | `5.0` |
+| <a id="hook_processing_seconds"></a>`hook_processing_seconds` | `float` | `6.0` |
+| <a id="session_brief_enabled"></a>`session_brief_enabled` | `bool` | `true` |
+| <a id="session_brief_tokens"></a>`session_brief_tokens` | `int` | `1024` |
+| <a id="injection_format"></a>`injection_format` | `str` | `"json"` |
+| <a id="injection_token_cap"></a>`injection_token_cap` | `int` | `12654` |
+| <a id="session_token_cap"></a>`session_token_cap` | `int &#124; None` | `null` |
+| <a id="max_items"></a>`max_items` | `int` | `32` |
+| <a id="lease_seconds"></a>`lease_seconds` | `float` | `60.0` |
+| <a id="auxiliary"></a>`auxiliary` | `AuxiliaryRuntimeConfig &#124; None` | `{"external_embedding": false, "external_consolidation": false, "installation_dir": null, "ledger_path": null, "budget": {"batch": "auxiliary", "cap_micro_usd": 0, "total_input_cap": 0, "total_output_cap": 0, "total_call_cap": 0, "max_request_bytes": 128000, "default_reserve_input": 32768, "default_reserve_output": 4096, "model_reserve_output": {"mimo-v2.5": 131072}, "model_token_caps": {}, "pricing": {}, "approved_models": [], "period": "lifetime", "time_zone": "UTC"}, "embedding": null, "consolidation": null, "consolidation_reserve_input": 32768}` |
+| <a id="vector"></a>`vector` | `VectorRuntimeConfig &#124; None` | `null` |
+| <a id="vector_threshold"></a>`vector_threshold` | `float &#124; None` | `null` |
+| <a id="auto_lexical_min_coverage"></a>`auto_lexical_min_coverage` | `float` | `0.2` |
+| <a id="auto_lexical_min_terms"></a>`auto_lexical_min_terms` | `int` | `2` |
+| <a id="auto_vector_threshold"></a>`auto_vector_threshold` | `float` | `0.3` |
+| <a id="owner_names"></a>`owner_names` | `tuple[str, ...]` | `[]` |
+| <a id="daily_work_limit"></a>`daily_work_limit` | `int` | `0` |
+| <a id="auto_retry_cooldown_seconds"></a>`auto_retry_cooldown_seconds` | `float` | `3600.0` |
+| <a id="max_auto_recoveries"></a>`max_auto_recoveries` | `int` | `2` |
+| <a id="worker_min_interval_seconds"></a>`worker_min_interval_seconds` | `float` | `30.0` |
+| <a id="supervisor_enabled"></a>`supervisor_enabled` | `bool` | `true` |
+| <a id="supervisor_seconds"></a>`supervisor_seconds` | `float` | `21600.0` |
+| <a id="supervisor_max_drains"></a>`supervisor_max_drains` | `int` | `256` |
+| <a id="storage_budget_bytes"></a>`storage_budget_bytes` | `int` | `0` |
+| <a id="recall_log_days"></a>`recall_log_days` | `int` | `30` |
+| <a id="recall_log_bytes"></a>`recall_log_bytes` | `int` | `33554432` |
+| <a id="recall_log_queue"></a>`recall_log_queue` | `int` | `128` |
+| <a id="resident_recall_minutes"></a>`resident_recall_minutes` | `int &#124; None` | `null` |
+
+## InstanceBinding
+
+| Field | JSON input type | Default when omitted |
+|---|---|---|
+| <a id="agent_id"></a>`agent_id` | `str` | `required` |
+| <a id="installation_id"></a>`installation_id` | `str` | `required` |
+| <a id="data_directory"></a>`data_directory` | `Path` | `required` |
+| <a id="scope_ids"></a>`scope_ids` | `frozenset[str]` | `required` |
+| <a id="test_mode"></a>`test_mode` | `bool` | `false` |
+| <a id="installation_kind"></a>`installation_kind` | `str` | `"local"` |
+
+## VectorRuntimeConfig
+
+| Field | JSON input type | Default when omitted |
+|---|---|---|
+| <a id="backend"></a>`backend` | `str` | `"sqlite"` |
+| <a id="storage_dir"></a>`storage_dir` | `Path` | `required` |
+| <a id="table_name"></a>`table_name` | `str` | `required` |
+| <a id="dimensions"></a>`dimensions` | `int` | `required` |
+| <a id="metric"></a>`metric` | `str` | `"cosine"` |
+| <a id="test_injection_override"></a>`test_injection_override` | `bool` | `false` |
+| <a id="tool_output_retention_days"></a>`tool_output_retention_days` | `int` | `180` |
+
+## AuxiliaryRuntimeConfig
+
+| Field | JSON input type | Default when omitted |
+|---|---|---|
+| <a id="external_embedding"></a>`external_embedding` | `bool` | `required` |
+| <a id="external_consolidation"></a>`external_consolidation` | `bool` | `required` |
+| <a id="installation_dir"></a>`installation_dir` | `Path &#124; None` | `null` |
+| <a id="ledger_path"></a>`ledger_path` | `Path &#124; None` | `null` |
+| <a id="budget"></a>`budget` | `BudgetPolicy` | `{"batch": "auxiliary", "cap_micro_usd": 0, "total_input_cap": 0, "total_output_cap": 0, "total_call_cap": 0, "max_request_bytes": 128000, "default_reserve_input": 32768, "default_reserve_output": 4096, "model_reserve_output": {"mimo-v2.5": 131072}, "model_token_caps": {}, "pricing": {}, "approved_models": [], "period": "lifetime", "time_zone": "UTC"}` |
+| <a id="embedding"></a>`embedding` | `EmbeddingRouteConfig &#124; None` | `null` |
+| <a id="consolidation"></a>`consolidation` | `ConsolidationRouteConfig &#124; ResponsesRouteConfig &#124; CodexCliRouteConfig &#124; None` | `null` |
+| <a id="consolidation_reserve_input"></a>`consolidation_reserve_input` | `int` | `32768` |
+
+## BudgetPolicy
+
+| Field | JSON input type | Default when omitted |
+|---|---|---|
+| <a id="batch"></a>`batch` | `str` | `"auxiliary"` |
+| <a id="cap_micro_usd"></a>`cap_micro_usd` | `int &#124; None` | `0` |
+| <a id="total_input_cap"></a>`total_input_cap` | `int &#124; None` | `0` |
+| <a id="total_output_cap"></a>`total_output_cap` | `int &#124; None` | `0` |
+| <a id="total_call_cap"></a>`total_call_cap` | `int &#124; None` | `0` |
+| <a id="max_request_bytes"></a>`max_request_bytes` | `int` | `128000` |
+| <a id="default_reserve_input"></a>`default_reserve_input` | `int` | `32768` |
+| <a id="default_reserve_output"></a>`default_reserve_output` | `int` | `4096` |
+| <a id="model_reserve_output"></a>`model_reserve_output` | `Mapping[str, int]` | `{"mimo-v2.5": 131072}` |
+| <a id="model_token_caps"></a>`model_token_caps` | `object: model name → {"input": null, "output": null}` | `{}` |
+| <a id="pricing"></a>`pricing` | `Mapping[str, ModelPricing]` | `required` |
+| <a id="approved_models"></a>`approved_models` | `frozenset[str]` | `required` |
+| <a id="period"></a>`period` | `str` | `"lifetime"` |
+| <a id="time_zone"></a>`time_zone` | `str` | `"UTC"` |
+
+## ModelPricing
+
+| Field | JSON input type | Default when omitted |
+|---|---|---|
+| <a id="input_usd_per_million"></a>`input_usd_per_million` | `Decimal` | `required` |
+| <a id="output_usd_per_million"></a>`output_usd_per_million` | `Decimal` | `required` |
+
+## EmbeddingRouteConfig
+
+| Field | JSON input type | Default when omitted |
+|---|---|---|
+| <a id="credential_env"></a>`credential_env` | `str` | `required` |
+| <a id="model"></a>`model` | `str &#124; None` | `null` |
+| <a id="endpoint"></a>`endpoint` | `str &#124; None` | `null` |
+| `dimensions` | `int &#124; None` | `null` |
+| <a id="dialect"></a>`dialect` | `str &#124; None` | `null` |
+| <a id="dimensions_field"></a>`dimensions_field` | `str` | `"dimensions"` |
+| <a id="allow_insecure_endpoint"></a>`allow_insecure_endpoint` | `bool` | `false` |
+
+## ConsolidationRouteConfig
+
+| Field | JSON input type | Default when omitted |
+|---|---|---|
+| `model` | `str` | `required` |
+| `endpoint` | `str` | `required` |
+| `credential_env` | `str` | `required` |
+| <a id="output_limit_field"></a>`output_limit_field` | `str` | `required` |
+| <a id="max_output_tokens"></a>`max_output_tokens` | `int` | `required` |
+| <a id="thinking"></a>`thinking` | `Mapping[str, str] &#124; None` | `null` |
+| <a id="response_format"></a>`response_format` | `Mapping[str, str] &#124; None` | `null` |
+| <a id="reasoning_effort"></a>`reasoning_effort` | `str &#124; None` | `null` |
+| <a id="stream"></a>`stream` | `bool` | `false` |
+| <a id="n"></a>`n` | `int` | `1` |
+| <a id="headers"></a>`headers` | `Mapping[str, str] &#124; None` | `null` |
+| `allow_insecure_endpoint` | `bool` | `false` |
+| <a id="temperature"></a>`temperature` | `float &#124; None` | `null` |
+| <a id="kind"></a>`kind` | `str` | `"openai"` |
+
+## ResponsesRouteConfig
+
+| Field | JSON input type | Default when omitted |
+|---|---|---|
+| `model` | `str` | `required` |
+| `endpoint` | `str` | `required` |
+| `credential_env` | `str` | `required` |
+| `max_output_tokens` | `int` | `required` |
+| `reasoning_effort` | `str &#124; None` | `null` |
+| <a id="text_format"></a>`text_format` | `Mapping[str, str] &#124; None` | `null` |
+| `stream` | `bool` | `false` |
+| `kind` | `str` | `required` |
+| `allow_insecure_endpoint` | `bool` | `false` |
+| `temperature` | `float &#124; None` | `null` |
+
+## CodexCliRouteConfig
+
+| Field | JSON input type | Default when omitted |
+|---|---|---|
+| <a id="executable"></a>`executable` | `Path` | `required` |
+| <a id="executable_sha256"></a>`executable_sha256` | `str` | `required` |
+| `model` | `str` | `"gpt-5.6-luna"` |
+| `kind` | `str` | `"codex_cli"` |
+| <a id="subscription_budget"></a>`subscription_budget` | `SubscriptionBudgetPolicy` | `{"daily_calls": 4, "daily_input_tokens": 131072, "daily_output_tokens": 32768, "reserve_input": 32768, "reserve_output": 8192, "max_request_bytes": 24576}` |
+| <a id="subscription_budget_explicit"></a>`subscription_budget_explicit` | `bool` | `false` |
+
+## SubscriptionBudgetPolicy
+
+| Field | JSON input type | Default when omitted |
+|---|---|---|
+| <a id="daily_calls"></a>`daily_calls` | `int` | `4` |
+| <a id="daily_input_tokens"></a>`daily_input_tokens` | `int` | `131072` |
+| <a id="daily_output_tokens"></a>`daily_output_tokens` | `int` | `32768` |
+| <a id="reserve_input"></a>`reserve_input` | `int` | `32768` |
+| <a id="reserve_output"></a>`reserve_output` | `int` | `8192` |
+| `max_request_bytes` | `int` | `24576` |
+
+Nested objects use the definitions above: binding → InstanceBinding; auxiliary → AuxiliaryRuntimeConfig;
+budget → BudgetPolicy; pricing values → ModelPricing; subscription_budget → SubscriptionBudgetPolicy.
+In model_token_caps each model maps to an object with input and output integers or null; both keys are stated.
+Embedding descriptor fields may be omitted together to select the built-in space.

@@ -1,0 +1,307 @@
+"""Append bounded excerpts from matched sessions without replacing full evidence.
+
+The list is a release-time view of existing retrieval candidates. It makes no
+identity or event-count assertion and never participates in answer judgement.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import replace
+from typing import cast
+
+from ..contracts import RecallPacket
+from . import private
+from .adoption_storage import is_adopted_assistant
+from .claim_storage import parse_source_ref
+from .model_content import withhold_secret_items
+from .recall_budget import canonical_render_json, estimate_tokens
+from .recall_items import packet_item
+from .recall_policy import meaningful_query_terms
+from .recall_restatement import host_memory_duplicate, prefer_originals
+from .recall_trace import note_candidate
+from .retrieval import MAX_PACKET_ITEMS, SearchContext
+from .retrieval_hydration import note_superseded_evidence
+from .summary_validity import CONVERSATION_SUMMARY_REASONS
+
+LABEL = "Other-session matches"
+MAX_ROWS = 12
+MAX_UNITS = 1024
+EXCERPT_CHARS = 160
+
+
+def readable_sources(tx, obj, context):
+    """Resolve raw evidence under the same current private and suppression policy."""
+    sources = tuple(tx.source(*parse_source_ref(ref)) for ref in obj.evidence_refs)
+    if not sources or any(source is None or source.suppressed for source in sources):
+        return ()
+    intervals = tx.remembered(("recall_private", context.now), lambda: private.active_intervals(tx, context.now))
+    return () if any(private.source_blocked(intervals, source) for source in sources) else sources
+
+
+def visible_query_pairs(tx, ranked, context, *, now):
+    """Keep the ordinary evidence filter independent of optional list admission."""
+    if context.mode not in {"auto", "current"} or context.focus_refs or len(ranked) < 3:
+        return ranked
+    policy = replace(context, now=now)
+    return [pair for pair in ranked if pair[1].kind not in {"event", "claim"} or readable_sources(tx, pair[1], policy)]
+
+
+def _session(source):
+    return source.scope_id, source.entry_id, source.session_id
+
+
+def _qualified(obj):
+    return (
+        obj.kind in {"event", "claim"}
+        and dict(obj.metadata).get("qualification_reason")
+        not in (
+            *CONVERSATION_SUMMARY_REASONS,
+            "owner_adopted_assistant_proposal",
+            "reflection_pending",
+            "grounded_observation",
+            "confirmed_observation",
+        )
+        and obj.temporal_status == "current"
+        and not {"restatement_of", "replaced_by", "recall_echo"}.intersection(dict(obj.metadata))
+    )
+
+
+def _hydrate(tx, reader, candidates, context):
+    reader.prefetch(tx, candidates, context)
+    pairs = [
+        (candidate, obj) for candidate in candidates if (obj := reader.hydrate(tx, candidate, context)) is not None
+    ]
+    return withhold_secret_items(pairs, [], content=lambda pair: pair[1])
+
+
+def _assistant_roots(tx, candidates):
+    """Check lightweight provenance before using a prefix that needs no echo pairing."""
+    keys = json.dumps([(candidate.kind, candidate.ref, candidate.revision) for candidate in candidates])
+    return (
+        tx._check()
+        .execute(
+            """WITH refs AS MATERIALIZED (SELECT json_extract(value,'$[0]') AS kind,
+            json_extract(value,'$[1]') AS ref,json_extract(value,'$[2]') AS revision FROM json_each(?)),
+        roots AS (SELECT ref,revision FROM refs WHERE kind='event' UNION
+            SELECT l.source_ref,l.source_revision FROM refs r CROSS JOIN evidence_links l
+            ON l.object_kind=r.kind AND l.object_ref=r.ref AND l.object_revision=r.revision)
+        SELECT 1 FROM roots r CROSS JOIN source_events e
+        ON e.event_id=r.ref AND e.source_revision=r.revision WHERE e.origin='assistant_visible' LIMIT 1""",
+            (keys,),
+        )
+        .fetchone()
+        is not None
+    )
+
+
+def _original_pairs(tx, reader, candidates, context, policy, selected_refs):
+    """Hydrate a bounded page at a time; event candidates already are their originals."""
+    seen = set()
+    # Selected evidence cannot take an overflow slot. Avoid asking its fan-out
+    # replacement query to load every fact that already-delivered source supports.
+    candidates = tuple(
+        candidate
+        for candidate in candidates
+        if candidate.kind != "event" or f"{candidate.ref}@{candidate.revision}" not in selected_refs
+    )
+    for start in range(0, len(candidates), MAX_ROWS):
+        for candidate, obj in _hydrate(tx, reader, candidates[start : start + MAX_ROWS], context):
+            if not _qualified(obj):
+                continue
+            for source in readable_sources(tx, obj, policy):
+                if source.event["origin"] == "assistant_visible" and is_adopted_assistant(
+                    tx, source.ref, source.revision
+                ):
+                    continue
+                key = (source.ref, source.revision)
+                if key in seen or f"{source.ref}@{source.revision}" in selected_refs:
+                    continue
+                seen.add(key)
+                if candidate.kind == "event" and key == (candidate.ref, candidate.revision):
+                    yield candidate, obj
+                else:
+                    root = replace(candidate, kind="event", ref=source.ref, revision=source.revision)
+                    yield from _hydrate(tx, reader, (root,), context)
+
+
+def _representatives(tx, reader, result, context, packet, clock):
+    """Read only a representative prefix when no assistant pairing can reorder it.
+
+    Mixed provenance retains global original/echo pairing: an original later in
+    the pool may replace an earlier echo. The ordinary human-source path stops
+    after twelve sessions, independently of the number of remaining matches.
+    """
+    policy = replace(context, now=getattr(clock, "utc_now", lambda: context.now)())
+    selected_refs = {ref for item in packet["items"] for ref in item["evidence_refs"]}
+    paired = _assistant_roots(tx, result.overflow_candidates)
+    # Selected originals still serve as anchors for assistant echo pairing.
+    originals = _original_pairs(
+        tx, reader, result.overflow_candidates, context, policy, () if paired else selected_refs
+    )
+    if paired:
+        originals = prefer_originals(
+            tx,
+            [pair for pair in originals if readable_sources(tx, pair[1], policy)],
+            context,
+            clock=clock.monotonic,
+            gaps=[],
+        )
+    rows, sessions = [], set()
+    for candidate, obj in originals:
+        if clock.monotonic() >= context.deadline:
+            break
+        if not readable_sources(tx, obj, policy):
+            continue
+        source = tx.source(candidate.ref, candidate.revision)
+        session = _session(source)
+        try:
+            duplicate = context.automatic_injection and host_memory_duplicate(obj, context.host_memory_entries)
+        except Exception:  # noqa: BLE001 - optional host comparison cannot block overflow recall
+            duplicate = False
+        if duplicate:
+            note_candidate(candidate, "host_memory_duplicate", obj=obj)
+            continue
+        if not _qualified(obj) or f"{obj.ref}@{obj.revision}" in selected_refs or session in sessions:
+            continue
+        rows.append((candidate, obj))
+        sessions.add(session)
+        if len(rows) == MAX_ROWS:
+            break
+    return rows
+
+
+def _excerpt(content, terms):
+    positions = [content.casefold().find(term.casefold()) for term in terms]
+    start = max(0, min((pos for pos in positions if pos >= 0), default=0) - 40)
+    end = min(len(content), start + EXCERPT_CHARS)
+    clipped = start > 0 or end < len(content)
+    text = ("…" if start else "") + content[start:end] + ("…" if end < len(content) else "")
+    # JSON quoting keeps each source on one physical line without altering
+    # whitespace inside its excerpt or manufacturing an original quotation.
+    return json.dumps(text, ensure_ascii=False), "clipped" if clipped else "complete excerpt"
+
+
+def _item(rows, total, query):
+    terms = meaningful_query_terms(query)
+    lines = []
+    for _, obj in rows:
+        excerpt, status = _excerpt(obj.content, terms)
+        when = dict(obj.metadata).get("occurred_at", "unknown")
+        lines.append(
+            f"- {when} [{obj.ref}@{obj.revision}] {obj.origin}; "
+            f"Excerpt ({len(obj.content)} characters total; {status}): {excerpt}"
+        )
+    view = replace(
+        rows[0][1],
+        basis="derived_summary",
+        evidence_refs=tuple(f"{obj.ref}@{obj.revision}" for _, obj in rows),
+        content="More matching records from other sessions (excerpts, not deduplicated).\n"
+        + (
+            f"Listed {len(rows)} records; {total - len(rows)} other session representatives not listed. "
+            if total is not None
+            else f"Listed {len(rows)} records from a window of at most {MAX_ROWS} session representatives. "
+        )
+        + "Use inspect on each ref for full text.\n"
+        + "\n".join(lines),
+        metadata=(("qualification_reason", LABEL),),
+    )
+    return packet_item(view)
+
+
+def _fit(packet: RecallPacket, rows, context: SearchContext):
+    # Exhausting a short pool proves its total. A full window makes no claim
+    # about unvisited sessions, even when byte admission displays fewer rows.
+    total = len(rows) if len(rows) < MAX_ROWS else None
+    chosen = rows[:MAX_ROWS]
+    while chosen:
+        item = _item(chosen, total, context.query)
+        extended: RecallPacket = {**packet, "items": [*packet["items"], item]}
+        if (
+            estimate_tokens(canonical_render_json(item)) <= min(MAX_UNITS, context.limits.budget_tokens // 4)
+            and len(item["content"]) <= 12000
+            and estimate_tokens(canonical_render_json(extended)) <= context.limits.budget_tokens
+        ):
+            return extended, chosen
+        chosen.pop()
+    return packet, ()
+
+
+def _unchanged(tx, reader, context, packet, result, rows, epoch, revision):
+    if reader.epoch(tx) != epoch or private.rule_revision(tx) != revision:
+        return False
+    selected = {(item["ref"], item["revision"]) for item in packet["items"]}
+    candidates = tuple(c for c in result.candidates if (c.ref, c.revision) in selected) + tuple(c for c, _ in rows)
+    fresh = _hydrate(tx, reader, candidates, context)
+    if len(fresh) != len(candidates):
+        return False
+    expected = {candidate.key: obj for candidate, obj in rows}
+    return all(
+        readable_sources(tx, obj, context)
+        and (candidate.key not in expected or (_qualified(obj) and obj.content == expected[candidate.key].content))
+        for candidate, obj in fresh
+        if obj.kind in {"event", "claim"}
+    )
+
+
+def append_overflow(storage, context: SearchContext, result, packet: RecallPacket, reader, clock) -> RecallPacket:
+    """Extend a finalized packet using only spare budget and fresh ordinary reader exits.
+
+    Failure or deadline exhaustion discards only the optional extension. The
+    original packet has already passed its own release fence and admission.
+    """
+    selected = {(item["ref"], item["revision"]) for item in packet["items"]}
+    if (
+        not packet["items"]
+        or len(packet["items"]) >= MAX_PACKET_ITEMS
+        or all((candidate.ref, candidate.revision) in selected for candidate in result.overflow_candidates)
+        or not result.overflow_candidates
+        or context.mode not in {"auto", "current"}
+        or context.focus_refs
+        or clock.monotonic() >= context.deadline
+    ):
+        return packet
+    seen = set(result.withheld_evidence)
+    try:
+        with storage.read(
+            context.trusted_context, remaining_seconds=max(0.001, context.deadline - clock.monotonic())
+        ) as tx:
+            revision = private.rule_revision(tx)
+            if result.overflow_policy_revision is not None and revision != result.overflow_policy_revision:
+                return packet
+            epoch = reader.epoch(tx)
+            retracted = getattr(reader, "retracted_since", None)
+            if (
+                retracted is not None
+                and packet["memory_epoch"] is not None
+                and retracted(tx, context, packet["memory_epoch"])
+            ):
+                return packet
+            rows = _representatives(tx, reader, result, context, packet, clock)
+            gaps = list(packet["gaps"])
+            note_superseded_evidence(tx, gaps, seen)
+            if gaps != packet["gaps"]:
+                packet = {**packet, "gaps": gaps}
+        if len(rows) < 3 or clock.monotonic() >= context.deadline:
+            return packet
+        extended, chosen = _fit(packet, rows, context)
+        if not chosen:
+            return packet
+        with storage.read(
+            context.trusted_context, remaining_seconds=max(0.001, context.deadline - clock.monotonic())
+        ) as tx:
+            policy = replace(context, now=getattr(clock, "utc_now", lambda: context.now)())
+            unchanged = _unchanged(tx, reader, policy, packet, result, chosen, epoch, revision)
+            gaps = list(packet["gaps"])
+            note_superseded_evidence(tx, gaps, seen)
+            packet = {**packet, "gaps": gaps}
+            extended = {**extended, "gaps": gaps}
+            if not unchanged:
+                return packet
+        for candidate, _obj in chosen:
+            note_candidate(candidate, obj=_obj)
+        return cast(RecallPacket, extended) if clock.monotonic() < context.deadline else packet
+    except Exception:  # noqa: BLE001 - Optional reads cannot revoke a finalized packet.
+        # Optional evidence cannot turn a successfully released full packet
+        # into a partial or unavailable one when its own read fails.
+        return packet

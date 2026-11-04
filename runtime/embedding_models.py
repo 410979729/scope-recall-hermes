@@ -44,13 +44,10 @@ MAX_EMBED_RESPONSE_BYTES = 16 * 1024 * 1024
 QUERY_EMBED_CONNECTIONS = 3
 
 
-#: Embedding requests one group may have in flight.  A document request spawns its
-#: own bounded HTTP helper and shares no state, so this is threads waiting on
-#: sockets; the ledger reserves and settles each on its own connection.  It is the
-#: last serial cost in a pass: with a hundred documents per request at 3.8s each,
-#: a pass of a thousand spent 38 of its 55 seconds waiting for one request at a
-#: time, while the provider allows three thousand requests a minute and the pass
-#: was making ten.
+#: Embedding requests one group may have in flight. Each request has its own
+#: bounded HTTP helper while ledger writes share a serialized connection.
+#: This bounds concurrent socket waits without holding a ledger transaction
+#: across the provider call.
 EMBED_REQUEST_CONCURRENCY = 4
 
 

@@ -14,13 +14,11 @@ from datetime import datetime, timedelta
 import pytest
 from scope_recall._version import __version__
 from scope_recall.contracts import ContractError
+from scope_recall.core.failure_policy import AUTO_RECOVERABLE_ERRORS, TERMINAL_FAILURES, failure_kind
 from scope_recall.core.failure_retry import (
-    AUTO_RECOVERABLE_ERRORS,
     RETRY_GENERATION,
     RETRY_MARKER,
-    TERMINAL_FAILURES,
     already_retried,
-    failure_kind,
     marked,
     retry_class,
     selects,
@@ -499,8 +497,15 @@ def test_a_long_message_refused_on_a_later_page_resumes_there_once_re_opened(wor
         raise AssertionError(row(core, source))
 
     def quoting_the_first(sources, **_):
-        # Right on the first page; on the second, evidence from another page, refused.
-        return consolidation_payload(sources[0], claims=[proposal(sources[0], FIRST)])
+        # A later page has an invalid proposal array; accepted earlier pages
+        # remain checkpointed while this envelope is refused.
+        page = sources[0]
+        value = consolidation_payload(
+            page, claims=[proposal(page, FIRST)] if not page.consolidation_window.start else []
+        )
+        if page.consolidation_window.start:
+            value["claim_proposals"] = "TEST-invalid-array"
+        return value
 
     drain(FakeConsolidation(quoting_the_first), "failed")
     _state, offset, _attempt = row(core, source)
@@ -510,7 +515,7 @@ def test_a_long_message_refused_on_a_later_page_resumes_there_once_re_opened(wor
         conn.commit()
     assert retry_class(next(iter(_codes(core).values()))) == "terminal"
     report = core.operations.retry_failed_work(ctx, limit=64, include_terminal=True, dry_run=False)
-    assert (report["retried"], report["by_kind"]) == (1, {"DERIVATION_INVALID": 1})
+    assert (report["retried"], report["by_kind"]) == (1, {"derivation_invalid": 1})
 
     def fixed(sources, **_):
         page = sources[0]
@@ -866,7 +871,8 @@ def test_a_capacity_refusal_does_not_consume_an_attempt(app):
     """Four hours of "monthly usage limit reached" pushed 195 live work items
     into failed at attempt=3 apiece, each needing an operator to grant it back.
     A 429 says nothing about this payload."""
-    from scope_recall.core.work_storage import CAPACITY_REFUSALS, MAX_RECOVERABLE_ATTEMPTS
+    from scope_recall.core.failure_policy import CAPACITY_REFUSALS
+    from scope_recall.core.work_storage import MAX_RECOVERABLE_ATTEMPTS
 
     core, ctx = app
     _fail_one(core, ctx, "timeout")  # build one leasable work item
@@ -951,11 +957,11 @@ def test_a_terminal_failure_is_unaffected_by_the_refund(app):
 def test_the_wait_grows_with_each_refusal_in_a_row():
     """Refunding the attempt alone left the ordinary 60s ceiling in place, and
     197 items retried without pause for an entire provider outage."""
-    from scope_recall.core.work_storage import CAPACITY_BACKOFF_FLOOR_SECONDS, _capacity_backoff_seconds
+    from scope_recall.core.failure_policy import CAPACITY_RETRY, capacity_backoff_seconds
 
-    waits = [_capacity_backoff_seconds(n) for n in range(1, 8)]
+    waits = [capacity_backoff_seconds(n) for n in range(1, 8)]
     assert waits == sorted(waits), waits
-    assert waits[0] == CAPACITY_BACKOFF_FLOOR_SECONDS
+    assert waits[0] == CAPACITY_RETRY.first
     assert waits[-1] > waits[0]
 
 
@@ -965,28 +971,21 @@ def test_the_first_wait_is_not_shorter_than_the_cycle_it_replaces():
     fell between one and two hours.  A backoff that started below that would
     make the instance ask *more* often than leaving it alone -- which a first
     draft of this, starting at 60 seconds, would have done."""
-    from scope_recall.core.work_storage import (
-        CAPACITY_BACKOFF_CEILING_SECONDS,
-        CAPACITY_BACKOFF_FLOOR_SECONDS,
-        _capacity_backoff_seconds,
-    )
+    from scope_recall.core.failure_policy import CAPACITY_RETRY, capacity_backoff_seconds
 
     observed_median_seconds = 115 * 60
-    assert _capacity_backoff_seconds(1) >= observed_median_seconds / 4
-    assert CAPACITY_BACKOFF_CEILING_SECONDS > observed_median_seconds
-    assert CAPACITY_BACKOFF_FLOOR_SECONDS < CAPACITY_BACKOFF_CEILING_SECONDS
+    assert capacity_backoff_seconds(1) >= observed_median_seconds / 4
+    assert CAPACITY_RETRY.ceiling > observed_median_seconds
+    assert CAPACITY_RETRY.first < CAPACITY_RETRY.ceiling
 
 
 def test_the_wait_has_a_ceiling_but_the_retries_do_not():
     """A cap on *how often* is a loop guard; a cap on *how many* would give up
     on the item, which is the thing this must never do."""
-    from scope_recall.core.work_storage import (
-        CAPACITY_BACKOFF_CEILING_SECONDS,
-        _capacity_backoff_seconds,
-    )
+    from scope_recall.core.failure_policy import CAPACITY_RETRY, capacity_backoff_seconds
 
-    assert _capacity_backoff_seconds(50) == CAPACITY_BACKOFF_CEILING_SECONDS
-    assert _capacity_backoff_seconds(10_000) == CAPACITY_BACKOFF_CEILING_SECONDS
+    assert capacity_backoff_seconds(50) == CAPACITY_RETRY.ceiling
+    assert capacity_backoff_seconds(10_000) == CAPACITY_RETRY.ceiling
 
 
 def test_the_refusal_count_is_read_back_from_the_error_code():
@@ -1045,11 +1044,10 @@ def test_the_two_rate_limit_sets_cannot_drift_apart():
     """Two hand-kept sets said the same thing about 429 and 503 while disagreeing about 502 and 504, which is how a
     pair always ends up.  The pass stands a work type down for every capacity refusal, taken from that set and not
     copied from it, and for an interrupted answer, which was billed and is no refusal."""
-    from scope_recall.core.work_storage import CAPACITY_REFUSALS
-    from scope_recall.core.worker import _RATE_LIMITED_ERRORS
+    from scope_recall.core.failure_policy import CAPACITY_REFUSALS, RATE_LIMITED_ERRORS
 
-    assert CAPACITY_REFUSALS <= _RATE_LIMITED_ERRORS
-    assert _RATE_LIMITED_ERRORS - CAPACITY_REFUSALS == {"model_output_interrupted"}
+    assert CAPACITY_REFUSALS <= RATE_LIMITED_ERRORS
+    assert RATE_LIMITED_ERRORS - CAPACITY_REFUSALS == {"model_output_interrupted"}
 
 
 @pytest.mark.parametrize("legacy", [False, True])
@@ -1073,7 +1071,7 @@ def test_invalid_candidate_gets_one_extra_attempt_repair_or_visible_review(app, 
             calls.append(json.dumps(messages))
             expected = {
                 "code": "DERIVATION_INVALID" if legacy else "INPUT_INVALID",
-                "field": "payload" if legacy or not repair_success else "source_refs",
+                "field": "payload" if legacy or not repair_success else "claim_proposals",
             }
             hint = "validation_error=" + json.dumps(expected, sort_keys=True, separators=(",", ":"))
             if repair_success:
@@ -1084,7 +1082,7 @@ def test_invalid_candidate_gets_one_extra_attempt_repair_or_visible_review(app, 
                         if message["role"] == "user" and message["content"].startswith("{")
                     )
                     return json.dumps(body["empty_result"])
-                return '{"protocol_version":"1.1"}'
+                return '{"claim_proposals":"TEST-invalid-array"}'
             return "{not-json FAILED_BODY_SENTINEL"
 
     model = _BoundedCandidate(build_consolidation_model(InvalidPort()), 3)
@@ -1103,7 +1101,7 @@ def test_invalid_candidate_gets_one_extra_attempt_repair_or_visible_review(app, 
     assert len(calls) == (1 if legacy else 2), (work, evaluations)
     hint = {
         "code": "DERIVATION_INVALID" if legacy else "INPUT_INVALID",
-        "field": "payload" if legacy or not repair_success else "source_refs",
+        "field": "payload" if legacy or not repair_success else "claim_proposals",
     }
     assert "validation_error=" + json.dumps(hint, sort_keys=True, separators=(",", ":")) in " ".join(
         message["content"] for message in json.loads(calls[-1])

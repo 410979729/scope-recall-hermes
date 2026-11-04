@@ -35,13 +35,16 @@ INTEGRATION_WATCHDOG_SECONDS = 2700
 #: runners also run the same healthy suite several times slower at times: the
 #: retrieval tier took 39-170s across runs and once ran past a 215s watchdog,
 #: the host tier 142-237s and once past 290s, with nothing hung either time.
-#: Twenty seconds a file leaves such a runner room and still bounds a hang at
-#: the release budget.
+#: Twenty seconds a file leaves such a runner room.  The sum is capped at the
+#: integration tier's whole budget, the longest any tier is allowed: the
+#: contract tier's 75 files (1,850 tests) need about 1,350 s on a fast GitHub
+#: Windows runner and over 1,500 s on a slow one, so a cap at the release
+#: budget cut their twenty seconds a file to five and timed out a healthy run.
 WATCHDOG_SECONDS_PER_FILE = 20
 #: Test files that build whole stores, and the seconds each adds to its tier's
-#: watchdog.  The allowance comes after the release budget has capped the
-#: twenty seconds a file, so the cap that bounds a tier of many files never
-#: cuts it, and a hang stays bounded by the sum.
+#: watchdog.  The allowance comes after the cap on the twenty seconds a file,
+#: so the cap that bounds a tier of many files never cuts it, and a hang stays
+#: bounded by the sum.
 #: The recall bench's file builds a synthetic shared store of four weeks
 #: through the real capture, worker and recall paths, and a two-day one twice:
 #: about 60 s under this gate on a local SSD, and up to six and a half times
@@ -56,9 +59,19 @@ WATCHDOG_SECONDS_PER_FILE = 20
 #: 300 s.
 HEAVY_FILE_SECONDS = {
     "tests/recall_bench/test_recall_bench.py": 600,
+    # Replays a realistic fixture through capture and recall to compare its histograms: 170 s on a fast GitHub Windows
+    # runner, whose slow days run the same tier 1.6 times longer; 400 s are that and half as much again.
+    "tests/public_bench/test_public_bench.py": 400,
+    # A hundred complete worker turns include adoption probes and metered local model substitutes.
+    "tests/contract/test_setup_workload.py": 600,
     "tests/contract/test_memory_export.py": 300,
     "tests/host/codex/test_shared_client.py": 300,
     "tests/host/codex/test_dsh_remote.py": 300,
+    # Nearly every case builds, upgrades and reopens a store written by an earlier release.  The migration tier
+    # (386 tests in 14 files) took 165 s on a local SSD and ran past its 460 s cap on a GitHub Windows runner with
+    # nothing hung; these two files hold most of its cases.
+    "tests/migration/test_migration_drills.py": 600,
+    "tests/migration/test_upgrade_coordinator.py": 300,
 }
 
 
@@ -69,10 +82,9 @@ def pytest_watchdog_seconds(
 
     Release and integration keep fixed budgets of 600s and 2700s respectively.
     Every other tier keeps 180s as a floor and adds twenty seconds per selected
-    file, capped at the release budget so no run --
-    hung or merely large -- waits forever; each of ``selected_paths`` that
-    builds a whole store then adds its own allowance (``HEAVY_FILE_SECONDS``),
-    which the cap does not cut.
+    file, capped at the integration budget so no run -- hung or merely large --
+    waits forever; each of ``selected_paths`` that builds a whole store then
+    adds its own allowance (``HEAVY_FILE_SECONDS``), which the cap does not cut.
     """
 
     if tier == "release":
@@ -88,7 +100,7 @@ def pytest_watchdog_seconds(
     paths = selected_paths if isinstance(selected_paths, (list, tuple)) else ()
     heavy = sum(HEAVY_FILE_SECONDS.get(path, 0) for path in {str(path).replace("\\", "/") for path in paths})
     scaled = DEFAULT_WATCHDOG_SECONDS + WATCHDOG_SECONDS_PER_FILE * selected_files
-    return min(max(DEFAULT_WATCHDOG_SECONDS, scaled), RELEASE_WATCHDOG_SECONDS) + heavy
+    return min(max(DEFAULT_WATCHDOG_SECONDS, scaled), INTEGRATION_WATCHDOG_SECONDS) + heavy
 
 
 def distribution_is_installed(python_executable: str | None = None) -> bool:
@@ -133,7 +145,7 @@ def packaging_helper_env(tier: str) -> dict[str, str]:
     env = {"SCOPE_RECALL_TEST_PACKAGING_HELPER_ROOTS": str(Path(packaging_uv).resolve().parent)}
     if declared:
         env["SCOPE_RECALL_UV"] = declared
-    for name in ("UV_CACHE_DIR", "UV_OFFLINE"):
+    for name in ("UV_CACHE_DIR", "UV_OFFLINE", "UV_FIND_LINKS"):
         if value := os.environ.get(name):
             env[name] = value
     return env
@@ -159,6 +171,9 @@ SCRIPT_GATE_TESTS = [
 GIT_TESTS = ["tests/integration/test_guard_git.py"]
 SUITES = {
     "unit": [
+        "tests/unit/test_host_memory_status.py",
+        "tests/unit/test_host_memory_context.py",
+        "tests/unit/test_setup_discovery.py",
         "tests/unit/test_trusted_context.py",
         "tests/unit/test_check_runner.py",
         "tests/unit/test_secret_patterns.py",
@@ -170,14 +185,67 @@ SUITES = {
         "tests/unit/test_dsh_record.py",
     ],
     "contract": [
+        "tests/contract/test_handoff.py",
+        "tests/contract/test_handoff_boundaries.py",
+        "tests/contract/test_reflection.py",
+        "tests/contract/test_reflection_repairs.py",
+        "tests/contract/test_reflection_cost.py",
+        "tests/contract/test_docker_distribution.py",
+        "tests/contract/test_setup_workload.py",
+        "tests/contract/test_adoption.py",
+        "tests/contract/test_adoption_merge.py",
+        "tests/contract/test_adoption_revision.py",
+        "tests/contract/test_adoption_cost.py",
+        "tests/contract/test_adoption_outline.py",
+        "tests/contract/test_importance_summaries.py",
+        "tests/contract/test_injection_formats.py",
+        "tests/contract/test_summary_repairs.py",
+        "tests/contract/test_summary_truncation_boundary.py",
+        "tests/contract/test_summary_merge.py",
+        "tests/contract/test_summary_transfer.py",
+        "tests/contract/test_memory_import.py",
+        "tests/contract/test_host_memory_recall.py",
+        "tests/contract/test_sqlite_vectors.py",
+        "tests/contract/test_mapped_vectors.py",
+        "tests/contract/test_vector_integrity.py",
+        "tests/contract/test_lazy_vector_clock.py",
+        "tests/contract/test_auxiliary_budget_totals.py",
+        "tests/contract/test_embed_fallback_deadline.py",
+        "tests/contract/test_failure_policy_semantics.py",
+        "tests/contract/test_queue_recovery_actions.py",
+        "tests/contract/test_queue_state_properties.py",
+        "tests/contract/test_upkeep_state_properties.py",
         "tests/contract/test_backup_relocation.py",
         "tests/contract/test_full_backup.py",
         "tests/contract/test_memory_admin.py",
+        "tests/contract/test_review_list.py",
+        "tests/contract/test_review_repairs.py",
+        "tests/contract/test_memory_health.py",
+        "tests/contract/test_health_repairs.py",
         "tests/contract/test_memory_cli.py",
         "tests/contract/test_memory_ui_api.py",
+        "tests/contract/test_entry_controls.py",
+        "tests/contract/test_entry_ingress_transition.py",
+        "tests/contract/test_recall_log.py",
+        "tests/contract/test_recall_log_fences.py",
+        "tests/contract/test_recall_log_merge.py",
+        "tests/contract/test_recall_log_observations.py",
         "tests/contract/test_memory_export.py",
         "tests/contract/test_private_mode.py",
         "tests/contract/test_fragment_quote_recovery.py",
+        "tests/contract/test_normalized_evidence.py",
+        "tests/contract/test_model_evidence_alignment.py",
+        "tests/contract/test_consolidation_metadata.py",
+        "tests/contract/test_entity_resolution.py",
+        "tests/contract/test_entity_flow.py",
+        "tests/contract/test_entity_queries.py",
+        "tests/contract/test_entity_scaling.py",
+        "tests/contract/test_entity_lifecycle.py",
+        "tests/contract/test_evidence_governance.py",
+        "tests/contract/test_candidate_question_identity.py",
+        "tests/contract/test_prompt_semantics.py",
+        "tests/contract/test_language_evaluation.py",
+        "tests/contract/test_model_request_roles.py",
         "tests/contract/test_protocol.py",
         "tests/contract/test_synthetic_inputs.py",
         "tests/contract/test_recall_budget_config.py",
@@ -200,7 +268,14 @@ SUITES = {
         "tests/contract/test_embedding_respace.py",
         "tests/known_answer/test_recall_invariants_check.py",
     ],
-    "capture": ["tests/contract/test_capture.py", "tests/contract/test_capture_row_crossings.py"],
+    "capture": [
+        "tests/contract/test_capture.py",
+        "tests/contract/test_capture_row_crossings.py",
+        "tests/contract/test_injection_guard.py",
+        "tests/contract/test_injection_revision.py",
+        "tests/contract/test_injection_screening.py",
+        "tests/contract/test_injection_merged.py",
+    ],
     "claims": [
         "tests/test_denial_values.py",
         "tests/contract/test_claims.py",
@@ -220,7 +295,12 @@ SUITES = {
         "tests/contract/test_storage_growth.py",
     ],
     "retrieval": [
+        "tests/contract/test_claim_lexical_index.py",
+        "tests/public_bench/test_public_bench.py",
+        "tests/public_bench/test_real_hosts.py",
         "tests/contract/test_retrieval_pipeline.py",
+        "tests/contract/test_recall_restatement.py",
+        "tests/contract/test_recall_overflow.py",
         "tests/contract/test_evidence_followup.py",
         "tests/contract/test_recall_admission.py",
         "tests/contract/test_auto_recall_gate.py",
@@ -236,23 +316,27 @@ SUITES = {
         "tests/recall_bench/test_recall_bench.py",
     ],
     "native": [
+        "tests/storage_native/test_docker_lock.py",
+        "tests/storage_native/test_docker_setup.py",
+        "tests/storage_native/test_sqlite_vector_native.py",
         "tests/contract/test_lance_embed_fence.py",
         "tests/contract/test_retained_lock_deadline.py",
         "tests/integration/test_lance_retrieval.py",
         "tests/storage_native/test_runtime_instance_seam.py",
         "tests/storage_native/test_vector_compaction.py",
         "tests/storage_native/test_in_process_lance_store.py",
-        "tests/storage_native/test_helper_runs_in_the_environment_that_owns_the_package.py",
-        "tests/storage_native/test_helper_imports_what_its_host_imports.py",
-        "tests/storage_native/test_probe_rehearses_with_the_roots_its_host_imports.py",
-        "tests/test_cold_open_overlap.py",
-        "tests/test_lance_fanout_deadline.py",
     ],
     "host": [
+        "tests/host/hermes/test_memory_write.py",
+        "tests/host/hermes/test_capture_retry_properties.py",
+        "tests/host/hermes/test_upgrade_capture.py",
         "tests/host/test_memory_ui.py",
+        "tests/host/test_recall_log.py",
+        "tests/host/test_recall_log_recovery.py",
         "tests/host/test_memory_ui_http.py",
         "tests/host/test_memory_ui_assets.py",
         "tests/host/codex/test_client_private_mode.py",
+        "tests/host/codex/test_private_commands.py",
         "tests/host/hermes/test_hermes_private_mode.py",
         "tests/host/test_endpoint_credentials.py",
         "tests/host/hermes/test_attachments_shutdown.py",
@@ -264,6 +348,7 @@ SUITES = {
         "tests/host/hermes/test_local_surfaces.py",
         "tests/host/hermes/test_a2a_prepare.py",
         "tests/host/hermes/test_prefetch.py",
+        "tests/host/hermes/test_entry_controls_provider.py",
         "tests/host/hermes/test_real_host_loader.py",
         "tests/host/hermes/test_runtime_bounds.py",
         "tests/host/hermes/test_hook_budgets.py",
@@ -273,19 +358,50 @@ SUITES = {
         "tests/host/hermes/test_reinjection.py",
         "tests/host/test_runtime_config_threshold.py",
         "tests/host/codex/test_env_file_credentials.py",
+        "tests/host/codex/test_host_memory.py",
         "tests/host/codex/test_hooks.py",
         "tests/host/codex/test_hook_budgets.py",
         "tests/host/codex/test_lifecycle_worker_wakeup.py",
+        "tests/host/codex/test_handoff_tools.py",
         "tests/host/codex/test_mcp.py",
         "tests/host/codex/test_runtime_wiring.py",
         "tests/host/codex/test_shared_client.py",
+        "tests/host/codex/test_setup_entries.py",
         "tests/host/codex/test_clients_only_store.py",
         "tests/host/codex/test_remote.py",
         "tests/host/codex/test_dsh_remote.py",
         "tests/host/codex/test_resident_recall.py",
+        "tests/host/codex/test_capture_ledger.py",
+        "tests/host/codex/test_ledger_recovery_boundaries.py",
+        "tests/host/codex/test_ledger_lifetime.py",
+        "tests/host/codex/test_merged_host_boundaries.py",
+        "tests/host/codex/test_entry_controls_hosts.py",
+        "tests/host/codex/test_entry_receipt.py",
+        "tests/host/codex/test_adoption_hosts.py",
+        "tests/host/codex/test_recall_privacy_boundary.py",
+        "tests/host/codex/test_project_worktrees.py",
+        "tests/host/codex/test_stdio_lifetime.py",
+        "tests/host/codex/test_tool_schemas.py",
     ],
-    "migration": ["tests/migration/test_migration_drills.py"],
+    "migration": [
+        "tests/migration/test_claim_version_terms.py",
+        "tests/migration/test_handoff_upgrade.py",
+        "tests/migration/test_health_upgrade.py",
+        "tests/migration/test_reflection_upgrade.py",
+        "tests/migration/test_adoption_upgrade.py",
+        "tests/migration/test_review_upgrade.py",
+        "tests/migration/test_database_identity_upgrade.py",
+        "tests/migration/test_importance_summary_upgrade.py",
+        "tests/migration/test_claim_index_upgrade.py",
+        "tests/migration/test_entity_upgrade.py",
+        "tests/migration/test_migration_drills.py",
+        "tests/migration/test_upgrade_coordinator.py",
+        "tests/migration/test_injection_upgrade.py",
+        "tests/migration/test_upgrade_policy.py",
+    ],
     "packaging": [
+        "tests/packaging/test_setup.py",
+        "tests/packaging/test_setup_repairs.py",
         "tests/packaging/test_clean_v11_wheel.py",
         "tests/packaging/test_package_upgrade.py",
         "tests/packaging/test_install_v11.py",
@@ -295,6 +411,9 @@ SUITES = {
         *SCRIPT_GATE_TESTS,
     ],
     "integration": [
+        "tests/integration/test_review_list.py",
+        "tests/integration/test_health_scale.py",
+        "tests/integration/test_memory_import.py",
         "tests/contract/test_worker.py",
         "tests/contract/test_worker_incremental_batch.py",
         *GIT_TESTS,
@@ -377,6 +496,7 @@ I_SAFETY_MATRIX = {
     "I01": [
         "tests/unit/test_trusted_context.py",
         "tests/host/hermes/test_identity.py",
+        "tests/host/codex/test_host_memory.py",
         "tests/host/codex/test_hooks.py",
     ],
     "I03": ["tests/contract/test_capture.py", "tests/contract/test_worker.py"],
@@ -502,6 +622,7 @@ CORE_RELEASE_CONTRACTS += [
     "tests/contract/test_autonomous_corrections.py",
     "tests/contract/test_autonomous_recall.py",
     "tests/contract/test_autonomous_worker.py",
+    "tests/contract/test_work_error_detail.py",
     "tests/contract/test_comprehensive_storage_diagnostics.py",
     "tests/contract/test_http_proxy_boundary.py",
     "tests/contract/test_embedding_space_policy.py",
@@ -565,8 +686,7 @@ INTEGRATION_STABLE_BASELINE = _dedupe(list(SUITES["native"]) + list(SUITES["host
 
 #: The directories and files that decide an impact by where they are rather than by what their names hold.  A directory
 #: ends in ``/``.  Every entry is in the checkout, which tests/packaging/test_check_selection.py holds them to.  The
-#: native entries are the Lance store and its helper process and the runtime modules that start and feed them: what the
-#: native suite is about.
+#: native entries are the SQLite companion, mapped arrays and runtime publication/search boundaries.
 IMPACT_PATHS = {
     "quiet": ("verification/", "docs/", "fixtures/"),
     "tests": ("tests/",),
@@ -578,8 +698,7 @@ IMPACT_PATHS = {
     "clients": ("adapters/clients/", "adapters/codex/"),
     "native": (
         "vector/",
-        "_lance_worker.py",
-        "runtime/lance_port.py",
+        "runtime/vector_port.py",
         "runtime/vector_upkeep.py",
         "runtime/instance.py",
         "runtime/instance_config.py",
@@ -959,6 +1078,12 @@ def _test_environment(tier: str, isolated: Path) -> dict[str, str]:
         SCOPE_RECALL_TEST_TIER=tier,
         HF_HUB_OFFLINE="1",
         TRANSFORMERS_OFFLINE="1",
+        # Probes read this checkout's Git history. When the runner's OS account is not the
+        # checkout owner (a container or sandbox account), Git refuses the repository; the
+        # exception lives in this child environment only, never in a Git config file.
+        GIT_CONFIG_COUNT="1",
+        GIT_CONFIG_KEY_0="safe.directory",
+        GIT_CONFIG_VALUE_0=str(ROOT),
     )
     env.update(packaging_helper_env(tier))
     env.update(node_helper_env(tier))
@@ -1067,8 +1192,22 @@ def pytest_command(selected: list[str], junit: Path) -> list[str]:
         "-p",
         "no:cacheprovider",
         "--durations=10",
+        # Keep generated fixture paths short while retaining the same owned boundary.
+        f"--basetemp={junit.parent / 't'}",
         f"--junitxml={junit}",
     ]
+
+
+def _test_parent() -> Path:
+    """Honor the declared writable boundary before choosing the short Windows default."""
+    declared = str(os.environ.get("SCOPE_RECALL_TEST_BOUNDARY_PARENT") or "").strip()
+    if declared:
+        return Path(declared).resolve()
+    # Packaging probes need a short default to stay within Win32 path limits.
+    temp_root = Path(tempfile.gettempdir())
+    if os.name == "nt":
+        temp_root = Path(temp_root.anchor) / "Temp"
+    return temp_root / "sr"
 
 
 def _execute(args, selected: list[str], selection: dict) -> int:
@@ -1080,13 +1219,7 @@ def _execute(args, selected: list[str], selection: dict) -> int:
     """
     evidence = ROOT / "verification" / args.task
     evidence.mkdir(parents=True, exist_ok=True)
-    # Keep the owned TEST root short on Windows.  Packaging install probes use
-    # atomic files and otherwise cross the Win32 path-length boundary before
-    # v11_guard can make its normal allow/deny decision.
-    temp_root = Path(tempfile.gettempdir())
-    if os.name == "nt":
-        temp_root = Path(temp_root.anchor) / "Temp"
-    parent = temp_root / "sr"
+    parent = _test_parent()
     parent.mkdir(parents=True, exist_ok=True)
     manifest = _source_manifest()
     stem = f"{args.tier}-{time.time_ns()}"

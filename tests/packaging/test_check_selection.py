@@ -220,7 +220,7 @@ CHANGES = {
     "client": ["adapters/clients/mcp_server.py"],
     "hermes": ["adapters/hermes/identity.py"],
     "runtime": ["runtime/worker_entry.py"],
-    "vector": ["runtime/lance_port.py"],
+    "vector": ["runtime/vector_port.py"],
     "lance store": ["vector/process_store.py"],
     "store": ["core/delete_storage.py", "core/visibility.py"],
     "claim": ["core/claims.py"],
@@ -363,12 +363,10 @@ def test_a_packaging_change_leaves_the_build_to_a_tier_that_has_the_packaging_he
     assert "packaging" in details["required_tiers"]
 
 
-#: The files and directories the native suite is about: the Lance store and its helper process, and the runtime modules
-#: that start and feed them.
+#: Companion storage and the runtime modules that publish and search its vectors.
 NATIVE_PATHS = [
     *sorted(path.relative_to(ROOT).as_posix() for path in (ROOT / "vector").glob("*.py")),
-    "_lance_worker.py",
-    "runtime/lance_port.py",
+    "runtime/vector_port.py",
     "runtime/vector_upkeep.py",
     "runtime/instance.py",
     "runtime/instance_config.py",
@@ -570,8 +568,16 @@ def test_the_integration_budget_is_its_own_not_the_release_budget() -> None:
     assert check.INTEGRATION_WATCHDOG_SECONDS > check.RELEASE_WATCHDOG_SECONDS
 
 
-def test_no_count_of_files_waits_longer_than_the_release_budget() -> None:
-    assert check.pytest_watchdog_seconds("contract", 10_000) == check.RELEASE_WATCHDOG_SECONDS
+def test_no_count_of_files_waits_longer_than_the_integration_budget() -> None:
+    assert check.pytest_watchdog_seconds("contract", 10_000) == check.INTEGRATION_WATCHDOG_SECONDS
+
+
+def test_the_real_contract_selection_keeps_twenty_seconds_a_file() -> None:
+    """The contract tier is the largest per-file tier; the cap must not cut its files' allowance."""
+    selected, _details = check.select_tests("contract", changed=[])
+    heavy = sum(check.HEAVY_FILE_SECONDS.get(str(path).replace("\\", "/"), 0) for path in selected)
+    budget = check.pytest_watchdog_seconds("contract", len(selected), selected)
+    assert budget == check.DEFAULT_WATCHDOG_SECONDS + check.WATCHDOG_SECONDS_PER_FILE * len(selected) + heavy
 
 
 def test_a_nonsense_count_falls_back_to_the_floor() -> None:

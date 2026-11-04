@@ -64,7 +64,7 @@ def test_backup_output_creation_race_never_overwrites_an_existing_file(tmp_path,
 
     source = database(tmp_path / "TEST-source.sqlite3")
     output = tmp_path / "TEST-raced.sqlite3"
-    from scope_recall.runtime import backup_primitives
+    from scope_recall.core import backup_primitives
 
     actual_open = backup_primitives.os.open
 

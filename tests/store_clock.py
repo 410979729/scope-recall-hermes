@@ -155,6 +155,16 @@ def metered_ledger(monkeypatch, metered_store):
 
     clock = metered_store(0.0)
 
+    class PhysicalLedgerTime:
+        """Keep ledger lock deadlines bounded by real time while the caller's clock is frozen."""
+
+        monotonic = staticmethod(time.perf_counter)
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+    monkeypatch.setattr(model_budget, "time", PhysicalLedgerTime())
+
     def meter(operation):
         @wraps(operation)
         def measured(*args, **kwargs):

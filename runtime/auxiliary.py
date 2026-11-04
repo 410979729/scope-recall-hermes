@@ -23,6 +23,7 @@ from .model_budget import (
     AuxiliaryBudgetLedger,
     BudgetPolicy,
     ModelPricing,
+    ModelTokenCapInput,
     default_budget_policy,
     load_hermes_attempt_authorization,
     read_auxiliary_budget_status,
@@ -72,17 +73,43 @@ class AuxiliaryRuntimeConfig:
         )
 
 
+def summary_budget_enabled(auxiliary):
+    """Admit new background summary work only with an explicitly configured, budgeted model route."""
+    if (
+        auxiliary is None
+        or not auxiliary.external_consolidation
+        or auxiliary.consolidation is None
+        or auxiliary.ledger_path is None
+    ):
+        return False
+    if isinstance(auxiliary.consolidation, CodexCliRouteConfig):
+        return auxiliary.consolidation.subscription_budget_explicit
+    policy = auxiliary.budget
+    return (
+        all(getattr(policy, field) != 0 for field in ("total_input_cap", "total_output_cap", "total_call_cap"))
+        and getattr(auxiliary.consolidation, "model", None) in policy.approved_models
+    )
+
+
 @dataclass(frozen=True)
 class AuxiliaryRuntime:
+    """Own the shared ledger and release it after the embedding transports close."""
+
     source_embedding: GeminiEmbeddingAdapter | None
     query_embedding: GeminiEmbeddingAdapter | None
     consolidation: OpenAIConsolidationAdapter | ResponsesConsolidationAdapter | CodexCliConsolidationAdapter | None
     capability_gaps: tuple[str, ...]
     ledger_path: Path | None
+    ledger: AuxiliaryBudgetLedger | None = None
 
     def close(self) -> None:
-        if self.query_embedding is not None:
-            self.query_embedding.close()
+        """Release owned connections even when transport shutdown fails."""
+        try:
+            if self.query_embedding is not None:
+                self.query_embedding.close()
+        finally:
+            if self.ledger is not None:
+                self.ledger.close()
 
 
 def load_formal_p18_budget_policy() -> BudgetPolicy | None:
@@ -124,7 +151,7 @@ def _model_caps_from_mapping(raw: object) -> dict[str, tuple[int | None, int | N
     for model, sides in mapping("model_token_caps", raw).items():
         text("model_token_caps", model)
         sides = mapping("model_token_caps", sides)
-        for key in ("input", "output"):
+        for key in sorted(ModelTokenCapInput.__required_keys__):
             if key not in sides:
                 raise ValueError(f"model_token_caps_{key}")
         caps[model] = (sides["input"], sides["output"])
@@ -335,6 +362,7 @@ def build_auxiliary_runtime(
         consolidation=consolidation_adapter,
         capability_gaps=tuple(gaps),
         ledger_path=config.ledger_path,
+        ledger=ledger,
     )
 
 

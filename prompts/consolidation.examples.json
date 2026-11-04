@@ -1,0 +1,457 @@
+[
+  {
+    "input": {
+      "sources": [
+        {
+          "source_ref": "TEST-prompt-source",
+          "source_revision": 1,
+          "origin": "human_direct",
+          "content": "I prefer deep blue.",
+          "occurred_at": "2026-09-06T12:00:00Z",
+          "capture_gaps": []
+        }
+      ],
+      "source_refs": [
+        "TEST-prompt-source@1"
+      ],
+      "episode_ref": null
+    },
+    "expected": {
+      "protocol_version": "1.1",
+      "source_refs": [
+        "TEST-prompt-source@1"
+      ],
+      "claim_proposals": [
+        {
+          "kind": "preference",
+          "subject": "user",
+          "predicate": "color",
+          "value_text": "navy",
+          "conditions": [],
+          "statement_kind": "assertion",
+          "valid_from": "2026-09-06T12:00:00Z",
+          "valid_to": null,
+          "evidence_spans": [
+            {
+              "source_ref": "TEST-prompt-source",
+              "source_revision": 1,
+              "quote": "I prefer deep blue.",
+              "start": 0,
+              "end": 19
+            }
+          ]
+        }
+      ],
+      "resume_proposals": [],
+      "reference_proposals": []
+    }
+  },
+  {
+    "input": {
+      "sources": [
+        {
+          "source_ref": "TEST-entity-source",
+          "source_revision": 1,
+          "origin": "human_direct",
+          "content": "TEST-Dr Mira is TEST-Mira Sen with license TEST-430.",
+          "occurred_at": "2026-09-06T12:00:00Z",
+          "capture_gaps": []
+        }
+      ],
+      "source_refs": [
+        "TEST-entity-source@1"
+      ],
+      "episode_ref": null
+    },
+    "expected": {
+      "protocol_version": "1.1",
+      "source_refs": [
+        "TEST-entity-source@1"
+      ],
+      "claim_proposals": [
+        {
+          "kind": "fact",
+          "subject": "TEST-Mira Sen",
+          "predicate": "license",
+          "value_text": "TEST-430",
+          "conditions": [],
+          "statement_kind": "assertion",
+          "valid_from": null,
+          "valid_to": null,
+          "evidence_spans": [
+            {
+              "source_ref": "TEST-entity-source",
+              "source_revision": 1,
+              "quote": "TEST-Dr Mira is TEST-Mira Sen with license TEST-430.",
+              "start": 0,
+              "end": 52
+            }
+          ],
+          "entity_type": "person",
+          "entity_names": [
+            "TEST-Dr Mira"
+          ]
+        }
+      ],
+      "resume_proposals": [],
+      "reference_proposals": []
+    }
+  },
+  {
+    "input": {
+      "sources": [
+        {
+          "source_ref": "TEST-entity-source",
+          "source_revision": 1,
+          "origin": "human_direct",
+          "content": "测试小王就是测试王明医生，执业证是 TEST-431。",
+          "occurred_at": "2026-09-06T12:00:00Z",
+          "capture_gaps": []
+        }
+      ],
+      "source_refs": [
+        "TEST-entity-source@1"
+      ],
+      "episode_ref": null
+    },
+    "expected": {
+      "protocol_version": "1.1",
+      "source_refs": [
+        "TEST-entity-source@1"
+      ],
+      "claim_proposals": [
+        {
+          "kind": "fact",
+          "subject": "测试王明医生",
+          "predicate": "执业证",
+          "value_text": "TEST-431",
+          "conditions": [],
+          "statement_kind": "assertion",
+          "valid_from": null,
+          "valid_to": null,
+          "evidence_spans": [
+            {
+              "source_ref": "TEST-entity-source",
+              "source_revision": 1,
+              "quote": "测试小王就是测试王明医生，执业证是 TEST-431。",
+              "start": 0,
+              "end": 27
+            }
+          ],
+          "entity_type": "person",
+          "entity_names": [
+            "测试小王"
+          ]
+        }
+      ],
+      "resume_proposals": [],
+      "reference_proposals": []
+    }
+  },
+  {
+    "input": {
+      "sources": [
+        {
+          "source_ref": "TEST-entity-source",
+          "source_revision": 1,
+          "origin": "human_direct",
+          "content": "TEST-Ricecake is TEST-Nian, the cat with chip TEST-432.",
+          "occurred_at": "2026-09-06T12:00:00Z",
+          "capture_gaps": []
+        }
+      ],
+      "source_refs": [
+        "TEST-entity-source@1"
+      ],
+      "episode_ref": null
+    },
+    "expected": {
+      "protocol_version": "1.1",
+      "source_refs": [
+        "TEST-entity-source@1"
+      ],
+      "claim_proposals": [
+        {
+          "kind": "fact",
+          "subject": "TEST-Nian",
+          "predicate": "chip",
+          "value_text": "TEST-432",
+          "conditions": [],
+          "statement_kind": "assertion",
+          "valid_from": null,
+          "valid_to": null,
+          "evidence_spans": [
+            {
+              "source_ref": "TEST-entity-source",
+              "source_revision": 1,
+              "quote": "TEST-Ricecake is TEST-Nian, the cat with chip TEST-432.",
+              "start": 0,
+              "end": 55
+            }
+          ],
+          "entity_type": "object",
+          "entity_names": [
+            "TEST-Ricecake"
+          ]
+        }
+      ],
+      "resume_proposals": [],
+      "reference_proposals": []
+    }
+  },
+  {
+    "input": {
+      "sources": [
+        {
+          "source_ref": "TEST-entity-source",
+          "source_revision": 1,
+          "origin": "human_direct",
+          "content": "测试白猫就是测试年糕，芯片号是 TEST-433。",
+          "occurred_at": "2026-09-06T12:00:00Z",
+          "capture_gaps": []
+        }
+      ],
+      "source_refs": [
+        "TEST-entity-source@1"
+      ],
+      "episode_ref": null
+    },
+    "expected": {
+      "protocol_version": "1.1",
+      "source_refs": [
+        "TEST-entity-source@1"
+      ],
+      "claim_proposals": [
+        {
+          "kind": "fact",
+          "subject": "测试年糕",
+          "predicate": "芯片号",
+          "value_text": "TEST-433",
+          "conditions": [],
+          "statement_kind": "assertion",
+          "valid_from": null,
+          "valid_to": null,
+          "evidence_spans": [
+            {
+              "source_ref": "TEST-entity-source",
+              "source_revision": 1,
+              "quote": "测试白猫就是测试年糕，芯片号是 TEST-433。",
+              "start": 0,
+              "end": 25
+            }
+          ],
+          "entity_type": "object",
+          "entity_names": [
+            "测试白猫"
+          ]
+        }
+      ],
+      "resume_proposals": [],
+      "reference_proposals": []
+    }
+  },
+  {
+    "input": {
+      "sources": [
+        {
+          "source_ref": "TEST-entity-source",
+          "source_revision": 1,
+          "origin": "human_direct",
+          "content": "TEST-East Hall is the former name of TEST-Aster Hall at TEST-14 Bay Lane.",
+          "occurred_at": "2026-09-06T12:00:00Z",
+          "capture_gaps": []
+        }
+      ],
+      "source_refs": [
+        "TEST-entity-source@1"
+      ],
+      "episode_ref": null
+    },
+    "expected": {
+      "protocol_version": "1.1",
+      "source_refs": [
+        "TEST-entity-source@1"
+      ],
+      "claim_proposals": [
+        {
+          "kind": "fact",
+          "subject": "TEST-Aster Hall",
+          "predicate": "address",
+          "value_text": "TEST-14 Bay Lane",
+          "conditions": [],
+          "statement_kind": "assertion",
+          "valid_from": null,
+          "valid_to": null,
+          "evidence_spans": [
+            {
+              "source_ref": "TEST-entity-source",
+              "source_revision": 1,
+              "quote": "TEST-East Hall is the former name of TEST-Aster Hall at TEST-14 Bay Lane.",
+              "start": 0,
+              "end": 73
+            }
+          ],
+          "entity_type": "place",
+          "entity_names": [
+            "TEST-East Hall"
+          ]
+        }
+      ],
+      "resume_proposals": [],
+      "reference_proposals": []
+    }
+  },
+  {
+    "input": {
+      "sources": [
+        {
+          "source_ref": "TEST-entity-source",
+          "source_revision": 1,
+          "origin": "human_direct",
+          "content": "测试东馆已更名为测试星河馆，地址是测试海湾路15号。",
+          "occurred_at": "2026-09-06T12:00:00Z",
+          "capture_gaps": []
+        }
+      ],
+      "source_refs": [
+        "TEST-entity-source@1"
+      ],
+      "episode_ref": null
+    },
+    "expected": {
+      "protocol_version": "1.1",
+      "source_refs": [
+        "TEST-entity-source@1"
+      ],
+      "claim_proposals": [
+        {
+          "kind": "fact",
+          "subject": "测试星河馆",
+          "predicate": "地址",
+          "value_text": "测试海湾路15号",
+          "conditions": [],
+          "statement_kind": "assertion",
+          "valid_from": null,
+          "valid_to": null,
+          "evidence_spans": [
+            {
+              "source_ref": "TEST-entity-source",
+              "source_revision": 1,
+              "quote": "测试东馆已更名为测试星河馆，地址是测试海湾路15号。",
+              "start": 0,
+              "end": 26
+            }
+          ],
+          "entity_type": "place",
+          "entity_names": [
+            "测试东馆"
+          ]
+        }
+      ],
+      "resume_proposals": [],
+      "reference_proposals": []
+    }
+  },
+  {
+    "input": {
+      "sources": [
+        {
+          "source_ref": "TEST-entity-source",
+          "source_revision": 1,
+          "origin": "human_direct",
+          "content": "TEST-CI is TEST-Cedar Institute, registration TEST-435.",
+          "occurred_at": "2026-09-06T12:00:00Z",
+          "capture_gaps": []
+        }
+      ],
+      "source_refs": [
+        "TEST-entity-source@1"
+      ],
+      "episode_ref": null
+    },
+    "expected": {
+      "protocol_version": "1.1",
+      "source_refs": [
+        "TEST-entity-source@1"
+      ],
+      "claim_proposals": [
+        {
+          "kind": "fact",
+          "subject": "TEST-Cedar Institute",
+          "predicate": "registration",
+          "value_text": "TEST-435",
+          "conditions": [],
+          "statement_kind": "assertion",
+          "valid_from": null,
+          "valid_to": null,
+          "evidence_spans": [
+            {
+              "source_ref": "TEST-entity-source",
+              "source_revision": 1,
+              "quote": "TEST-CI is TEST-Cedar Institute, registration TEST-435.",
+              "start": 0,
+              "end": 55
+            }
+          ],
+          "entity_type": "organization",
+          "entity_names": [
+            "TEST-CI"
+          ]
+        }
+      ],
+      "resume_proposals": [],
+      "reference_proposals": []
+    }
+  },
+  {
+    "input": {
+      "sources": [
+        {
+          "source_ref": "TEST-entity-source",
+          "source_revision": 1,
+          "origin": "human_direct",
+          "content": "测试青研所是测试青杉研究所的简称，登记号是 TEST-436。",
+          "occurred_at": "2026-09-06T12:00:00Z",
+          "capture_gaps": []
+        }
+      ],
+      "source_refs": [
+        "TEST-entity-source@1"
+      ],
+      "episode_ref": null
+    },
+    "expected": {
+      "protocol_version": "1.1",
+      "source_refs": [
+        "TEST-entity-source@1"
+      ],
+      "claim_proposals": [
+        {
+          "kind": "fact",
+          "subject": "测试青杉研究所",
+          "predicate": "登记号",
+          "value_text": "TEST-436",
+          "conditions": [],
+          "statement_kind": "assertion",
+          "valid_from": null,
+          "valid_to": null,
+          "evidence_spans": [
+            {
+              "source_ref": "TEST-entity-source",
+              "source_revision": 1,
+              "quote": "测试青研所是测试青杉研究所的简称，登记号是 TEST-436。",
+              "start": 0,
+              "end": 31
+            }
+          ],
+          "entity_type": "organization",
+          "entity_names": [
+            "测试青研所"
+          ]
+        }
+      ],
+      "resume_proposals": [],
+      "reference_proposals": []
+    }
+  }
+]

@@ -19,6 +19,7 @@ from .episodes import (
     state_from_sources,
     supported_work_goal,
 )
+from .handoff import after_summary
 from .resume_compaction import resume_evidence_refs
 from .visibility import allowed, allowed_refs
 
@@ -278,8 +279,13 @@ class Episodes:
         return segment["segment_index"] + (1 if segment["count"] >= 200 else 0)
 
     def attach(self, source, now):
+        """Attach a source once, preserving membership of hidden episodes."""
         conn, ctx = self.tx._check(write=True), self.tx.context
-        if self.source_episode(source.ref, source.revision):
+        # Membership survives an episode becoming hidden; visibility cannot decide
+        # whether this source already belongs to an episode.
+        if conn.execute(
+            "SELECT 1 FROM episode_events WHERE source_ref=? AND source_revision=?", (source.ref, source.revision)
+        ).fetchone():
             return
         series, kind = self._series_for(source)
         segment_index = self._segment_index(series)
@@ -457,4 +463,5 @@ class Episodes:
             target, version = parse_source_ref(artifact)
             lineage.depend_unless_carried(conn, "episode", ref, revision, "artifact", target, version)
         conn.execute("UPDATE instance_meta SET memory_epoch=memory_epoch+1 WHERE singleton=1")
+        after_summary(self.tx, ref, now)
         return self.get(ref)

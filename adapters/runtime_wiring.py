@@ -1,8 +1,8 @@
 """Shared trusted RuntimeInstance glue for host adapters.
 
 Host-specific modules own only their lifecycle wakeup policy.  This module
-owns the one binding/configuration authority and never initializes storage as
-a side effect of an optional host hookup.
+owns the one binding/configuration authority. It can wake schema maintenance
+for an existing store; an optional host hookup never creates missing storage.
 """
 
 from __future__ import annotations
@@ -22,8 +22,11 @@ from typing import Any, Mapping
 from scope_recall.contracts import InstanceBinding
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.recall_budget import canonical_render_json
+from scope_recall.core.storage import SQLiteStorage
+from scope_recall.runtime import worker_launch
 from scope_recall.runtime.instance import RuntimeInstance, build_runtime_instance
 from scope_recall.runtime.instance_config import RuntimeInstanceConfig
+from scope_recall.runtime.store_maintenance import store_upgrade_pending
 from scope_recall.runtime.worker_entry import load_config
 from scope_recall.runtime.worker_launch import EPHEMERAL_CONFIG_INFIX, RUNTIME_CONFIG_FILENAME
 
@@ -226,6 +229,27 @@ class TrustedHostRuntime:
         already queued worker.
         """
 
+    def wake_upgrade(self, *, known_pending: bool = False) -> bool:
+        """Wake only schema maintenance, independently of status, capture and model work."""
+        runtime = self._runtime
+        if runtime is None:
+            return False
+        try:
+            if not known_pending and not store_upgrade_pending(runtime.config.binding, timeout_seconds=0):
+                return False
+            launch_audience_worker(
+                self,
+                session_id=runtime.config.session_id,
+                allowed_scope_ids=runtime.config.allowed_scope_ids or runtime.config.binding.scope_ids,
+                launcher=worker_launch.launch_worker,
+                upgrade_only=True,
+                project_id=runtime.config.project_id,
+                branch_id=runtime.config.branch_id,
+            )
+        except (OSError, RuntimeError, ValueError):
+            return False
+        return True
+
     def close(self, *, detach_worker: bool = False) -> None:
         del detach_worker
         runtime, self._runtime = self._runtime, None
@@ -281,12 +305,17 @@ def attach_trusted_host_runtime(
         branch_id=branch_id if branch_id is not None else runtime_config.branch_id,
     )
     runtime = build_runtime_instance(runtime_config)
-    return runtime_class(
+    host = runtime_class(
         core=runtime.core,
         _runtime=runtime,
         _config_path=path.resolve(),
         _host_adapter=runtime_config.host_adapter,
     )
+    store = getattr(host.core, "storage", None)
+    if isinstance(store, SQLiteStorage):
+        store.on_upgrade_pending = lambda: host.wake_upgrade(known_pending=True)
+    host.wake_upgrade()
+    return host
 
 
 def write_ephemeral_worker_config(
@@ -352,6 +381,7 @@ def launch_audience_worker(
     launcher,
     project_id: str | None = None,
     branch_id: str | None = None,
+    upgrade_only: bool = False,
 ) -> tuple[str, ...]:
     """At most eight exact audiences, each with one active and one follower.
 
@@ -362,7 +392,7 @@ def launch_audience_worker(
         runtime = host._runtime
         if runtime is None or host._config_path is None:
             return (GAP_UNCONFIGURED,)
-        if runtime.config.binding.installation_kind == "shared":
+        if runtime.config.binding.installation_kind == "shared" and not upgrade_only:
             # A shared store has one worker of its own, with its own credentials;
             # an entry's process carries the entry's (``runtime/worker_launch.py``).
             return ()
@@ -389,12 +419,14 @@ def launch_audience_worker(
         if key not in lanes and len(lanes) >= MAX_AUDIENCE_LANES:
             return (GAP_AUDIENCE_CAPACITY,)
         active, tail = lanes.get(key, (None, None))
-        if active is not None and tail is not None:
+        if _lane_busy(active, tail, upgrade_only):
             return (GAP_WORKER_BUSY,)
         now = time.monotonic()
         since_last = now - host._last_worker_launch
         interval = runtime.config.worker_min_interval_seconds
         options = {"cleanup_config": True, "detach_output": True}
+        if upgrade_only:
+            options["upgrade_only"] = True
         if active is not None:
             options["after_pid"] = active.pid
         if host._last_worker_launch and since_last < interval:
@@ -422,6 +454,13 @@ def launch_audience_worker(
         host._owned_worker, host._trailing_worker = active, tail
         host._last_worker_launch = now
         return (GAP_WORKER_BUSY,) if tail is not None else ()
+
+
+def _lane_busy(active, tail, upgrade_only: bool) -> bool:
+    """A maintenance wake coalesces with the maintenance already active or queued."""
+    return (active is not None and tail is not None) or (
+        upgrade_only and any(getattr(worker, "upgrade_only", False) is True for worker in (active, tail))
+    )
 
 
 def close_audience_workers(host: TrustedHostRuntime, *, detach: bool) -> None:

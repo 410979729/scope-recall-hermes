@@ -16,10 +16,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from ..core import private
-from ..core.file_lock import advisory_file_lock
-from .auxiliary import DEFAULT_LEDGER_NAME
-from .backup_archive import ArchiveLayoutError, canonical_member_name
-from .backup_primitives import (
+from ..core.backup_primitives import (
     BackupError,
     backup_sqlite,
     check_backup_deadline,
@@ -28,6 +25,10 @@ from .backup_primitives import (
     safe_path,
     sha256,
 )
+from ..core.capture_filters import sanitize_source_capture_value
+from ..core.file_lock import advisory_file_lock
+from .auxiliary import DEFAULT_LEDGER_NAME
+from .backup_archive import ArchiveLayoutError, canonical_member_name
 from .remote_clock import private_metadata, stored_session_id
 from .validation import validate_worker_day
 
@@ -286,19 +287,22 @@ def _stage_kept_captures(
     if not checked.is_dir():
         return
     for item in real_files(checked):
-        if privacy is not None and privacy.has_rules:
-            try:
-                if not privacy.permits_kept(json.loads(item.read_bytes())):
-                    continue
-            except (OSError, ValueError, TypeError):
+        try:
+            raw = item.read_bytes()
+            value = json.loads(raw)
+            if privacy is not None and not privacy.permits_kept(value):
                 continue
+            cleaned = sanitize_source_capture_value(value)
+        except (OSError, ValueError, TypeError, RecursionError):
+            continue
         relative = f"{KEPT_CAPTURES_DIRECTORY}/{item.relative_to(checked).as_posix()}"
         try:
             canonical_member_name(relative)
         except ArchiveLayoutError as exc:
             raise BackupError(str(exc)) from exc
         destination = stage_dir / relative
-        _copy_regular(item, destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(raw if value == cleaned else json.dumps(cleaned, ensure_ascii=False).encode("utf-8"))
         files.append(_file_entry(relative, destination))
         resources.append(_resource("kept_captures", relative, relative, field=None))
 

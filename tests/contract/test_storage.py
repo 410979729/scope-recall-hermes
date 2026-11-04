@@ -6,6 +6,7 @@ Sources are synthetic. These tests do not claim semantic model/host acceptance.
 import hashlib
 import importlib
 import json
+import os
 import shutil
 import sqlite3
 import sys
@@ -22,6 +23,7 @@ from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.deadline import RequestDeadline, using_request_deadline
 from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.core.storage import SQLiteStorage
+from scope_recall.core.truth_connection import TruthDatabaseConnectionError
 from scope_recall.core.writer_lease import TruthWriterBusyError, truth_writer_process_snapshot
 from v11_support import context, downgrade_store, source_event
 
@@ -43,6 +45,183 @@ def put(tx, key="TEST-source/1", **values):
 def snapshot(storage, ctx):
     with storage.read(ctx) as tx:
         return tx.status()
+
+
+def test_stable_store_checks_structural_state_once_but_verifies_each_transaction(store, monkeypatch):
+    storage, ctx = store
+    calls = dict(backfill=0, index=0, verify=0)
+    for owner, name, key in (
+        (storage_module.lexical_index, "claim_backfill_pending", "backfill"),
+        (storage_module, "source_session_index_present", "index"),
+        (storage, "verify", "verify"),
+    ):
+        original = getattr(owner, name)
+
+        def counted(*args, _original=original, _key=key, **kwargs):
+            calls[_key] += 1
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(owner, name, counted)
+    for _ in range(3):
+        with storage.write(ctx):
+            pass
+    assert calls == dict(backfill=1, index=1, verify=3)
+
+
+@pytest.mark.parametrize("change", ["schema", "metadata", "file", "cursor"])
+def test_structural_cache_rechecks_changed_store_state(store, monkeypatch, change):
+    storage, ctx = store
+    with storage.write(ctx):
+        pass
+    calls = []
+    original = storage_module.lexical_index.claim_backfill_pending
+
+    def checked(conn):
+        calls.append(1)
+        return original(conn)
+
+    monkeypatch.setattr(storage_module.lexical_index, "claim_backfill_pending", checked)
+    target = storage.path if change != "file" else storage.path.with_name("TEST-replacement.sqlite3")
+    if change == "file":
+        shutil.copy2(storage.path, target)
+    with closing(sqlite3.connect(target)) as conn:
+        if change == "schema":
+            conn.execute("CREATE INDEX TEST_new_shape ON source_events(role)")
+        elif change == "metadata":
+            conn.execute("UPDATE instance_meta SET config_version=config_version+1")
+        elif change == "cursor":
+            conn.execute(
+                "INSERT INTO candidate_scan_cursors(cursor_name,completed,updated_at) VALUES ('claim_lexical',0,?) "
+                "ON CONFLICT(cursor_name) DO UPDATE SET completed=0",
+                (NOW,),
+            )
+        else:
+            conn.execute("DROP INDEX source_session")
+        conn.commit()
+    if change == "file":
+        target.replace(storage.path)
+    if change == "cursor":
+        storage.upgrade_on_open = False
+    try:
+        with storage.read(ctx, remaining_seconds=60.0):
+            pass
+    except TruthDatabaseConnectionError:
+        # POSIX also refuses a replaced inode before SQLite opens it; Windows
+        # relies on inherited ACLs and reaches the structural revalidation.
+        assert change == "file" and sys.platform != "win32"
+        return
+    except ContractError as exc:
+        assert change == "cursor" and exc.code == "SCHEMA_UNSUPPORTED"
+    assert calls
+
+
+def test_cached_structure_never_caches_scope_authorization(store):
+    storage, ctx = store
+    with storage.read(ctx):
+        pass
+    with closing(sqlite3.connect(storage.path)) as conn:
+        conn.execute("DELETE FROM instance_scopes")
+        conn.commit()
+    with pytest.raises(ContractError) as error:
+        with storage.read(ctx):
+            pass
+    assert error.value.code == "IDENTITY_UNBOUND"
+
+
+def test_adopt_rechecks_structure_even_when_metadata_returns_to_its_old_value(tmp_path, monkeypatch):
+    from tests.contract.test_shared_store import shared_binding, shared_context
+
+    storage = SQLiteStorage(shared_binding(tmp_path / "TEST-adopt-cache"))
+    storage.initialize()
+    ctx = shared_context(storage.binding)
+    with storage.read(ctx):
+        pass
+    with closing(sqlite3.connect(storage.path)) as conn:
+        conn.execute("UPDATE instance_meta SET data_directory=?", (str(tmp_path / "TEST-old-directory"),))
+        conn.commit()
+    calls = []
+    original = storage_module.lexical_index.claim_backfill_pending
+
+    def checked(conn):
+        calls.append(1)
+        return original(conn)
+
+    monkeypatch.setattr(storage_module.lexical_index, "claim_backfill_pending", checked)
+    storage.adopt()
+    for _ in range(2):
+        with storage.read(ctx):
+            pass
+    assert calls == [1]
+
+
+def test_adopt_revokes_copied_body_scan_receipts(tmp_path):
+    from scope_recall.core.source_storage import backfill_secret_scans
+
+    from tests.contract.test_shared_store import put, shared_binding, shared_context
+
+    storage = SQLiteStorage(shared_binding(tmp_path / "TEST-adopt-receipt"))
+    storage.initialize()
+    with storage.write(shared_context(storage.binding)) as tx:
+        tx.registry.register_entry("agent3", "TEST entry", "hermes", now="2026-09-22T20:00:00Z")
+    ctx = shared_context(storage.binding, "agent3")
+    source = put(storage, ctx, "TEST-adopt-source")
+    with storage.read(ctx) as tx:
+        assert tx.source(source.ref, 1).content_secret_scan is not None
+    with storage.write(ctx) as tx:
+        assert backfill_secret_scans(tx, now="TEST-now") == 1
+        assert backfill_secret_scans(tx, now="TEST-now") == 0
+    with closing(sqlite3.connect(storage.path)) as conn:
+        conn.execute("UPDATE instance_meta SET data_directory=?", (str(tmp_path / "TEST-old-directory"),))
+        conn.commit()
+    storage.adopt()
+    with storage.read(ctx) as tx:
+        assert tx.source(source.ref, 1).content_secret_scan is None
+    with storage.write(ctx) as tx:
+        assert backfill_secret_scans(tx, now="TEST-now") == 1
+        assert tx.source(source.ref, 1).content_secret_scan is not None
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows distinguishes junctions and symlinks")
+def test_path_guard_reads_each_reparse_record_once(store, monkeypatch):
+    storage, _ctx = store
+    paths = {os.fspath(path) for path in (storage.path, *storage.path.parents)}
+    counts = dict.fromkeys(paths, 0)
+    original = os.lstat
+    # From Python 3.14 Path.lstat reads the record through os.lstat: one read reaching both counts once.
+    reading = []
+
+    def counted(path, *args, **kwargs):
+        if os.fspath(path) in counts and not reading:
+            counts[os.fspath(path)] += 1
+        return original(path, *args, **kwargs)
+
+    # Windows junction checks call a native query that bypasses os.lstat.
+    # Count that edge as well as Python-level stat calls; Path.is_junction
+    # exists from Python 3.12, and 3.11 has no such query to count.
+    junction = getattr(Path, "is_junction", None)
+
+    def counted_junction(path):
+        if os.fspath(path) in counts:
+            counts[os.fspath(path)] += 1
+        return junction(path)
+
+    record = Path.lstat
+
+    def counted_record(path):
+        if os.fspath(path) in counts:
+            counts[os.fspath(path)] += 1
+        reading.append(path)
+        try:
+            return record(path)
+        finally:
+            reading.pop()
+
+    monkeypatch.setattr(Path, "lstat", counted_record)
+    if junction is not None:
+        monkeypatch.setattr(Path, "is_junction", counted_junction)
+    monkeypatch.setattr(os, "lstat", counted)
+    storage._path_check()
+    assert set(counts.values()) == {1}
 
 
 @pytest.mark.parametrize("schema", [None, SCHEMA_VERSION, 1108, 1111])
@@ -68,7 +247,7 @@ def test_initialize_supplies_the_session_index_without_changing_the_schema(tmp_p
 
 @pytest.mark.parametrize(
     "remaining,store_bytes,expected",
-    [(None, 100_000_000, True), (60.0, 100_000_000, True), (1.0, 100_000_000, False), (1.0, 99_999_999, True)],
+    [(None, 100_000_000, False), (60.0, 100_000_000, True), (1.0, 100_000_000, False), (1.0, 99_999_999, True)],
 )
 def test_current_store_supplies_session_index_only_when_the_open_budget_fits(
     store, monkeypatch, remaining, store_bytes, expected
@@ -126,6 +305,7 @@ def test_session_index_initialization_and_reopen_deduct_elapsed_budget(store, mo
         conn.execute("DROP INDEX source_session")
     now = [10.0]
     storage.monotonic = lambda: now[0]
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
     opened = []
     actual_open, actual_close = storage._open, storage._close
     actual_index = storage_module.ensure_source_session_index
@@ -154,8 +334,8 @@ def test_session_index_initialization_and_reopen_deduct_elapsed_budget(store, mo
     monkeypatch.setattr(storage_module, "ensure_source_session_index", build_index)
     with storage.write(ctx, remaining_seconds=0.05) as tx:
         assert tx._check().execute("PRAGMA index_info(source_session)").fetchall()
-    assert [mode for mode, _ in opened] == ["rw", "rwc", "ro", "rw"]
-    assert [remaining for _, remaining in opened] == pytest.approx([0.05, 0.035, 0.02, 0.015])
+    assert [mode for mode, _ in opened] == ["rw", "rwc", "rw"]
+    assert [remaining for _, remaining in opened] == pytest.approx([0.05, 0.035, 0.02])
 
 
 @pytest.mark.parametrize("remaining", [None, 60.0])
@@ -764,7 +944,7 @@ def test_a_heavy_upgrade_waits_for_a_caller_with_the_budget():
     and the installer can, and a small store is brought forward by anyone."""
     from scope_recall.core.storage import HEAVY_UPGRADE_BYTES, HEAVY_UPGRADE_SECONDS, upgrade_fits
 
-    assert upgrade_fits(HEAVY_UPGRADE_BYTES * 10, None)
+    assert not upgrade_fits(HEAVY_UPGRADE_BYTES * 10, None)
     assert upgrade_fits(HEAVY_UPGRADE_BYTES * 10, HEAVY_UPGRADE_SECONDS)
     assert not upgrade_fits(HEAVY_UPGRADE_BYTES * 10, 6.0)
     assert upgrade_fits(HEAVY_UPGRADE_BYTES - 1, 1.0)

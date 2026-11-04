@@ -7,15 +7,7 @@
       "const": "1.1"
     },
     "source_refs": {
-      "type": "array",
-      "minItems": 1,
-      "maxItems": 32,
-      "uniqueItems": true,
-      "items": {
-        "type": "string",
-        "minLength": 1,
-        "maxLength": 240
-      }
+      "$ref": "#/$defs/source_refs"
     },
     "claim_proposals": {
       "type": "array",
@@ -33,7 +25,8 @@
               "decision",
               "procedure",
               "intention",
-              "alias"
+              "alias",
+              "observation"
             ]
           },
           "subject": {
@@ -189,15 +182,7 @@
                 ]
               },
               "state_evidence_refs": {
-                "type": "array",
-                "minItems": 1,
-                "maxItems": 32,
-                "uniqueItems": true,
-                "items": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 240
-                }
+                "$ref": "#/$defs/source_refs"
               }
             },
             "required": [
@@ -233,6 +218,43 @@
               "target_ref",
               "scope_description"
             ]
+          },
+          "occurred_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "UTC instant of the described event; null when unknown."
+          },
+          "entity_type": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "person",
+              "object",
+              "place",
+              "organization",
+              "project"
+            ],
+            "default": "unknown"
+          },
+          "entity_names": {
+            "type": "array",
+            "maxItems": 16,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "default": [],
+            "description": "Verbatim names in this fact evidence that identify its subject. Similar names and ungrounded translations are excluded."
+          },
+          "importance": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5
           }
         },
         "required": [
@@ -328,149 +350,34 @@
             "maxLength": 240
           },
           "goal": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-              "text": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 2048
-              },
-              "evidence_refs": {
-                "type": "array",
-                "minItems": 1,
-                "maxItems": 32,
-                "uniqueItems": true,
-                "items": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 240
-                }
-              }
-            },
-            "required": [
-              "text",
-              "evidence_refs"
-            ]
+            "$ref": "#/$defs/evidence_text"
           },
           "decisions": {
             "type": "array",
             "maxItems": 12,
             "items": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "text": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 2048
-                },
-                "evidence_refs": {
-                  "type": "array",
-                  "minItems": 1,
-                  "maxItems": 32,
-                  "uniqueItems": true,
-                  "items": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 240
-                  }
-                }
-              },
-              "required": [
-                "text",
-                "evidence_refs"
-              ]
+              "$ref": "#/$defs/evidence_text"
             }
           },
           "verified_progress": {
             "type": "array",
             "maxItems": 12,
             "items": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "text": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 2048
-                },
-                "evidence_refs": {
-                  "type": "array",
-                  "minItems": 1,
-                  "maxItems": 32,
-                  "uniqueItems": true,
-                  "items": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 240
-                  }
-                }
-              },
-              "required": [
-                "text",
-                "evidence_refs"
-              ]
+              "$ref": "#/$defs/evidence_text"
             }
           },
           "open_items": {
             "type": "array",
             "maxItems": 12,
             "items": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "text": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 2048
-                },
-                "evidence_refs": {
-                  "type": "array",
-                  "minItems": 1,
-                  "maxItems": 32,
-                  "uniqueItems": true,
-                  "items": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 240
-                  }
-                }
-              },
-              "required": [
-                "text",
-                "evidence_refs"
-              ]
+              "$ref": "#/$defs/evidence_text"
             }
           },
           "blockers": {
             "type": "array",
             "maxItems": 12,
             "items": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "text": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 2048
-                },
-                "evidence_refs": {
-                  "type": "array",
-                  "minItems": 1,
-                  "maxItems": 32,
-                  "uniqueItems": true,
-                  "items": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 240
-                  }
-                }
-              },
-              "required": [
-                "text",
-                "evidence_refs"
-              ]
+              "$ref": "#/$defs/evidence_text"
             }
           },
           "next_step": {
@@ -505,15 +412,7 @@
             "maxLength": 512
           },
           "evidence_refs": {
-            "type": "array",
-            "minItems": 1,
-            "maxItems": 32,
-            "uniqueItems": true,
-            "items": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 240
-            }
+            "$ref": "#/$defs/source_refs"
           }
         },
         "required": [
@@ -570,15 +469,7 @@
             ]
           },
           "evidence_refs": {
-            "type": "array",
-            "minItems": 1,
-            "maxItems": 32,
-            "uniqueItems": true,
-            "items": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 240
-            }
+            "$ref": "#/$defs/source_refs"
           }
         },
         "required": [
@@ -655,12 +546,57 @@
         "location": {
           "type": "string",
           "maxLength": 240
+        },
+        "start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 1
         }
       },
       "required": [
         "source_ref",
         "source_revision",
         "quote"
+      ],
+      "dependentRequired": {
+        "start": [
+          "end"
+        ],
+        "end": [
+          "start"
+        ]
+      }
+    },
+    "source_refs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 240
+      }
+    },
+    "evidence_text": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "evidence_refs": {
+          "$ref": "#/$defs/source_refs"
+        }
+      },
+      "required": [
+        "text",
+        "evidence_refs"
       ]
     }
   }

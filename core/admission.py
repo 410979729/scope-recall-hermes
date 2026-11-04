@@ -1,9 +1,9 @@
 """Conservative scheduling policy; source fidelity and authority are unchanged.
 
-Only exact, content-free acknowledgements, successful tool wrappers and Scope
-Recall's own reinjected output are cheap terminal cases. Unrecognized text
-remains eligible. Queue pressure postpones derived work, never source
-persistence or lexical search.
+Exact, content-free acknowledgements, successful tool wrappers and Scope
+Recall's own reinjected output are cheap terminal cases. Imported and native
+memory material stays source-only until confirmed. Other text remains eligible.
+Queue pressure postpones derived work, never source persistence or lexical search.
 """
 
 from __future__ import annotations
@@ -172,15 +172,34 @@ def _says_nothing_more(body: dict) -> bool:
     return empty_output and empty_message
 
 
+def _memory_material(event):
+    """Reserved source identities are minted by adapters, never inferred from prose.
+
+    This marker only restricts work admission; it cannot attest human origin or
+    grant evidence authority. Conversation imports still require provenance.
+    """
+    # Segmentation hashes occurrence keys; the parent retains the adapter's
+    # source identity for every part of the original memory.
+    segment = event.get("segment")
+    key = segment.get("group_key") if isinstance(segment, dict) else event.get("source_event_key", "")
+    origin = event.get("origin")
+    return isinstance(key, str) and (
+        origin == "imported"
+        and key.startswith("memory-import:")
+        and event.get("source_original_origin") != "human_direct"
+        or origin in {"assistant_visible", "origin_unknown"}
+        and key.startswith("native-memory:")
+    )
+
+
 def classify(event, policy=None):
     """No semantic guesses: a keyword only raises scheduling priority."""
     policy = policy or AdmissionPolicy()
+    material = _memory_material(event)
+    if material or event.get("origin") == "memory_reinjection" and policy.enabled:
+        return AdmissionDecision("source_only", "import_requires_confirmation") if material else _REINJECTION
     if not policy.enabled:
         return AdmissionDecision("schedule", "policy_disabled")
-    if event.get("origin") == "memory_reinjection":
-        # Before importance: recall output routinely repeats the keywords and
-        # evidence refs that would otherwise raise its priority.
-        return _REINJECTION
     text = event["content"]
     if withheld_tool_output(event):
         # Nothing in it to search for by meaning, to derive from or to find by its words (``core/events.py``).
@@ -230,7 +249,7 @@ def _available_types(tx, scope_id, policy, important, candidates=WORK_TYPES):
     )
 
 
-def _repeated_tool_output(tx, scope_id, text) -> bool:
+def _repeated_tool_output(tx, scope_id, text, source_ref, source_revision) -> bool:
     """Whether an earlier, still readable tool output in this scope has exactly this content.
 
     A matching tool source that is not marked ``source_only`` suppresses another
@@ -243,8 +262,9 @@ def _repeated_tool_output(tx, scope_id, text) -> bool:
         tx._check()
         .execute(
             """SELECT 1 FROM source_events WHERE scope_id=? AND role='tool' AND content_sha256=? AND read_blocked=0
-           AND COALESCE(json_extract(extra_json,'$._scope_recall_admission.disposition'),'')!='source_only' LIMIT 1""",
-            (scope_id, digest),
+           AND COALESCE(json_extract(extra_json,'$._scope_recall_admission.disposition'),'')!='source_only'
+           AND NOT(event_id IS ? AND source_revision IS ?) LIMIT 1""",
+            (scope_id, digest, source_ref, source_revision),
         )
         .fetchone()
         is not None
@@ -262,12 +282,14 @@ def wanted_work_types(event) -> frozenset[str]:
     return TOOL_OUTPUT_WORK_TYPES if event.get("role") == "tool" else WORK_TYPES
 
 
-def decide(tx, event, scope_id, policy=None):
+def decide(tx, event, scope_id, policy=None, *, source_ref=None, source_revision=None):
     policy = policy or AdmissionPolicy()
     decision = classify(event, policy)
     if decision.disposition != "schedule":
         return decision
-    if event.get("role") == "tool" and _repeated_tool_output(tx, scope_id, event["content"]):
+    if event.get("role") == "tool" and _repeated_tool_output(
+        tx, scope_id, event["content"], source_ref, source_revision
+    ):
         return AdmissionDecision("source_only", "tool_output_repeat")
     wanted = wanted_work_types(event)
     kinds = _available_types(tx, scope_id, policy, decision.important, wanted)

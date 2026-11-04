@@ -12,47 +12,18 @@ from dataclasses import dataclass, replace
 
 from ..contracts import ContractError
 from .delete_storage import group_digest, retraction_after
-from .failure_retry import ACCOUNT_REFUSALS, validation_feedback
+from .failure_policy import BUDGET_PAUSE_ERRORS, PROVIDER_RECHECK, http_retryable, port_retryable, retryable
+from .failure_retry import validation_feedback
 
-_NON_RETRYABLE_MODEL_ERRORS = frozenset(
-    {
-        "budget_exhausted",
-        "meter_breach",
-        "input_invalid",
-        "request_too_large",
-        "budget_unavailable",
-        # The request guard refused secret-like text; the payload will not change.
-        "sensitive_request",
-        # The provider's policy refused or stopped the answer; asking again sends the same request to the same policy.
-        "model_refused",
-    }
-)
+#: Time retained for vector publication and fenced outcome writes after a bounded request.  Finalization refuses to
+#: write once the pass is spent, so an item claimed without this stays leased until its lease expires, and a candidate
+#: evaluation, whose attempt marker is already committed, is then failed as interrupted for good.
+FINALIZE_MARGIN_SECONDS = 5.0
 
-#: Refusals that say nothing about the item: raised before any network attempt,
-#: or the provider declining the account (``ACCOUNT_REFUSALS``).  The item is
-#: parked for an hour without spending an attempt, and its work type stands down
-#: for the pass.  ``provider_hold`` is the adapter declining to ask a provider
-#: that refused the calls just before (runtime/model_budget.py).  A model the
-#: configuration does not approve is the configuration's fault, named by the
-#: doctor (``pre_request_refusals``) and by this code; failed instead, one
-#: missing line in ``approved_models`` would fail the whole queue in a pass.
-BUDGET_PAUSE_ERRORS = (
-    frozenset(
-        {
-            "budget_exhausted",
-            "budget_unavailable",
-            "credential_missing",
-            "credential_shape_invalid",
-            "provider_hold",
-            "unsupported_model",
-        }
-    )
-    | ACCOUNT_REFUSALS
-)
 
-#: Port rejections that describe this payload rather than the provider;
-#: sending the same input again would fail the same way.
-_INVALID_INPUT_CODES = frozenset({"DERIVATION_INVALID", "INPUT_INVALID"})
+def embedding_prepare_budget(clock, started: float, budget: float) -> float:
+    """Reserve publication and bookkeeping time inside the same effective embedding deadline."""
+    return budget - min(FINALIZE_MARGIN_SECONDS, budget_left(started, clock, budget) / 2)
 
 
 class Outcome(tuple):
@@ -109,6 +80,37 @@ def hold_for_private_mode(
         )
 
 
+def hold_for_entry_state(storage, clock, context, item, *, started, budget):
+    """Keep paused-entry work pending without spending a model attempt."""
+    if budget_left(started, clock, budget) <= 0:
+        return deadline_result(storage, context, item)
+    with storage.write(context, remaining_seconds=max(0.001, budget_left(started, clock, budget))) as tx:
+        now = clock.utc_now()
+        if not tx.work._verify_lease(*item.lease, now=now):
+            return stale_result(tx, item)
+        return work_result(
+            tx.work.defer_without_attempt(*item.lease, now=now, error_code="entry_paused", seconds=60),
+            error_code="entry_paused",
+        )
+
+
+def defer_model_pass(storage, clock, context, item, model, *, started, budget):
+    """Release work for the next pass when its shared model port has no calls left.
+
+    A spent pass allowance is separate from account or provider budget failure:
+    it refunds the lease attempt without placing the work on a long budget hold.
+    """
+    if getattr(model, "remaining_calls", None) != 0:
+        return None
+    if budget_left(started, clock, budget) <= 0:
+        return deadline_result(storage, context, item)
+    with storage.write(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
+        return work_result(
+            tx.work.defer_without_attempt(*item.lease, now=clock.utc_now(), error_code="pass_call_limit", seconds=0),
+            error_code="pass_call_limit",
+        )
+
+
 def mark_obsolete(tx, item, now: str) -> tuple[str, str | None, str]:
     return work_result(tx.work.mark_obsolete(*item.lease, now=now), error_code="authority_revoked")
 
@@ -160,11 +162,17 @@ class DerivationFence:
     episode_ref: str | None = None
     episode: tuple | None = None
     references: tuple[tuple, ...] = ()
+    entries: dict | None = None
 
     def only_sources(self, sources) -> DerivationFence:
         """The same fence restricted to the sources the derivation finally used."""
         keep = {(source.ref, source.revision) for source in sources}
-        return replace(self, sources=tuple(entry for entry in self.sources if entry[:2] in keep))
+        keys = {source.entry_id for source in sources}
+        return replace(
+            self,
+            sources=tuple(entry for entry in self.sources if entry[:2] in keep),
+            entries={k: v for k, v in (self.entries or {}).items() if k in keys},
+        )
 
 
 def _digest(text: str | None) -> str | None:
@@ -175,7 +183,7 @@ def _source_state(tx, ref: str, revision: int) -> tuple | None:
     conn = tx._check()
     row = conn.execute(
         """SELECT e.event_sha256,e.read_blocked,e.suppressed,e.scope_id,e.project_id,e.branch_id,
-                  e.source_group_key,b.read_blocked,b.suppressed,b.operation_id
+                  e.source_group_key,b.read_blocked,b.suppressed,b.operation_id,e.entry_id
            FROM source_events e LEFT JOIN object_blocks b ON b.object_kind='event' AND b.object_ref=e.event_id
            WHERE e.event_id=? AND e.source_revision=?""",
         (ref, revision),
@@ -266,6 +274,8 @@ def read_derivation_fence(
     tx, *, scope_id: str, sources=(), claims=(), episode_ref: str | None = None
 ) -> DerivationFence:
     """Record, in the transaction the derivation's inputs were read from, what its result depends on."""
+    from .entry_control import entry_fence
+
     source_keys = tuple(dict.fromkeys((source.ref, source.revision) for source in sources))
     return DerivationFence(
         scope_id,
@@ -277,6 +287,7 @@ def read_derivation_fence(
         episode_ref,
         None if episode_ref is None else _episode_state(tx, episode_ref),
         () if episode_ref is None else _reference_state(tx, episode_ref),
+        entry_fence(tx, sources),
     )
 
 
@@ -289,6 +300,10 @@ def derivation_changed(tx, fence: DerivationFence, *, episode: bool = False, ref
     Captures and writes to anything else do not.  Callers keep their lease,
     visibility and newest-revision checks ahead of this one.
     """
+    from .entry_control import paused_since
+
+    if paused_since(tx, fence.entries or {}):
+        return "entry_paused"
     if retraction_after(tx._check(), (fence.scope_id,), fence.memory_epoch):
         return "deletion_operation"
     if _mark_moved(tx, "source_events", _SOURCE_IDENTITY, fence.source_mark) or _mark_moved(
@@ -358,8 +373,8 @@ def model_exception_outcome(exc: BaseException) -> tuple[str, str] | None:
         status = getattr(exc, "detail", "")
         if type(status) is str and status.isdigit() and len(status) == 3:
             code = int(status)
-            return ("retry" if code == 429 or 500 <= code <= 599 else "failed", f"http_{code}")
-    disposition = "failed" if error_type in _NON_RETRYABLE_MODEL_ERRORS else "retry"
+            return ("retry" if http_retryable(code) else "failed", f"http_{code}")
+    disposition = "retry" if retryable(error_type) else "failed"
     return disposition, error_type
 
 
@@ -371,23 +386,41 @@ def model_failure(exc: BaseException) -> tuple[str, str]:
 def port_failure(exc: BaseException) -> tuple[str, str]:
     """Disposition and code for an exception out of an embedding port."""
     if isinstance(exc, ContractError):
-        disposition = "failed" if exc.code in _INVALID_INPUT_CODES else "retry"
+        disposition = "retry" if port_retryable(exc.code) else "failed"
         return disposition, exc.code or "model_unavailable"
     return model_failure(exc)
 
 
-def _record_error_detail(conn, item, *, now: str, stage: str, code: str, detail: str | None) -> None:
-    # Store metadata only, never raw model output or exception bodies.
-    field = validation_feedback(code, detail)["field"] if detail else None
+def record_error_detail(
+    conn,
+    work_id: int,
+    lease_token: int,
+    *,
+    now: str,
+    stage: str,
+    code: str,
+    field: str | None = None,
+    retain: bool = False,
+) -> None:
+    """Insert error metadata within the caller's transaction without committing it.
+
+    ``work_id`` identifies the work item, ``lease_token`` its lease, ``stage`` the
+    processing stage, ``code`` the error, ``field`` an optional error field and
+    ``now`` the recorded timestamp. Values are stored as supplied, including
+    NULL fields; callers must sanitize any untrusted detail before passing it.
+    When ``retain`` is true, keep only the newest 16 details for this work item;
+    otherwise leave its existing history intact. The database assigns detail_id.
+    """
     conn.execute(
         "INSERT INTO work_error_details(work_id,lease_token,stage,error_code,error_field,recorded_at) VALUES (?,?,?,?,?,?)",
-        (item.work_id, item.lease_token, stage, code, field, now),
+        (work_id, lease_token, stage, code, field, now),
     )
-    conn.execute(
-        "DELETE FROM work_error_details WHERE work_id=? AND detail_id NOT IN "
-        "(SELECT detail_id FROM work_error_details WHERE work_id=? ORDER BY detail_id DESC LIMIT 16)",
-        (item.work_id, item.work_id),
-    )
+    if retain:
+        conn.execute(
+            "DELETE FROM work_error_details WHERE work_id=? AND detail_id NOT IN "
+            "(SELECT detail_id FROM work_error_details WHERE work_id=? ORDER BY detail_id DESC LIMIT 16)",
+            (work_id, work_id),
+        )
 
 
 def finalize_work(
@@ -416,12 +449,22 @@ def finalize_work(
         if not tx.work._verify_lease(*item.lease, now=now):
             return stale_result(tx, item, error_code)
         if error_code:
-            _record_error_detail(
-                conn, item, now=now, stage=stage, code=validation_code or error_code, detail=error_detail
+            code = validation_code or error_code
+            record_error_detail(
+                conn,
+                item.work_id,
+                item.lease_token,
+                now=now,
+                stage=stage,
+                code=code,
+                field=validation_feedback(code, error_detail)["field"] if error_detail else None,
+                retain=True,
             )
         if error_code in BUDGET_PAUSE_ERRORS:
             return work_result(
-                tx.work.defer_without_attempt(*item.lease, now=now, error_code=error_code, seconds=3600),
+                tx.work.defer_without_attempt(
+                    *item.lease, now=now, error_code=error_code, seconds=PROVIDER_RECHECK.delay()
+                ),
                 error_code=error_code,
             )
         if disposition == "obsolete":

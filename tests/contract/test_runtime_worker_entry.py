@@ -64,44 +64,29 @@ def _write_config(path: Path, payload: dict) -> Path:
     return path
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows native path boundary")
-def test_worker_reports_native_path_gap_without_starting_helper(tmp_path, monkeypatch):
+def test_worker_long_table_name_does_not_expand_the_physical_vector_path(tmp_path):
     from io import StringIO
 
-    import scope_recall.vector.process_store as native_store
     from scope_recall.core.recall_policy import SPACE_ID
     from scope_recall.runtime.worker_entry import run_worker
 
     binding = _binding(tmp_path / "data")
-    binding.data_directory.mkdir()
+    MemoryCore(CoreConfig(binding)).initialize()
     vector_root = binding.data_directory / "vectors" / SPACE_ID
     payload = _config_payload(
         binding,
         vector={
-            "backend": "lancedb",
+            "backend": "sqlite-vec",
             "storage_dir": str(vector_root),
             "table_name": "TEST-" + "x" * 150,
             "dimensions": 3072,
         },
     )
     config = _write_config(tmp_path / "worker.json", payload)
-    calls = []
-
-    def unexpected_helper():
-        calls.append("helper")
-        raise AssertionError("unsafe path must be rejected before helper startup")
-
-    monkeypatch.setattr(native_store, "_worker_command", unexpected_helper)
     output = StringIO()
-    assert run_worker(config, output=output) == 1
-    receipt = json.loads(output.getvalue())
-    assert receipt["status"] == "degraded"
-    assert receipt["processed"] == 0
-    assert receipt["capability_gaps"] == ["native_vector_path_too_long"]
-    assert str(vector_root) not in output.getvalue()
-    assert calls == []
-    assert not vector_root.exists()
-    assert not (binding.data_directory / "memory.sqlite3").exists()
+    assert run_worker(config, output=output) == 0, output.getvalue()
+    assert (vector_root / "vectors.sqlite3").is_file()
+    assert "native_vector_path_too_long" not in output.getvalue()
 
 
 def _run_child(tmp_path: Path, monkeypatch, payload: dict):
@@ -164,7 +149,7 @@ def test_runtime_construction_is_pure_and_vector_opens_only_on_demand(tmp_path):
     instance.close()
 
 
-def test_existing_store_is_composed_with_trusted_lance_ports_on_demand(tmp_path):
+def test_existing_store_is_composed_with_trusted_vector_ports_on_demand(tmp_path):
     binding = _binding(tmp_path / "data")
     config = RuntimeInstanceConfig(
         binding=binding,
@@ -214,10 +199,10 @@ def test_existing_store_is_composed_with_trusted_lance_ports_on_demand(tmp_path)
     assert store.opened is False
     instance._ensure_vector_port()
     assert store.opened is True
-    assert type(instance._vector_port).__name__ == "LanceVectorPort"
+    assert type(instance._vector_port).__name__ == "VectorPort"
     assert type(instance.core.vectors).__name__ == "_LazyVectorPort"
-    assert type(instance._default_embed).__name__ == "LanceEmbedPort"
-    assert type(instance._default_purge).__name__ == "LancePurgePort"
+    assert type(instance._default_embed).__name__ == "VectorEmbedPort"
+    assert type(instance._default_purge).__name__ == "VectorPurgePort"
     instance.close()
     assert store.closed is True
 
@@ -291,9 +276,7 @@ def test_lazy_vector_facade_opens_existing_store_for_each_core_search_context(tm
 
 
 def test_a_store_open_that_uses_up_the_recall_s_time_is_a_gap_not_an_empty_search(tmp_path):
-    """A helper still opening the table keeps its answer for the next request.  The search then returned nothing
-    and the recall reported no gap: a Claude Code or Codex hook, which never makes a next request, lost its vector
-    search without a trace."""
+    """An open that consumes the request budget reports the missing semantic stage."""
     binding = _binding(tmp_path / "data")
     config = RuntimeInstanceConfig(
         binding=binding,
@@ -698,7 +681,7 @@ def test_a_query_embedding_that_fails_while_the_table_opens_leaves_the_table_ope
 def test_a_vector_search_left_no_time_is_a_gap_not_an_empty_answer(tmp_path, prepared):
     """With the embedding back and no time left for the search, the port answered nothing and said nothing: the
     recall looked as if it had searched by meaning and found nothing."""
-    from scope_recall.runtime.lance_port import LanceVectorPort
+    from scope_recall.runtime.vector_port import VectorPort
 
     class Embedding:
         def embed_query(self, text, *, remaining_seconds):
@@ -706,7 +689,7 @@ def test_a_vector_search_left_no_time_is_a_gap_not_an_empty_answer(tmp_path, pre
 
     store = _ScopedStore()
     clock = iter([0.0] + [10.0] * 5)  # the search starts at 0 and finds its 5 s gone
-    port = LanceVectorPort(store, Embedding(), clock=lambda: next(clock))
+    port = VectorPort(store, Embedding(), clock=lambda: next(clock))
     binding = _binding(tmp_path / "data")
     context = SearchContext(
         query="TEST query",
@@ -757,7 +740,7 @@ def test_an_embedding_back_with_no_time_left_to_search_is_a_gap(tmp_path):
 def test_warming_opens_the_store_and_searches_one_of_its_partitions(tmp_path):
     """A kept handler's first prompt opened the table and read the index inside its recall; warmed when the server
     starts, that prompt finds them ready."""
-    from scope_recall.runtime.lance_port import physical_partition_scope_id
+    from scope_recall.runtime.vector_port import physical_partition_scope_id
 
     class Embedding:
         def embed_query(self, text, *, remaining_seconds):
@@ -933,7 +916,7 @@ def test_lazy_vector_facade_reopens_poisoned_cached_store_on_next_search(tmp_pat
     assert store.closed
 
 
-def test_default_vector_factory_selects_process_store_without_opening(tmp_path):
+def test_default_vector_factory_selects_sqlite_store_without_opening(tmp_path):
     config = VectorRuntimeConfig(
         backend="lancedb",
         storage_dir=tmp_path / "vectors",
@@ -942,8 +925,8 @@ def test_default_vector_factory_selects_process_store_without_opening(tmp_path):
         test_injection_override=True,
     )
     store = default_vector_factory(config)
-    assert type(store).__name__ in {"ProcessLanceVectorStore", "LanceVectorStore"}
-    assert not (config.storage_dir / "lancedb").exists()
+    assert store.backend == "sqlite"
+    assert not config.storage_dir.exists()
     store.close()
 
 
@@ -1675,11 +1658,10 @@ def test_the_two_stop_loss_layers_stay_distinct():
     down decides how many of that type are tried in one pass. Neither is an
     instance-wide brake, and a backward-looking ledger window must not become
     one."""
-    from scope_recall.core.work_storage import CAPACITY_REFUSALS
-    from scope_recall.core.worker import _RATE_LIMITED_ERRORS
+    from scope_recall.core.failure_policy import CAPACITY_REFUSALS, RATE_LIMITED_ERRORS
 
-    assert CAPACITY_REFUSALS < _RATE_LIMITED_ERRORS
-    assert "http_429" in _RATE_LIMITED_ERRORS
+    assert CAPACITY_REFUSALS < RATE_LIMITED_ERRORS
+    assert "http_429" in RATE_LIMITED_ERRORS
 
 
 # --- the watcher and the operator must read the same instance ----------------
@@ -1772,3 +1754,18 @@ def test_the_split_the_worker_computed_reaches_the_file_that_is_polled():
     assert '"terminal_failed_work"' in source, "the allowlist drops it before anyone reads it"
     payload_source = inspect.getsource(worker_entry)
     assert "terminal_failed_work=terminal_failed" in payload_source
+
+
+def test_credential_file_only_needs_variables_of_routes_that_use_credentials(tmp_path):
+    from types import SimpleNamespace
+
+    from scope_recall.runtime.worker_entry import credential_environment
+
+    file = tmp_path / "TEST-environment"
+    file.write_text("TEST_EMBED_ENV=synthetic\nTEST_UNRELATED=ignored\n", encoding="utf-8")
+    config = SimpleNamespace(
+        auxiliary=SimpleNamespace(
+            embedding=SimpleNamespace(credential_env="TEST_EMBED_ENV"), consolidation=SimpleNamespace(kind="codex_cli")
+        )
+    )
+    assert credential_environment(config, str(file)) == {"TEST_EMBED_ENV": "synthetic"}

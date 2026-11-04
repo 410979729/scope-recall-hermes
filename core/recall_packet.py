@@ -5,9 +5,9 @@ searches, hydrates independently, or re-determines truth.  Release-time
 rechecks go through the existing read boundary within the original deadline.
 
 ``compile`` reads top-down: release (verify, then fence) -> order -> admit ->
-fit -> finalize.  Everything the public packet is computed from lives in one
-:class:`_Draft`; :func:`assemble_packet` is the one place that knows the
-status, answerability and coverage vocabulary.
+fit -> finalize -> optional excerpts. Full evidence lives in :class:`_Draft`;
+:func:`assemble_packet` owns status, answerability and coverage. Excerpts use
+only the finalized packet's spare room and do not revise its verdict.
 """
 
 from __future__ import annotations
@@ -18,18 +18,32 @@ import json
 import threading
 import time
 from collections import OrderedDict
-from dataclasses import dataclass, field
-from typing import Callable, Literal, Protocol, cast
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, field, replace
+from typing import Literal, Protocol, cast
 
-from ..contracts import Basis, ContractError, RecallItem, RecallPacket, bounded_entry_labels, bounded_source_contexts
+from ..contracts import ContractError, RecallItem, RecallPacket
+from . import recall_log_view
 from .background_context import is_background, mark_background
+from .entity_queries import fence_entity_query
 from .recall_budget import canonical_render_json, estimate_tokens, event_admission_order
-from .recall_diagnostics import RECALL_DIAGNOSTIC_PREFIX, RecallDiagnostics
+from .recall_diagnostics import RECALL_DIAGNOSTIC_PREFIX, RecallDiagnostics, RecallTimings
+from .recall_items import PacketKind as PacketKind
+from .recall_items import packet_item as packet_item
+from .recall_items import packet_kind as packet_kind
 from .recall_needs import asks_to_resume, unmet_needs
+from .recall_overflow import append_overflow
+from .recall_restatement import (
+    has_conversation_summaries,
+    host_memory_duplicate,
+    prioritize_summary_originals,
+    recheck_restatement,
+    redundant_summary_keys,
+)
+from .recall_trace import note_candidate
 from .resume_compaction import (
     compact_episode_variants,
     next_step_provenance_supported,
-    resume_evidence_refs,
     resume_fields,
 )
 from .retrieval import (
@@ -39,12 +53,10 @@ from .retrieval import (
     SearchContext,
     SearchLimits,
     effective_limits,
-    optional_json,
 )
+from .retrieval_hydration import note_superseded_evidence
 from .retrieval_storage import RetrievalStorage
 
-_BASIS = frozenset({"direct_report", "observed", "derived_summary", "inferred_suggestion", "unknown"})
-_CLAIM_STATES = frozenset({"proposed", "active", "superseded", "disputed", "retracted"})
 _AUTHORITY_GAP_PREFIXES = ("sqlite_unavailable",)
 #: Gaps after which the evidence delivered may lack part of the answer: authority failed, or a read did not finish.
 #: Query evidence dropped as stale or by the budget may have held part of it too (``_Draft.answer_dropped``).  The
@@ -70,7 +82,6 @@ _BARE_MARKER_PREFIXES = frozenset(
 _MAX_PACKET_ITEM_CHARS = 12000
 _MAX_APPLICABILITY_CHARS = 2048
 _MAX_ORIGIN_CHARS = 80
-_MAX_OCCURRED_AT_CHARS = 64
 _MAX_EVIDENCE_REFS = 32
 _MAX_RENDER_PREPARED = 64
 _RENDER_CONTEXT_SCHEMA = "scope-recall.recall_context/1.1"
@@ -78,7 +89,6 @@ _RENDER_CONTEXT_SCHEMA = "scope-recall.recall_context/1.1"
 # so a packet measured before recording has the bytes of the packet returned.
 _DIAGNOSTIC_REF_PLACEHOLDER = RECALL_DIAGNOSTIC_PREFIX + ("0" * 16)
 
-PacketKind = Literal["event", "episode", "claim", "procedure", "artifact"]
 Pair = tuple[CandidateRef, RetrievedObject]
 
 
@@ -115,53 +125,6 @@ def envelope_tokens(packet: RecallPacket, *, include_diagnostic_ref: bool = True
     """The one estimate used for admission and the final canonical JSON."""
     measured = packet if include_diagnostic_ref else dict(packet, diagnostic_ref=None)
     return estimate_tokens(canonical_render_json(measured))
-
-
-def packet_kind(obj: RetrievedObject) -> PacketKind:
-    if obj.kind in {"event", "episode", "claim", "procedure", "artifact"}:
-        return cast(PacketKind, obj.kind)
-    return "event"
-
-
-def packet_item(obj: RetrievedObject, *, content: dict | None = None) -> RecallItem:
-    """The public item for one released object.
-
-    ``content`` replaces an episode resume with a compact field selection; the
-    item then carries every ref of every retained field, so a cross-field
-    packet stays provable rather than merely plausible-looking.
-    """
-    evidence = list(dict.fromkeys(obj.evidence_refs)) if content is None else list(resume_evidence_refs(content))
-    if not evidence:
-        evidence = [f"{obj.ref}@{obj.revision}"]
-    item: RecallItem = {
-        "ref": obj.ref,
-        "revision": obj.revision,
-        "kind": packet_kind(obj),
-        "content": obj.content if content is None else canonical_render_json(content),
-        "temporal_status": obj.temporal_status,
-        "origin": obj.origin,
-        "applicability": obj.applicability,
-        "evidence_refs": evidence,
-        "expandable": bool(obj.expandable),
-        "basis": cast(Basis, obj.basis if obj.basis in _BASIS else "unknown"),
-    }
-    metadata = dict(obj.metadata)
-    # An unpromoted claim reaches recall labelled: temporal_status alone cannot
-    # tell a lead from a retired truth, since both look "historical".
-    if metadata.get("state") in _CLAIM_STATES:
-        item["claim_state"] = metadata["state"]
-        if metadata.get("qualification_reason"):
-            item["qualification_reason"] = str(metadata["qualification_reason"])[:120]
-    contexts = bounded_source_contexts(optional_json(metadata.get("source_contexts")))
-    if contexts:
-        item["source_contexts"] = contexts
-    occurred = metadata.get("occurred_at")
-    if type(occurred) is str and 0 < len(occurred) <= _MAX_OCCURRED_AT_CHARS:
-        item["occurred_at"] = occurred
-    entries = bounded_entry_labels(optional_json(metadata.get("entries")))
-    if entries:
-        item["entries"] = entries
-    return item
 
 
 def fits_packet_schema(obj: RetrievedObject) -> bool:
@@ -257,6 +220,7 @@ class _Draft:
     items: list[RecallItem] = field(default_factory=list)
     objects: list[RetrievedObject] = field(default_factory=list)
     gaps: list[str] = field(default_factory=list)
+    withheld_evidence: set[tuple[str, int]] = field(default_factory=set)
     unmet_needs: list[str] = field(default_factory=list)
     stale_drops: int = 0
     budget_drops: int = 0
@@ -287,6 +251,13 @@ class _Draft:
             self.gaps.append(gap)
         self.stale_drops += len(verified)
         return []
+
+    def expire(self) -> None:
+        """Withhold the entire packet when compilation finishes after its cutoff."""
+        self.gaps.append("deadline_exceeded_compile")
+        self.stale_drops += len(self.items)
+        self.items.clear()
+        self.objects.clear()
 
     def deliver(self, item: RecallItem, obj: RetrievedObject, needs: list[str]) -> None:
         self.items.append(item)
@@ -386,7 +357,7 @@ def bounded_packet(packet: RecallPacket, budget: int) -> RecallPacket:
         status="unavailable",
         memory_epoch=None,
         items=[],
-        gaps=["budget_packet_cap"],
+        gaps=["budget_packet_cap", *[gap for gap in packet["gaps"] if gap.startswith("superseded_evidence_withheld:")]],
         diagnostic_ref=None,
         answerability="unknown",
         coverage="unknown",
@@ -409,25 +380,43 @@ class RecallPacketCompiler:
     diagnostics: RecallDiagnostics | None = None
     clock: RecallClock | None = None
 
-    def __post_init__(self) -> None:
-        if self.clock is None:
-            object.__setattr__(self, "clock", time)
+    @property
+    def _clock(self) -> RecallClock:
+        return self.clock if self.clock is not None else time
 
     def compile(self, context: SearchContext, result: RetrievalResult, storage) -> RecallPacket:
         if not isinstance(context, SearchContext) or not isinstance(result, RetrievalResult):
             raise ContractError("INPUT_INVALID", "compile_input")
-        started = self.clock.monotonic()
+        context = result.release_context(context)
+        started = self._clock.monotonic()
         limits = effective_limits(context)
         draft = _Draft(
-            context, result, result.memory_epoch, gaps=list(result.gaps), unmet_needs=list(result.unmet_needs)
+            context,
+            result,
+            result.memory_epoch,
+            gaps=list(result.gaps),
+            unmet_needs=list(result.unmet_needs),
+            withheld_evidence=set(result.withheld_evidence),
         )
         if self._remaining_ms(context) == 0:
             draft.gaps.append("deadline_exceeded_compile")
             return self._finalize(draft, limits, started)
-        verified = self._verify(storage, draft, list(zip(result.candidates, result.items)))
-        verified = self._fence(storage, draft, verified)
-        self._admit(draft, self._ordered(context, verified, limits), limits)
-        include_diagnostic_ref = self._fit(draft, limits)
+        timings = RecallTimings(self._clock.monotonic)
+        with timings.measure("verify"):
+            verified = self._verify(storage, draft, list(zip(result.candidates, result.items)))
+        with timings.measure("fence"):
+            verified = self._fence(storage, draft, verified)
+        if context.automatic_injection and context.host_memory_entries:
+            try:
+                matches = [host_memory_duplicate(obj, context.host_memory_entries) for _, obj in verified]
+            except Exception:  # noqa: BLE001 - optional host comparison cannot block recall
+                matches = [False] * len(verified)
+            for (candidate, obj), duplicate in zip(verified, matches, strict=True):
+                if duplicate:
+                    note_candidate(candidate, "host_memory_duplicate", obj=obj)
+            verified = [pair for pair, duplicate in zip(verified, matches, strict=True) if not duplicate]
+        draft.result = replace(result, diagnostics=(*result.diagnostics, *timings.snapshot()))
+        draft, include_diagnostic_ref = self._select(draft, self._ordered(context, verified, limits), limits)
         if context.mode == "auto" and not any(not is_background(obj) for obj in draft.objects):
             # Background depends on evidence that actually ships. A grounded
             # resume task can stand alone because it answers the resume request.
@@ -439,20 +428,66 @@ class RecallPacketCompiler:
             draft.items = [draft.items[index] for index in keep]
             draft.objects = [draft.objects[index] for index in keep]
         if draft.items and self._remaining_ms(context) == 0:
-            draft.gaps.append("deadline_exceeded_compile")
-            draft.stale_drops += len(draft.items)
-            draft.items.clear()
-            draft.objects.clear()
-        return self._finalize(draft, limits, started, include_diagnostic_ref=include_diagnostic_ref)
+            draft.expire()
+        packet = self._finalize(draft, limits, started, include_diagnostic_ref=include_diagnostic_ref)
+        extended = append_overflow(
+            storage,
+            replace(context, limits=limits),
+            replace(result, withheld_evidence=tuple(sorted(draft.withheld_evidence))),
+            packet,
+            self.storage_reader,
+            self._clock,
+        )
+        if draft.withheld_evidence or extended["gaps"] != packet["gaps"]:
+            extended = bounded_packet(extended, limits.budget_tokens)
+        self._note_selection(verified, extended)
+        if extended is not packet:
+            self._record_extension(packet, extended, started, context)
+        return extended
+
+    @staticmethod
+    def _note_selection(verified, packet):
+        """Explain only final fitted bodies; exploratory packings cannot omit derived content."""
+        selected = {(item["ref"], item["revision"]): item for item in packet["items"]}
+        displayed = [
+            replace(obj, content=selected[(obj.ref, obj.revision)]["content"])
+            for _candidate, obj in verified
+            if (obj.ref, obj.revision) in selected
+        ]
+        summaries = [obj for _candidate, obj in verified if obj.kind == "claim"]
+        covered = redundant_summary_keys([*displayed, *summaries])
+        for candidate, obj in verified:
+            if (obj.ref, obj.revision) not in selected:
+                reason = "restatement" if obj.origin == "inductive_observation" else "summary_covered"
+                note_candidate(candidate, reason if candidate.key in covered else "budget", obj=obj)
+
+    def _record_extension(self, packet, extended, started, context):
+        """Keep the diagnostic aligned with the bytes actually delivered."""
+        record = self.diagnostics.get(packet.get("diagnostic_ref")) if self.diagnostics is not None else None
+        if record is not None and self.diagnostics is not None:
+            metrics = asdict(record)
+            metrics.pop("ref")
+            measured = canonical_render_json(extended)
+            metrics.update(
+                compile_gaps=tuple(gap for gap in extended["gaps"] if gap not in record.retrieval_gaps),
+                items_delivered=len(extended["items"]),
+                rendered_bytes=len(measured.encode("utf-8")),
+                estimated_tokens=estimate_tokens(measured),
+                elapsed_ms=int((self._clock.monotonic() - started) * 1000),
+                deadline_remaining_ms=self._remaining_ms(context),
+            )
+            reference = self.diagnostics.record(**metrics)
+            if extended.get("diagnostic_ref") is not None:
+                extended["diagnostic_ref"] = reference
 
     # -- release --------------------------------------------------------------
 
     def _remaining_ms(self, context: SearchContext) -> int:
-        return max(0, int((context.deadline - self.clock.monotonic()) * 1000))
+        return max(0, int((context.deadline - self._clock.monotonic()) * 1000))
 
     def _read(self, storage, context: SearchContext):
         return storage.read(
-            context.trusted_context, remaining_seconds=max(context.deadline - self.clock.monotonic(), 0.001)
+            context.trusted_context, remaining_seconds=max(context.deadline - self._clock.monotonic(), 0.001)
         )
 
     def _recheck(
@@ -461,13 +496,21 @@ class RecallPacketCompiler:
         if self._remaining_ms(context) == 0:
             gaps.append("deadline_exceeded_release")
             return None
+        if context.automatic_injection:
+            from .session_brief import already_injected
+
+            if already_injected(tx, candidate.kind, candidate.ref, candidate.revision):
+                return None
         fresh = self.storage_reader.hydrate(tx, candidate, context)
         if fresh is None:
+            note_candidate(candidate, recall_log_view.rejection_reason(tx, candidate, context))
             gaps.append(f"stale_candidate:{candidate.ref}@{candidate.revision}")
             return None
+        note_candidate(candidate, obj=fresh)
         if (fresh.ref, fresh.revision) != (obj.ref, obj.revision):
             gaps.append(f"revision_changed:{obj.ref}@{obj.revision}")
             return None
+        fresh = recheck_restatement(tx, context, obj, fresh)
         return mark_background(fresh) if candidate.source == "background" else fresh
 
     def _retracted(self, tx, context: SearchContext) -> Callable[[int], bool] | None:
@@ -481,7 +524,11 @@ class RecallPacketCompiler:
         their own in every read."""
         prefetch = getattr(self.storage_reader, "prefetch", None)
         if prefetch is not None and self._remaining_ms(context) > 0:
-            prefetch(tx, tuple(candidate for candidate, _obj in pairs), context)
+            prefetch(
+                tx,
+                tuple(candidate for candidate, _obj in pairs),
+                context,
+            )
 
     def _verify(self, storage, draft: _Draft, ranked: list[Pair]) -> list[Pair]:
         """Rehydrate every candidate in one fresh read; a withdrawal in its scopes empties it."""
@@ -497,6 +544,7 @@ class RecallPacketCompiler:
                         draft.gaps.append("deadline_exceeded_release")
                         break
                     fresh = self._recheck(tx, context, candidate, item, draft.gaps)
+                    note_superseded_evidence(tx, draft.gaps, draft.withheld_evidence)
                     if fresh is None:
                         draft.stale_drops += 1
                         draft.answer_dropped |= not is_background(item)
@@ -525,8 +573,11 @@ class RecallPacketCompiler:
                 if draft.note_epoch(self.storage_reader.epoch(tx), "epoch_changed_release_fence", retracted=retracted):
                     return draft.discard(verified)
                 self._prefetch(tx, context, verified)
+                verified = fence_entity_query(tx, context, verified, draft.gaps)
                 for candidate, obj in verified:
-                    if self._recheck(tx, context, candidate, obj, draft.gaps) is None:
+                    fresh = self._recheck(tx, context, candidate, obj, draft.gaps)
+                    note_superseded_evidence(tx, draft.gaps, draft.withheld_evidence)
+                    if fresh is None:
                         return draft.discard(verified, "release_delete_fence")
                     if self._remaining_ms(context) == 0:
                         return draft.discard(verified, "deadline_exceeded_release_fence")
@@ -548,6 +599,68 @@ class RecallPacketCompiler:
         # Ambient preferences/task state cannot displace answer evidence.
         verified.sort(key=lambda pair: pair[0].source == "background")
         return verified
+
+    def _pack(self, base: _Draft, verified: list[Pair], limits: SearchLimits) -> tuple[_Draft, bool]:
+        """Try an ordering with the existing schema, admission and envelope checks."""
+        draft = replace(base, items=[], objects=[], gaps=list(base.gaps), unmet_needs=list(base.unmet_needs))
+        self._admit(draft, verified, limits)
+        return draft, self._fit(draft, limits)
+
+    @staticmethod
+    def _represents(previous: list[RetrievedObject], shown: list[RetrievedObject]) -> bool:
+        """Every retained object still ships, or its summary is fully displayed by originals."""
+        present = {(obj.kind, obj.ref, obj.revision) for obj in shown}
+        present.update(redundant_summary_keys([*shown, *(obj for obj in previous if obj.kind == "claim")]))
+        return all((obj.kind, obj.ref, obj.revision) in present for obj in previous)
+
+    @staticmethod
+    def _displayed(draft: _Draft) -> list[RetrievedObject]:
+        """Bind comparisons to the actual item bodies, including compacted displays."""
+        return [replace(obj, content=item["content"]) for item, obj in zip(draft.items, draft.objects, strict=True)]
+
+    def _select(self, base: _Draft, verified: list[Pair], limits: SearchLimits) -> tuple[_Draft, bool]:
+        """Prefer originals only when their complete fitted packet preserves the ordinary answer."""
+        ordinary = self._pack(base, verified, limits)
+        if has_conversation_summaries(verified) and self._remaining_ms(base.context) > 0:
+            trial = self._deduplicate(
+                base, verified, limits, self._pack(base, prioritize_summary_originals(verified), limits)
+            )
+            if self._represents(ordinary[0].objects, self._displayed(trial[0])):
+                return trial
+        return self._deduplicate(base, verified, limits, ordinary)
+
+    def _deduplicate(
+        self, base: _Draft, verified: list[Pair], limits: SearchLimits, packed: tuple[_Draft, bool]
+    ) -> tuple[_Draft, bool]:
+        """Omit covered summaries and refill without losing fitted evidence.
+
+        Rejected summaries whose entire text is already displayed also consume
+        no budget or rejection diagnostics. Each pass excludes a new summary,
+        so the bounded candidate pool bounds the number of admission passes.
+        """
+        draft, diagnostic = packed
+        omitted = set()
+        summaries = [obj for _candidate, obj in verified if obj.kind == "claim"]
+        while True:
+            duplicates = redundant_summary_keys([*self._displayed(draft), *summaries]) - omitted
+            if not duplicates:
+                return draft, diagnostic
+            omitted.update(duplicates)
+            keep = [
+                index for index, obj in enumerate(draft.objects) if (obj.kind, obj.ref, obj.revision) not in duplicates
+            ]
+            draft.items = [draft.items[index] for index in keep]
+            draft.objects = [draft.objects[index] for index in keep]
+            if self._remaining_ms(base.context) == 0:
+                return draft, diagnostic
+            retained = {(obj.kind, obj.ref, obj.revision) for obj in draft.objects}
+            choices = [pair for pair in verified if pair[0].key not in omitted]
+            choices.sort(key=lambda pair: (pair[1].kind, pair[1].ref, pair[1].revision) not in retained)
+            refill, refill_diagnostic = self._pack(base, choices, limits)
+            previous = [*draft.objects, *(obj for obj in summaries if (obj.kind, obj.ref, obj.revision) in omitted)]
+            if not self._represents(previous, self._displayed(refill)):
+                return draft, diagnostic
+            draft, diagnostic = refill, refill_diagnostic
 
     def _fits(
         self,
@@ -613,7 +726,7 @@ class RecallPacketCompiler:
         """Re-check the exact final envelope; returns whether the diagnostic ref fits.
 
         Preference order at the cap: keep everything; withhold only the optional
-        diagnostic lookup ref (the process-local record itself stays); repack
+        diagnostic lookup ref (the persistent record itself stays); repack
         one retained episode into fewer complete fields; finally drop the
         lowest-ranked complete unit.  Content, qualifiers and evidence are never
         sliced.
@@ -661,7 +774,7 @@ class RecallPacketCompiler:
         measured = canonical_render_json(packet)
         diagnostic_ref = None
         if self.diagnostics is not None:
-            # The process-local record is always written; only the public
+            # Compilation stages metrics in the outer attempt. Only the public
             # lookup ref is optional when it would displace answer evidence.
             context = draft.context
             diagnostic_ref = self.diagnostics.record(
@@ -679,10 +792,19 @@ class RecallPacketCompiler:
                 budget_tokens=limits.budget_tokens,
                 items_dropped_stale=draft.stale_drops,
                 items_dropped_budget=draft.budget_drops,
-                elapsed_ms=int((self.clock.monotonic() - started) * 1000),
+                elapsed_ms=int((self._clock.monotonic() - started) * 1000),
                 deadline_remaining_ms=self._remaining_ms(context),
+                stage_timings=(
+                    *draft.result.diagnostics,
+                    ("compile", f"{(self._clock.monotonic() - started) * 1000:.3f}"),
+                ),
             )
         packet["diagnostic_ref"] = diagnostic_ref if packet.get("diagnostic_ref") else None
+        if packet["items"] and self._remaining_ms(draft.context) == 0:
+            draft.expire()
+            # The second pass has no items, so it cannot recurse again. Its
+            # diagnostic describes the empty packet that is actually returned.
+            return self._finalize(draft, limits, started, include_diagnostic_ref=include_diagnostic_ref)
         return packet
 
 
@@ -712,13 +834,22 @@ class RecallPacketRenderer:
     def __init__(self, *, max_prepared: int = _MAX_RENDER_PREPARED) -> None:
         self._max_prepared = max_prepared
         self._lock = threading.RLock()
-        self._prepared: OrderedDict[tuple[str, str, str, int | None], RecallRenderPreparation] = OrderedDict()
+        self._prepared: OrderedDict[tuple[str, str | None, str, str, int | None, int], RecallRenderPreparation] = (
+            OrderedDict()
+        )
         self._counter = 0
 
     def prepare(
-        self, packet: RecallPacket, *, installation_id: str, session_id: str, request_id: str
+        self,
+        packet: RecallPacket,
+        *,
+        installation_id: str,
+        session_id: str,
+        request_id: str,
+        entry_id: str | None = None,
+        entry_version: int = 0,
     ) -> RecallRenderPreparation:
-        key = (installation_id, session_id, request_id, packet.get("memory_epoch"))
+        key = (installation_id, entry_id, session_id, request_id, packet.get("memory_epoch"), entry_version)
         with self._lock:
             if key in self._prepared:
                 # A repeated automatic callback is acknowledged as a duplicate
@@ -732,6 +863,7 @@ class RecallPacketRenderer:
                     json.dumps(
                         {
                             "installation_id": installation_id,
+                            "entry_id": entry_id,
                             "session_id": session_id,
                             "request_id": request_id[:100],
                             "counter": self._counter,
@@ -776,6 +908,9 @@ class RecallPacketRenderer:
                         if "source_contexts" in item
                         else {}
                     ),
+                    **(
+                        {"qualification_reason": item["qualification_reason"]} if "qualification_reason" in item else {}
+                    ),
                     **({"occurred_at": item["occurred_at"]} if "occurred_at" in item else {}),
                     **({"entries": [dict(label) for label in item["entries"]]} if "entries" in item else {}),
                 }
@@ -813,9 +948,16 @@ def render_recall_packet_context(
     installation_id: str,
     session_id: str,
     renderer: RecallPacketRenderer | None = None,
+    entry_id: str | None = None,
+    entry_version: int = 0,
 ) -> RecallRenderPreparation:
     """Prepare an injection-ready memory context without instruction authority."""
     active = renderer if renderer is not None else RecallPacketRenderer()
     return active.prepare(
-        packet, installation_id=installation_id, session_id=session_id, request_id=packet["request_id"]
+        packet,
+        installation_id=installation_id,
+        session_id=session_id,
+        request_id=packet["request_id"],
+        entry_id=entry_id,
+        entry_version=entry_version,
     )

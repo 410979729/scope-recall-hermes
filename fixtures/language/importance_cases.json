@@ -1,0 +1,146 @@
+[
+  {
+    "id": "TEST-salience-00",
+    "category": "remember",
+    "text": "请记住：测试主人的文档必须用中文。",
+    "score": 5
+  },
+  {
+    "id": "TEST-salience-01",
+    "category": "remember",
+    "text": "Remember: TEST-owner wants all notes in Spanish.",
+    "score": 5
+  },
+  {
+    "id": "TEST-salience-02",
+    "category": "correction",
+    "text": "更正：TEST-project 的发布日期是十二月一日，不是十一月一日。",
+    "score": 5
+  },
+  {
+    "id": "TEST-salience-03",
+    "category": "correction",
+    "text": "Correction: TEST-person lives in Oslo, not Paris.",
+    "score": 5
+  },
+  {
+    "id": "TEST-salience-04",
+    "category": "health",
+    "text": "TEST-person 对花生严重过敏，餐食必须避开花生。",
+    "score": 5
+  },
+  {
+    "id": "TEST-salience-05",
+    "category": "safety",
+    "text": "TEST-person must use a safety harness when climbing.",
+    "score": 5
+  },
+  {
+    "id": "TEST-salience-06",
+    "category": "decision",
+    "text": "决定：TEST-project 使用 SQLite 作为唯一事实库。",
+    "score": 4
+  },
+  {
+    "id": "TEST-salience-07",
+    "category": "decision",
+    "text": "We decided TEST-project will ship the green design.",
+    "score": 4
+  },
+  {
+    "id": "TEST-salience-08",
+    "category": "decision",
+    "text": "TEST-project 已决定取消自动发布。",
+    "score": 4
+  },
+  {
+    "id": "TEST-salience-09",
+    "category": "constraint",
+    "text": "TEST-project 的长期约束是任何发布都先经主人授权。",
+    "score": 4
+  },
+  {
+    "id": "TEST-salience-10",
+    "category": "constraint",
+    "text": "TEST-project always preserves original evidence.",
+    "score": 4
+  },
+  {
+    "id": "TEST-salience-11",
+    "category": "constraint",
+    "text": "TEST-owner requires accessible labels on every form.",
+    "score": 4
+  },
+  {
+    "id": "TEST-salience-12",
+    "category": "fact",
+    "text": "TEST-person 的猫名叫 Momo。",
+    "score": 3
+  },
+  {
+    "id": "TEST-salience-13",
+    "category": "fact",
+    "text": "TEST-project uses Python.",
+    "score": 3
+  },
+  {
+    "id": "TEST-salience-14",
+    "category": "preference",
+    "text": "TEST-person 通常喜欢蓝色笔记本。",
+    "score": 3
+  },
+  {
+    "id": "TEST-salience-15",
+    "category": "preference",
+    "text": "TEST-person prefers tea to coffee.",
+    "score": 3
+  },
+  {
+    "id": "TEST-salience-16",
+    "category": "temporary",
+    "text": "TEST-person 本周在测试办公室值班。",
+    "score": 2
+  },
+  {
+    "id": "TEST-salience-17",
+    "category": "temporary",
+    "text": "TEST-project has a demo tomorrow.",
+    "score": 2
+  },
+  {
+    "id": "TEST-salience-18",
+    "category": "temporary",
+    "text": "TEST-person 今天借了一把雨伞。",
+    "score": 2
+  },
+  {
+    "id": "TEST-salience-19",
+    "category": "temporary",
+    "text": "TEST-person plans a short call this afternoon.",
+    "score": 2
+  },
+  {
+    "id": "TEST-salience-20",
+    "category": "chat",
+    "text": "TEST-person 刚刚看到一朵形状有趣的云。",
+    "score": 1
+  },
+  {
+    "id": "TEST-salience-21",
+    "category": "chat",
+    "text": "TEST-person says that was a funny joke.",
+    "score": 1
+  },
+  {
+    "id": "TEST-salience-22",
+    "category": "chat",
+    "text": "TEST-person 随口说今天的饼干很好吃。",
+    "score": 1
+  },
+  {
+    "id": "TEST-salience-23",
+    "category": "chat",
+    "text": "TEST-person said hello and goodbye.",
+    "score": 1
+  }
+]

@@ -39,6 +39,8 @@ TASKS = (
     "cross_scope",
     "relevance_floor",
     "no_memory",
+    "multi_hop",
+    "assistant_said",
 )
 #: Questions of each task at scale 1, the size the CI test runs; a larger scale asks as many more.
 QUESTIONS = {
@@ -173,7 +175,52 @@ def build_world(split: str = "dev", *, scale: int = 1) -> World:
         raise ValueError("scale is a whole number from 1")
     name, seed = SPLITS[split]
     templates = json.loads((HERE / name).read_text(encoding="utf-8"))
-    return _automatic_cases(_Plan(templates, split, seed, scale).world(), templates["automatic_recall"])
+    original = _automatic_cases(_Plan(templates, split, seed, scale).world(), templates["automatic_recall"])
+    return _reasoning_cases(original)
+
+
+def _reasoning_cases(world: World) -> World:
+    """Add two- and three-edge joins and assistant recall in isolated audiences.
+
+    Each edge is spoken in a separate session. Alias questions require the
+    identity edge as evidence too; retrieving only the final value earns only
+    that part's credit. Assistant text has no claim proposals and must remain
+    searchable without acquiring a person's authority.
+    """
+    data = json.loads((HERE / "reasoning_cases.json").read_text(encoding="utf-8"))[world.split]
+    entries, messages, questions = list(world.entries), list(world.messages), list(world.questions)
+    now = datetime.fromisoformat(world.now.replace("Z", "+00:00"))
+    for index, case in enumerate(data):
+        scope = f"{world.split}-reasoning-{index}"
+        entry = Entry(f"reasoning-{index}", "Reasoning lab", "hermes", world.entries[0].owner, frozenset({scope}))
+        entries.append(entry)
+        gold = []
+        for turn, source in enumerate(case["sources"]):
+            key = f"{world.split}/reasoning-{index}-{turn}"
+            at = _utc(now - timedelta(days=4 - turn, minutes=10))
+            messages.append(
+                Message(key, entry.id, scope, f"{scope}-session-{turn}", source.get("origin", USER), source["text"], at)
+            )
+            if source.get("answer", True):
+                gold.append(key)
+        questions.append(
+            Question(
+                f"{world.split}/reasoning-{index}",
+                case["task"],
+                case["form"],
+                case["language"],
+                entry.id,
+                entry.reads,
+                case["query"],
+                tuple(gold),
+            )
+        )
+    return replace(
+        world,
+        entries=tuple(entries),
+        messages=tuple(sorted(messages, key=lambda m: (m.at, m.key))),
+        questions=tuple(questions),
+    )
 
 
 def _automatic_cases(world: World, templates: dict) -> World:

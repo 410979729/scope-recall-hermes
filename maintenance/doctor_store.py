@@ -10,7 +10,7 @@ import os
 import sqlite3
 import time
 from contextlib import closing, suppress
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -21,20 +21,23 @@ from scope_recall.adapters.clients.boundary import (
 )
 from scope_recall.adapters.runtime_wiring import bindings_match
 from scope_recall.contracts import InstanceBinding, TrustedContext
-from scope_recall.core import CoreConfig, MemoryCore
+from scope_recall.core import CoreConfig, MemoryCore, private
 from scope_recall.core.deadline import RequestDeadline, using_request_deadline
 from scope_recall.core.failure_retry import NEEDS_REVIEW_COUNT
-from scope_recall.core.inbox_rules import given_up, replayable
+from scope_recall.core.inbox_rules import deferred_until, given_up, replayable
 from scope_recall.core.index_rebuild import IMPORT_EMBED_QUEUE_CEILING
-from scope_recall.core.restore import restore_pending
+from scope_recall.core.restore import restore_pending, snapshot_schema_supported
 from scope_recall.core.schema import SCHEMA_VERSION, UPGRADE_CHAIN, stale_header_schema
 from scope_recall.core.storage import SQLiteStorage
+from scope_recall.core.store_upgrade import read_upgrade_state, upgrade_in_progress
 from scope_recall.core.vector_failure import vector_failure_label
 from scope_recall.runtime.model_budget import embedding_calls, provider_holds
 from scope_recall.vector.compaction import instance_vector_footprints
 from scope_recall.vector.store import build_vector_store
 
 from .doctor_report import DoctorReport, record_check
+
+_RETRY_COMMAND = "scope-recall retry-failures --apply --config <runtime-config.json>"
 
 
 def _seconds_since(stamp: Any) -> float | None:
@@ -43,7 +46,7 @@ def _seconds_since(stamp: Any) -> float | None:
         return None
     try:
         seen = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
-        return (datetime.now(timezone.utc) - seen).total_seconds()
+        return (datetime.now(UTC) - seen).total_seconds()
     except (ValueError, TypeError):
         return None
 
@@ -109,26 +112,24 @@ def check_index(report: DoctorReport, data_directory: Path, *, store_readable: b
     vector = getattr(config, "vector", None)
     if vector is not None:
         metadata["tool_output_retention_days"] = vector.tool_output_retention_days
-    # Fragment count is what a missed compaction shows up as first, and the one
-    # cost an operator can verify with a plain file listing.  Each store also
-    # says whether its nearest-neighbour index was built (``index_outcome``).
+    # File size, import states and the committed watermark remain readable without native imports.
     try:
         metadata["vector_stores"] = instance_vector_footprints(data_directory)
     except Exception:  # noqa: BLE001 - reporting must not fail the report.
         metadata["vector_stores"] = []
-    report.index_metadata = metadata
+    report.index_metadata = {**(report.index_metadata or {}), **metadata}
 
 
 def check_vector_store(report: DoctorReport, config: Any, binding: InstanceBinding) -> None:
     """Validate the entry's SQLite companion through recall's read-only open.
 
-    Only schema and identity are read, within the doctor's SQLite budget.
-    LanceDB remains unopened so diagnostics need no native imports or helper.
+    Schema and identity use the normal read-only connection and SQLite budget.
+    Legacy tables stay unopened; no helper process is started.
     """
     if config is None or not bindings_match(binding, config.binding):
         return
     vector = getattr(config, "vector", None)
-    if vector is None or vector.backend != "sqlite-bruteforce":
+    if vector is None:
         return
     store = None
     try:
@@ -141,7 +142,16 @@ def check_vector_store(report: DoctorReport, config: Any, binding: InstanceBindi
                 metric=vector.metric,
             )
             store.open_existing()
-        record_check(report, "vector_store", "readable")
+        details = store.diagnostics()
+        if vector.backend != "sqlite":
+            details["legacy_backend"] = vector.backend
+        report.index_metadata = {**(report.index_metadata or {}), "vector_runtime": details}
+        if any(item["state"] != "complete" for item in details["imports"]):
+            report.capability_gaps.append("vector_import_pending")
+        detail = details["engine"]
+        if "legacy_backend" in details:
+            detail += f"; {vector.backend} -> sqlite"
+        record_check(report, "vector_store", "readable", detail)
     except FileNotFoundError:
         record_check(report, "vector_store", "missing", "the worker creates the store on its first pass")
     except Exception as exc:  # noqa: BLE001 - an unreadable companion is a finding, not a crash.
@@ -195,6 +205,22 @@ def _backlog_is_stalled(worker_status: dict[str, Any], *, wake_seconds: float | 
 def _unopened(report: DoctorReport, data_directory: Path) -> bool:
     """Whether the store is left unread for a reason that refuses every open of it but one step of the operator's
     lifts, reported with that step: a restore not yet finished, a schema step not yet applied, a stamped header."""
+    state = read_upgrade_state(data_directory)
+    if state.get("status") in {"running", "failed", "interrupted", "unreadable"}:
+        found = schema_on_disk(data_directory / "memory.sqlite3")
+        # A crash after commit can leave an old running record beside a current store.
+        if found != SCHEMA_VERSION or upgrade_in_progress(data_directory):
+            report.schema_version = found
+            report.capability_gaps.append("schema_upgrade_" + str(state["status"]))
+            record_check(
+                report,
+                "schema_upgrade",
+                str(state["status"]),
+                f"phase={state.get('phase', 'unknown')}; reason={state.get('reason', 'none')}; "
+                f"snapshot={state.get('backup', 'unavailable')}; "
+                f"verified={state.get('snapshot_verified', False)}; " + _upgrade_recovery(state),
+            )
+            return True
     if restore_pending(data_directory):
         report.capability_gaps.append("restore_pending")
         record_check(
@@ -206,6 +232,8 @@ def _unopened(report: DoctorReport, data_directory: Path) -> bool:
         )
         return True
     found = schema_on_disk(data_directory / "memory.sqlite3")
+    if state.get("status") == "complete" and found == state.get("schema_after") == SCHEMA_VERSION:
+        record_check(report, "schema_upgrade", "ok", _upgrade_recovery(state, found))
     if found in UPGRADE_CHAIN:
         # Reported, never applied here: the doctor is read-only.
         report.schema_version = found
@@ -215,8 +243,8 @@ def _unopened(report: DoctorReport, data_directory: Path) -> bool:
             "schema",
             "upgrade_pending",
             f"{found} -> {SCHEMA_VERSION}; the next capture, recall or worker pass applies it in one transaction "
-            "(on a store above 100 MB, a caller with a minute of budget: the worker pass, apply-install, "
-            "upgrade-store or a Hermes session start)",
+            "(above 100 MB, explicit worker schema maintenance or upgrade-store supplies the budget; "
+            "status calls leave it pending)",
         )
         return True
     recorded = recorded_schema_under_stale_header(data_directory / "memory.sqlite3")
@@ -233,6 +261,205 @@ def _unopened(report: DoctorReport, data_directory: Path) -> bool:
         )
         return True
     return False
+
+
+def _upgrade_recovery(state: dict, found: int | None = None) -> str:
+    """Name a supported recovery action without reviving post-snapshot deletions."""
+    if state.get("status") == "running":
+        return "Schema maintenance is running; wait for it to finish."
+    if state.get("status") != "complete" or found != state.get("schema_after"):
+        hint = "Resolve the reported failure, then reopen the host to retry the rolled-back upgrade."
+        hint += (
+            " Run scope-recall upgrade-store with --host and --instance-root for foreground maintenance "
+            "without a total time limit if background maintenance cannot finish."
+        )
+        if state.get("reason") == "upgrade_blocked_by_reader":
+            hint += " Close the read transactions held by host sessions or other store readers before retrying."
+        return hint
+    schema = state.get("backup_schema")
+    if not isinstance(schema, int) or not snapshot_schema_supported(schema):
+        return (
+            f"The completed upgrade cannot safely restore this snapshot with the restore command (snapshot header "
+            f"{schema}, recorded schema {state.get('backup_recorded_schema')}); preserve it and do not copy it over "
+            "the store, because that could revive deleted content."
+        )
+    hint = (
+        f"To undo this completed upgrade, stop all store users. First use the release with current store schema "
+        f"{found} (this running release) and run scope-recall restore --snapshot <verified-snapshot> "
+        "--backup-dir <new-backup-directory> --apply with the installation's --host and --instance-root. "
+    )
+    if schema != found:
+        hint += (
+            f"After it reports prepared, switch to a release whose current format matches snapshot schema {schema}, "
+            "then run scope-recall restore --snapshot <verified-snapshot> --apply with the same installation "
+            "arguments to finish."
+        )
+    return hint
+
+
+def _capture_queue_checks(report: DoctorReport, binding, conn) -> None:
+    """Distinguish scheduled captures, command-recoverable failures and stopped input without reading payloads."""
+    _injection_checks(report, conn)
+    codes = [code for (code,) in conn.execute("SELECT last_error_code FROM capture_inbox")]
+    moment = datetime.now(UTC)
+    report.capture_inbox = len(codes)
+    report.capture_inbox_blocked = sum(not replayable(code, moment) for code in codes)
+    report.capture_inbox_given_up = sum(given_up(code) for code in codes)
+    delayed = [until for code in codes if (until := deferred_until(code, moment)) is not None]
+    if delayed:
+        record_check(
+            report,
+            "capture_deferred",
+            "waiting",
+            f"{len(delayed)} captures wait until {min(delayed).isoformat()}; automatic replay remains scheduled",
+        )
+    recoverable = sorted({str(code)[:120] for code in codes if given_up(code) or code == "ACCESS_DENIED"})
+    if recoverable:
+        record_check(
+            report,
+            "capture_recovery",
+            "waiting",
+            f"{recoverable[:8]}; after repair with this store's configuration: {_RETRY_COMMAND}",
+        )
+    stopped = sorted(
+        {
+            str(code)[:120]
+            for code in codes
+            if not replayable(code, moment)
+            and deferred_until(code, moment) is None
+            and not given_up(code)
+            and code != "ACCESS_DENIED"
+        }
+    )
+    for code in stopped[:8]:
+        record_check(report, "capture_stopped", "stopped", f"{code}; {_capture_stop_action(code)}")
+    kept = sum(1 for _ in (binding.data_directory / "kept-captures").glob("*.json"))
+    if kept:
+        record_check(
+            report, "capture_replay", "waiting", f"{kept} disk captures; Hermes retries hourly or on next start"
+        )
+
+
+def _capture_stop_action(code: str) -> str:
+    """A stopped envelope is immutable; correcting the host's input creates a new authorized capture."""
+    if code == "INPUT_INVALID":
+        return "validate the original capture input and submit corrected input as a new host event"
+    if code.startswith("SOURCE_MISSING"):
+        return "inspect the missing source; deleted evidence stays deleted; capture fresh authorized evidence"
+    if code.startswith("VERSION_CONFLICT"):
+        return "inspect the conflicting host event identities and submit the corrected event with its own identity"
+    return "inspect the retained failure and correct the host capture source before submitting a new authorized event"
+
+
+def _candidate_queue_checks(report: DoctorReport, tx):
+    """Read candidate status and explain bounded grants or authority fences for unfinished stopped questions."""
+    rows = (
+        tx._check()
+        .execute(
+            "SELECT e.work_id,w.last_error_code FROM candidate_evaluations e JOIN work_items w ON w.work_id=e.work_id "
+            "WHERE e.state='queued' AND w.state='failed' ORDER BY e.work_id LIMIT 16"
+        )
+        .fetchall()
+    )
+    for work_id, code in rows:
+        reason = tx.candidates.evaluation_retry_rejection(work_id, include_unfinished=True)
+        record_check(
+            report,
+            "candidate_recovery",
+            "stopped",
+            f"work {work_id}: {str(code)[:80]}; unfinished question; reconcile with {_RETRY_COMMAND}; "
+            "retry only if a bounded grant is available; otherwise retain the request mark "
+            "and wait for new admissible evidence" + (f"; {reason}" if reason else ""),
+        )
+
+    return tx.candidates.summary(include_all_projects=True)
+
+
+def _injection_checks(report, conn):
+    """Report held source counts without reading or copying their words."""
+    from ..core.injection_policy import load_policy
+
+    try:
+        load_policy(conn)
+    except (ValueError, TypeError, KeyError):
+        report.capability_gaps.append("injection_policy_invalid")
+        record_check(report, "injection_policy", "invalid", "Required source screening policy is incomplete or invalid")
+    safety = dict(
+        conn.execute(
+            "SELECT s.state,count(*) FROM source_safety s JOIN source_events e "
+            "ON e.event_id=s.source_ref AND e.source_revision=s.source_revision "
+            "WHERE e.read_blocked=0 GROUP BY s.state"
+        )
+    )
+    report.injection_quarantined = safety.get("quarantined", 0)
+    report.injection_pending_review = safety.get("pending_review", 0)
+    report.injection_scan_deadlines = conn.execute(
+        "SELECT count(*) FROM work_error_details WHERE stage='source_scan' AND error_code='scan_time_budget'"
+    ).fetchone()[0]
+    if report.injection_pending_review:
+        report.capability_gaps.append("injection_review_pending")
+    record_check(
+        report,
+        "injection_safety",
+        "held" if report.injection_quarantined + report.injection_pending_review else "clear",
+        f"quarantined={report.injection_quarantined}; pending_review={report.injection_pending_review}; "
+        f"scan_deadlines={report.injection_scan_deadlines}",
+    )
+
+
+def _entity_resolution_check(report, tx, binding):
+    """Report content-free background entity progress alongside the ordinary work queue."""
+    from scope_recall.core.entity_resolution import entity_progress
+
+    _capture_queue_checks(report, binding, tx._check())
+    progress = entity_progress(tx, include_all_projects=True)
+    record_check(
+        report,
+        "entity_resolution",
+        "waiting" if progress["pending"] else "ok",
+        f"{progress['completed']}/{progress['total']} statements checked; {progress['pending']} pending",
+    )
+
+
+def _derived_progress(report, transaction, binding):
+    """Read content-free backfill status beside the existing entity diagnosis."""
+    _entity_resolution_check(report, transaction, binding)
+    conn = transaction._check()
+    from scope_recall.core.reflection_policy import reflection_usage
+
+    report.reflections = dict(
+        daily=reflection_usage(transaction, now=datetime.now(UTC).isoformat()),
+        historical_pages_pending=conn.execute(
+            "SELECT count(*) FROM reflection_discovery WHERE next_at IS NOT NULL"
+        ).fetchone()[0],
+    )
+    report.summaries = dict(conn.execute("SELECT state,count(*) FROM summary_groups GROUP BY state"))
+    report.summaries["importance_pending"] = conn.execute(
+        "SELECT count(*) FROM claims WHERE importance_assigned=0"
+    ).fetchone()[0]
+
+
+def _entry_and_derived_progress(report, transaction, binding):
+    """Read each entry's control once alongside the other store diagnostics."""
+    from scope_recall.core.entry_control import state_for
+
+    keys = transaction.registry.entries() if binding.installation_kind == "shared" else {"local": {}}
+    controls = ((key, state_for(transaction, transaction.context, entry_id=key)) for key in keys)
+    report.entries = [dict(id=key, state=state, version=version) for key, (state, version) in controls]
+    _derived_progress(report, transaction, binding)
+
+
+def _private_status(report, transaction):
+    """Expose active interval metadata without reading private content."""
+    moment = datetime.now(UTC)
+    report.private_rules = private.active_intervals(transaction, moment.isoformat())
+    record_check(
+        report,
+        "private_mode",
+        "active" if report.private_rules else "none",
+        f"{len(report.private_rules)} active interval(s)",
+    )
+    return moment
 
 
 def check_storage(report: DoctorReport, binding, data_directory: Path, *, restoring: bool = False) -> bool:
@@ -258,18 +485,14 @@ def check_storage(report: DoctorReport, binding, data_directory: Path, *, restor
         ) as transaction:
             status = transaction.status(include_all_projects=True, include_admission=True)
             conn = transaction._check()
-            report.capture_inbox = conn.execute("SELECT count(*) FROM capture_inbox").fetchone()[0]
-            moment = datetime.now(timezone.utc)
-            codes = [code for (code,) in conn.execute("SELECT last_error_code FROM capture_inbox")]
-            report.capture_inbox_blocked = sum(not replayable(code, moment) for code in codes)
-            report.capture_inbox_given_up = sum(given_up(code) for code in codes)
+            _entry_and_derived_progress(report, transaction, binding)
             report.recent_work_errors = [
                 dict(r)
                 for r in conn.execute(
                     "SELECT work_id,lease_token,stage,error_code,error_field,recorded_at FROM work_error_details ORDER BY detail_id DESC LIMIT 16"
                 )
             ]
-            moment = datetime.now(timezone.utc)
+            moment = _private_status(report, transaction)
             hour_ago = (moment - timedelta(hours=1)).isoformat()
             growth = conn.execute(
                 "SELECT sum(persisted_at>=?),sum(persisted_at>=?) FROM source_events",
@@ -283,16 +506,14 @@ def check_storage(report: DoctorReport, binding, data_directory: Path, *, restor
                 conn.execute("SELECT disposition,count(*) FROM consolidation_outcomes GROUP BY disposition").fetchall()
             )
             report.needs_review_work = conn.execute(NEEDS_REVIEW_COUNT).fetchone()[0]
-            candidates = transaction.candidates.summary(include_all_projects=True)
+            candidates = _candidate_queue_checks(report, transaction)
             # Debouncing raises pending_evaluation on purpose, so split that
             # number: waiting inside the quiet window is health, waiting past it
             # with no sweep having run is not.
-            report.candidate_settling = transaction.candidates.settling_summary(
-                now=datetime.now(timezone.utc).isoformat()
-            )
+            report.candidate_settling = transaction.candidates.settling_summary(now=datetime.now(UTC).isoformat())
             report.embedding_respace = transaction.work.respace_run()
             report.embedding_health = transaction.work.embed_queue()
-            cutoff = (datetime.now(timezone.utc) - timedelta(hours=UNREACHED_HOURS)).isoformat()
+            cutoff = (datetime.now(UTC) - timedelta(hours=UNREACHED_HOURS)).isoformat()
             report.unreached = [
                 *transaction.work.due_unreached(before=cutoff),
                 *transaction.candidates.settled_unreached(before=cutoff),
@@ -430,7 +651,7 @@ def check_embedding_health(report: DoctorReport, config) -> None:
     hold = provider_holds(auxiliary).get("embed")
     if hold is not None:
         health["held_model"], until = hold
-        health["held_until"] = datetime.fromtimestamp(until, timezone.utc).isoformat()
+        health["held_until"] = datetime.fromtimestamp(until, UTC).isoformat()
     calls = embedding_calls(auxiliary)
     if calls is not None:
         health["last_day"] = calls
@@ -477,7 +698,7 @@ def check_unreached(report: DoctorReport, config) -> None:
 
     capable = capable_work_types(config) if config is not None else {"purge", "rebuild_projection"}
     if config is not None:
-        capable -= set(provider_holds(config.auxiliary, now=datetime.now(timezone.utc).timestamp()))
+        capable -= set(provider_holds(config.auxiliary, now=datetime.now(UTC).timestamp()))
     partitions: dict[tuple, dict[str, Any]] = {}
     for row in report.unreached:
         if "work_type" in row and row["work_type"] not in capable:
@@ -583,7 +804,14 @@ def check_backlog(report: DoctorReport, wake_seconds: float | None) -> None:
             report.capability_gaps.append("work_failed")
         elif terminal:
             report.capability_gaps.append("work_failed_terminal_only")
-        record_check(report, "failed_work", "present", f"{report.failed_work} (terminal={terminal})")
+        record_check(
+            report,
+            "failed_work",
+            "present",
+            f"{report.failed_work} (terminal={terminal}); reasons={report.work_error_counts}; "
+            f"after repair with this store's configuration: {_RETRY_COMMAND}; "
+            "by-design refusals require --include-terminal",
+        )
     if report.deferred_sources:
         record_check(report, "source_processing", "deferred", str(report.deferred_sources))
         report.capability_gaps.append("source_processing_deferred")

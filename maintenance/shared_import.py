@@ -58,7 +58,9 @@ from ..core.delete_storage import group_digest
 from ..core.events import indexed_terms, withheld_tool_output
 from ..core.requalify import settle_brought_denials
 from ..core.schema import SCHEMA_VERSION
+from ..core.source_records import restart_body_scan_maintenance
 from ..core.storage import Transaction
+from ..core.summary_validity import CONVERSATION_SUMMARY_REASONS
 from ..core.truth_connection import connect_truth_database
 from ..core.writer_lease import TruthWriterBusyError
 from ..runtime.running_code import live_records
@@ -66,7 +68,7 @@ from ..runtime.vector_retention import OMITTED_TOOL_OUTPUT, REPEATED_TOOL_OUTPUT
 from .shared_run import Run, SharedStoreError, store_lock
 
 #: Store versions whose tables this import reads.  An older store is upgraded first.
-SOURCE_SCHEMAS = frozenset({1109, 1110, 1111, 1112})
+SOURCE_SCHEMAS = frozenset(range(1109, SCHEMA_VERSION + 1))
 #: Anything shaped like a source id; renamed only when the old store holds exactly that id.
 _EVENT_TOKEN = re.compile(r"(?<![0-9A-Za-z_-])event-[0-9A-Za-z_-]+")
 _CHUNK = 2000
@@ -204,6 +206,11 @@ def _import_blocks(conn, src, names, left_out, epoch):
                     else {**r, "object_ref": names.ref(r["object_kind"], r["object_ref"])}
                 ),
             )
+    if "source_safety" in tables:
+        # The destination owns its rule policy; imported source verdicts keep their exact versions.
+        counts["source_safety"] = _copy(
+            conn, src, "source_safety", lambda r: {**r, "source_ref": names.event(r["source_ref"])}
+        )
     if "management_actions" in tables:
         counts["management_actions"] = _copy(
             conn,
@@ -217,6 +224,38 @@ def _import_blocks(conn, src, names, left_out, epoch):
             },
         )
     return counts
+
+
+def _summary_claims(src):
+    """Identify only current derived summaries, not owner-authored replacement facts."""
+    return {
+        row[0]
+        for row in src.execute(
+            "SELECT c.claim_id FROM claims c JOIN claim_versions v ON v.claim_id=c.claim_id "
+            "AND v.revision=c.current_revision WHERE v.qualification_reason IN (?,?,?)",
+            CONVERSATION_SUMMARY_REASONS,
+        )
+    }
+
+
+def _claim_exclusions(conn, src):
+    """Retain real fact metadata but rebuild summaries against renamed evidence.
+
+    Source, session and entry identities change during a shared import. Old
+    summary signatures and processed ranges cannot authorize the renamed graph.
+    """
+    summaries = _summary_claims(src)
+    left_out, skipped = set(summaries), []
+    for claim in _rows(src, "SELECT * FROM claims"):
+        if claim["claim_id"] in summaries:
+            continue
+        held = conn.execute(
+            "SELECT claim_id FROM claims WHERE slot_key=? OR claim_id=?", (claim["slot_key"], claim["claim_id"])
+        ).fetchone()
+        if held is not None:
+            left_out.add(claim["claim_id"])
+            skipped.append({"claim_id": claim["claim_id"], "kept": held[0], "kind": claim["kind"]})
+    return left_out, skipped, summaries
 
 
 def _import_rows(conn, src, names: _Names, *, store_installation: str, store_scopes: frozenset[str], now: str) -> dict:
@@ -250,6 +289,10 @@ def _import_rows(conn, src, names: _Names, *, store_installation: str, store_sco
             new_binding, old[1], old[2], old[3], new_group
         )
         row.update(
+            # Imported receipts have no locally established scan provenance.
+            secret_scan_version=None,
+            secret_scan_names=None,
+            secret_scan_input_sha256=None,
             event_id=names.event(row["event_id"]),
             source_event_key=names.key(row["source_event_key"]),
             source_group_key=new_group,
@@ -268,23 +311,23 @@ def _import_rows(conn, src, names: _Names, *, store_installation: str, store_sco
         lambda r: {**r, "event_id": names.event(r["event_id"]), "authorization_id": auth[r["authorization_id"]]},
     )
 
-    skipped: list[dict[str, str]] = []
-    left_out: set[str] = set()
-    for claim in _rows(src, "SELECT * FROM claims"):
-        held = conn.execute(
-            "SELECT claim_id FROM claims WHERE slot_key=? OR claim_id=?", (claim["slot_key"], claim["claim_id"])
-        ).fetchone()
-        if held is not None:
-            left_out.add(claim["claim_id"])
-            skipped.append({"claim_id": claim["claim_id"], "kept": held[0], "kind": claim["kind"]})
-    counts["claims"] = _copy(conn, src, "claims", lambda r: None if r["claim_id"] in left_out else r)
+    left_out, skipped, summaries = _claim_exclusions(conn, src)
+    counts["summary_claims_omitted"] = len(summaries)
+    counts["claims"] = _copy(
+        conn, src, "claims", lambda r: None if r["claim_id"] in left_out else {**r, "entity_indexed": 0}
+    )
     counts["claim_versions"] = _copy(
         conn,
         src,
         "claim_versions",
-        lambda r: None if r["claim_id"] in left_out else {**r, "payload_json": names.text(r["payload_json"])},
+        # Identity receipts belong to this store's evidence endpoints and are rebuilt after import.
+        lambda r: (
+            None
+            if r["claim_id"] in left_out
+            else {**r, "payload_json": names.text(r["payload_json"]), "entity_resolved": 0}
+        ),
     )
-    counts["claims_left_out"] = len(left_out)
+    counts["claims_left_out"] = len(skipped)
 
     sequence_offset = conn.execute("SELECT coalesce(max(sequence),0) FROM episode_events").fetchone()[0]
     renamed_episodes = 0
@@ -341,16 +384,17 @@ def _import_rows(conn, src, names: _Names, *, store_installation: str, store_sco
         }
 
     counts["evidence_links"] = _copy(conn, src, "evidence_links", linked)
-    counts["object_dependencies"] = _copy(
-        conn,
-        src,
-        "object_dependencies",
-        lambda r: {
-            **r,
-            "object_ref": names.ref(r["object_kind"], r["object_ref"]),
-            "dependency_ref": names.ref(r["dependency_kind"], r["dependency_ref"]),
-        },
-    )
+
+    def dependency(row):
+        if any(row[kind + "_kind"] == "claim" and row[kind + "_ref"] in summaries for kind in ("object", "dependency")):
+            return None
+        return {
+            **row,
+            "object_ref": names.ref(row["object_kind"], row["object_ref"]),
+            "dependency_ref": names.ref(row["dependency_kind"], row["dependency_ref"]),
+        }
+
+    counts["object_dependencies"] = _copy(conn, src, "object_dependencies", dependency)
     counts["unresolved_updates"] = _copy(
         conn,
         src,
@@ -559,17 +603,23 @@ def _brought_in(conn, src, names: _Names, *, payload: dict[str, Any], root: Path
         store_scopes=frozenset(payload["scope_ids"]),
         now=now,
     )
-    left_out = {item["claim_id"] for item in copied["claims_left_out"]}
+    restart_body_scan_maintenance(conn)
+    left_out = {item["claim_id"] for item in copied["claims_left_out"]} | _summary_claims(src)
     brought = [row[0] for row in src.execute("SELECT claim_id FROM claims") if row[0] not in left_out]
     copied["counts"]["denials_settled"] = 0
-    if brought:
-        scopes = frozenset(row[0] for row in src.execute("SELECT DISTINCT scope_id FROM claims"))
+    if names.known:
+        scopes = frozenset(row[0] for row in src.execute("SELECT scope_id FROM instance_scopes"))
         binding = InstanceBinding(
             payload["agent_id"], payload["installation_id"], root.resolve(), scopes, payload["test_mode"], "shared"
         )
         tx = Transaction(conn, TrustedContext(binding, "import-entry", scopes, "host_generated"), writable=True)
         try:
+            from ..core.injection_import import screen_imported_sources
+
+            screen_imported_sources(tx, names, now)
             copied["counts"]["denials_settled"] = settle_brought_denials(tx, brought, now=now)
+            for ref in brought:
+                lexical_index.index_claim(conn, ref)
         finally:
             tx._finish()
     return copied

@@ -1,172 +1,94 @@
-"""Run a vector compaction when one is due, and record what it did.
-
-Sits between the policy (``vector/compaction.py``, which knows the footprint
-and the threshold) and the store (``vector.store.LanceVectorStore.compact``,
-which knows LanceDB).  ``runtime/instance.py`` has the single call site, at the
-start of a drain.
-
-Why the start and not the end: on a busy instance the drain budget is usually
-spent by the time the work queue is empty, so upkeep placed at the end is
-upkeep that never runs.  Reserving a few seconds up front is the difference
-between a guard that holds and one that only holds while the instance is idle
--- which is exactly when it is not needed.
-
-Not responsible for: deciding the threshold, or performing the native work.
-"""
+"""Bounded worker indexing and embedding backfill scheduling."""
 
 from __future__ import annotations
 
-import time
-from datetime import datetime, timedelta, timezone
+import sqlite3
+from collections.abc import Callable
+from contextlib import closing
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
+from ..core.deadline import RequestDeadline, remaining_seconds, using_request_deadline
+from ..core.failure_policy import CAPABILITY_RECHECK
 from ..vector.compaction import (
     EMBED_BACKFILL_STATE_SCHEMA,
-    INDEX_STATE_FILENAME,
-    INDEX_STATE_SCHEMA,
-    compaction_due,
     embed_backfill_filename,
-    measure_footprint,
     read_state,
     write_state,
 )
-from ..vector.store import VECTOR_INDEX_MIN_ROWS
-from .validation import utc_now
-
-#: Minimum remaining drain budget required before starting a compaction pass, to avoid abandoning it partway.
-RESERVE_SECONDS = 8.0
+from ..vector.defaults import INDEX_BATCH_ROWS
 
 
-def compact_if_due(
-    store: Any, vector_config: Any, *, available_seconds: float, reason: str | None = None
-) -> dict[str, Any] | None:
-    """Compact when the policy says so.  Returns the receipt, or ``None``.
+def _index_pages(method, batch_rows: int) -> dict[str, Any]:
+    """Publish bounded pages until the slice ends, retaining its committed progress.
 
-    ``reason`` names a cause the caller already knows, such as a retention
-    pass that just deleted rows; it skips the threshold and the cooldown, which
-    guard against compacting for nothing.
-
-    Never raises.  A compaction that cannot run leaves the store exactly as it
-    was, and the next drain will try again; letting it fail a drain would trade
-    a tidiness problem for an availability one.
+    A page may reach the deadline while writing an unpublished suffix. Its raw
+    rows and earlier pages remain valid; that local yield is not a capability
+    failure which should defer the next worker pass.
     """
-    if store is None or vector_config is None or available_seconds < RESERVE_SECONDS:
-        return None
-    compact = getattr(store, "compact", None)
-    if not callable(compact):
-        return None
-
-    storage_dir = Path(vector_config.storage_dir)
-    db_path = storage_dir / "lancedb"
-    try:
-        footprint = measure_footprint(db_path, vector_config.table_name)
-        reason = reason or compaction_due(footprint, read_state(storage_dir))
-    except OSError:
-        return None
-    if reason is None:
-        return None
-
-    started = time.monotonic()
-    receipt: dict[str, Any] = {
-        "reason": reason,
-        "started_at": utc_now(),
-        "fragments_before": footprint.fragments,
-        "manifests_before": footprint.manifests,
-        "bytes_before": footprint.bytes,
-    }
-    try:
-        compact()
-    except Exception as exc:  # noqa: BLE001 - see docstring; upkeep never fails a drain.
-        receipt["outcome"] = "failed"
-        receipt["error"] = type(exc).__name__
-    else:
-        receipt["outcome"] = "compacted"
-    after = measure_footprint(db_path, vector_config.table_name)
-    receipt.update(
-        finished_at=utc_now(),
-        seconds=round(time.monotonic() - started, 3),
-        fragments=after.fragments,
-        manifests=after.manifests,
-        bytes=after.bytes,
-    )
-    write_state(storage_dir, receipt)
+    receipt: dict[str, Any] = {"outcome": "indexed", "rows": 0}
+    for _ in range(64):
+        try:
+            receipt = method(max_rows=batch_rows)
+        except TimeoutError:
+            left = remaining_seconds()
+            if left is None or left > 0:
+                raise
+            return {**receipt, "yielded": True, "next_batch_rows": max(1, batch_rows // 2)}
+        if receipt.get("outcome") != "indexed" or receipt.get("rows", 0) < batch_rows:
+            break
+        if (remaining_seconds() or 0) <= 0.5:
+            return {**receipt, "next_batch_rows": batch_rows}
+        batch_rows = min(INDEX_BATCH_ROWS, batch_rows * 2)
     return receipt
-
-
-#: Estimated index-build seconds per row and dimension, including a safety margin.  A build starts only when the
-#: estimate fits the pass's remaining budget, because the watchdog ends a pass that exceeds it.  An index already
-#: in place is inspected regardless of the store's size.
-INDEX_SECONDS_PER_ROW_DIMENSION = 2.1e-7
-#: Seconds of the pass kept free beside the estimate, for the drain that follows.
-INDEX_MARGIN_SECONDS = 20.0
-#: How long each outcome stands before a pass looks again.  A failure is not retried sooner than this; a store
-#: below the threshold or too large for the time left is looked at again as it grows or as a pass has more time.
-INDEX_RECHECK = {
-    "built": timedelta(days=1),
-    "rebuilt": timedelta(days=1),
-    "present": timedelta(days=1),
-    "below_threshold": timedelta(hours=1),
-    "deferred": timedelta(minutes=15),
-    "failed": timedelta(hours=6),
-    # Written before a build starts.  A pass the watchdog ended mid-build leaves it, and the next looks again only
-    # after this long, as after a failure, instead of starting the same build on every pass.
-    "started": timedelta(hours=6),
-}
 
 
 def index_if_due(
     store: Any, vector_config: Any, *, available_seconds: float, now: datetime | None = None
 ) -> dict[str, Any] | None:
-    """Build the nearest-neighbour index when the table needs one and this pass has the time.  Returns the receipt.
-
-    The receipt goes to ``index-state.json`` beside the store, where the doctor reads it.  Never raises: without
-    the index a search is slower, never wrong, so a failed build is recorded and tried again after
-    ``INDEX_RECHECK["failed"]``, not on every pass.
-    """
-    build = getattr(store, "ensure_vector_index", None)
-    if store is None or vector_config is None or not callable(build):
+    """Publish bounded cache batches within the worker's existing remaining budget."""
+    method = cast(Callable[..., dict[str, Any]], getattr(store, "maintain_index", None))
+    if store is None or vector_config is None or not callable(method) or available_seconds < 1:
         return None
-    storage_dir = Path(vector_config.storage_dir)
-    moment = now or datetime.now(timezone.utc)
-    state = read_state(storage_dir, filename=INDEX_STATE_FILENAME, schema=INDEX_STATE_SCHEMA)
-    wait = INDEX_RECHECK.get(state.get("outcome"))
+    state = read_state(Path(vector_config.storage_dir))
+    retry = float(state.get("retry_after", 0))
+    if (
+        state.get("error") == "TimeoutError"
+        and not state.get("index_fault")
+        and getattr(store, "backend", None) == "sqlite"
+    ):
+        # Older worker receipts classified an exhausted cache-build slice as a
+        # capability failure. A completed import with uncached rows can resume
+        # that bounded local work immediately; actual I/O failures keep backoff.
+        try:
+            details = store.diagnostics()
+            if not any(item["state"] != "complete" for item in details["imports"]):
+                if details["cached_rows"] < store.count_rows():
+                    retry = 0
+        except (sqlite3.Error, OSError, ValueError, KeyError):
+            pass
+    if retry > (now or datetime.now(UTC)).timestamp():
+        return {"outcome": "held", "retry_after": retry}
     try:
-        checked = datetime.fromisoformat(str(state.get("checked_at")).replace("Z", "+00:00"))
-    except ValueError:
-        checked = None
-    if wait is not None and checked is not None and timedelta(0) <= moment - checked < wait:
-        return None
-    receipt: dict[str, Any] = {"checked_at": moment.isoformat().replace("+00:00", "Z")}
-    try:
-        # A look first, whatever the store's size: an index in place (or a small store) needs no time estimate.
-        looked = build(min_rows=VECTOR_INDEX_MIN_ROWS, timeout_seconds=30.0, build=False)
-        receipt.update(looked)
-        if looked.get("outcome") in ("needs_build", "needs_rebuild"):
-            rows = int(looked.get("rows") or 0)
-            estimate = rows * int(vector_config.dimensions) * INDEX_SECONDS_PER_ROW_DIMENSION
-            receipt["estimate_seconds"] = round(estimate, 1)
-            if estimate + INDEX_MARGIN_SECONDS > available_seconds:
-                receipt["outcome"] = "deferred"
-                receipt["available_seconds"] = round(available_seconds, 1)
-            else:
-                write_state(
-                    storage_dir,
-                    {**receipt, "outcome": "started"},
-                    filename=INDEX_STATE_FILENAME,
-                    schema=INDEX_STATE_SCHEMA,
-                )
-                receipt.update(
-                    build(
-                        min_rows=VECTOR_INDEX_MIN_ROWS,
-                        timeout_seconds=max(1.0, available_seconds - INDEX_MARGIN_SECONDS / 2),
-                    )
-                )
-    except Exception as exc:  # noqa: BLE001 - see docstring; upkeep never fails a drain.
-        receipt["outcome"] = "failed"
-        receipt["error"] = type(exc).__name__
-    write_state(storage_dir, receipt, filename=INDEX_STATE_FILENAME, schema=INDEX_STATE_SCHEMA)
-    return receipt
+        outer = remaining_seconds()
+        budget = available_seconds if outer is None else min(available_seconds, max(0.0, outer))
+        # Short worker slices start conservatively. A slice which cannot
+        # publish its batch leaves a smaller durable hint, down to one row;
+        # repeating a too-large rolled-back batch would otherwise never move.
+        batch_rows = INDEX_BATCH_ROWS if budget > 8 else 512
+        hint = state.get("next_batch_rows")
+        if type(hint) is int:
+            batch_rows = min(batch_rows, max(1, hint))
+        with using_request_deadline(RequestDeadline.from_budget(min(30.0, budget))):
+            receipt = _index_pages(method, batch_rows)
+            result = {"outcome": receipt["outcome"], "retry_after": 0}
+            if "next_batch_rows" in receipt:
+                result["next_batch_rows"] = receipt["next_batch_rows"]
+            write_state(Path(vector_config.storage_dir), result)
+            return receipt
+    except Exception as exc:  # noqa: BLE001 - raw vectors stay available when indexing fails.
+        return record_vector_failure(vector_config, type(exc).__name__, now=now, index_fault=True)
 
 
 #: The backfill of an import's embeddings (``core.index_rebuild.queue_import_embeddings``) keeps where it stopped beside
@@ -198,7 +120,7 @@ def backfill_if_due(
     if storage is None or context is None or vector_config is None:
         return None
     storage_dir = Path(vector_config.storage_dir)
-    moment = now or datetime.now(timezone.utc)
+    moment = now or datetime.now(UTC)
     filename = embed_backfill_filename(context.allowed_scope_ids, context.project_id, context.branch_id)
     state = read_state(storage_dir, filename=filename, schema=EMBED_BACKFILL_STATE_SCHEMA)
     finished = state.get("outcome") == "finished"
@@ -258,7 +180,7 @@ def respace_if_due(
     """
     if storage is None or context is None or not space_id:
         return None
-    moment = (now or datetime.now(timezone.utc)).isoformat()
+    moment = (now or datetime.now(UTC)).isoformat()
     try:
         from ..core.index_rebuild import IMPORT_EMBED_QUEUE_CEILING
 
@@ -282,10 +204,74 @@ def respace_if_due(
 
 __all__ = [
     "EMBED_BACKFILL_RECHECK",
-    "INDEX_RECHECK",
-    "RESERVE_SECONDS",
     "backfill_if_due",
-    "compact_if_due",
     "index_if_due",
     "respace_if_due",
 ]
+
+
+def next_vector_wake(config, now: datetime) -> tuple[datetime, str] | None:
+    """Schedule unfinished companion pages independently of model work, without loading extensions."""
+    vector = getattr(config, "vector", None)
+    if vector is None:
+        return None
+    root = Path(vector.storage_dir)
+    path = root / "vectors.sqlite3"
+    retry = float(read_state(root).get("retry_after", 0))
+    retry_at = max(now, datetime.fromtimestamp(retry, UTC))
+    if not path.is_file():
+        return (
+            (retry_at, "vector_import") if (root / "vector.sqlite3").is_file() or (root / "lancedb").is_dir() else None
+        )
+    try:
+        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)) as conn:
+            imports = conn.execute("SELECT min(retry_after) FROM vector_imports WHERE state!='complete'").fetchone()[0]
+            if imports is not None:
+                return (max(now, datetime.fromtimestamp(imports, UTC)), "vector_import")
+            meta = dict(conn.execute("SELECT key,value FROM vector_meta"))
+            latest = conn.execute("SELECT coalesce(max(seq),0) FROM vector_records").fetchone()[0]
+            deleting = conn.execute("SELECT 1 FROM index_deletes LIMIT 1").fetchone()
+            if latest <= int(meta.get("index_watermark", 0)) and not deleting:
+                from ..vector.cache import MappedIndex
+
+                details = MappedIndex(path, int(meta["dimensions"])).diagnostics(conn)
+                if details["cache_ready"]:
+                    wakes = []
+                    if details["collection_pending"]:
+                        wakes.append(
+                            (max(now, datetime.fromtimestamp(details["collect_after"], UTC)), "vector_collect")
+                        )
+                    if details["cached_rows"]:
+                        wakes.append(
+                            (max(now, datetime.fromtimestamp(details["verify_after"], UTC)), "vector_integrity")
+                        )
+                    return min(wakes) if wakes else None
+            retry = max(retry, float(meta.get("index_retry_after", 0)))
+            return (max(now, datetime.fromtimestamp(retry, UTC)), "vector_index")
+    except (sqlite3.Error, OSError, ValueError, KeyError):
+        return (retry_at, "vector_store_unavailable")
+
+
+def release_requested_reembedding(storage, context, store, space_id: str) -> bool:
+    """Release a missing-input hold using durable authorization rather than this pass's progress receipt."""
+    method = getattr(store, "allow_requested_reembedding", None)
+    if not callable(method):
+        return False
+    with storage.read(context) as tx:
+        authorization = tx.work.respace_authorization(space_id)
+    return bool(method(authorization))
+
+
+def record_vector_failure(
+    vector_config, error: str, *, now: datetime | None = None, index_fault: bool = False
+) -> dict[str, Any]:
+    """Persist a bounded retry outside the raw file so an unreadable file cannot hide its recovery time."""
+    moment = now or datetime.now(UTC)
+    receipt = {"outcome": "failed", "error": error, "retry_after": moment.timestamp() + CAPABILITY_RECHECK.delay()}
+    if index_fault:
+        # A confirmed fault keeps its retry even if an older timeout receipt
+        # would otherwise permit an unfinished native cache build to resume.
+        receipt["index_fault"] = True
+    if vector_config is not None:
+        write_state(Path(vector_config.storage_dir), receipt)
+    return receipt

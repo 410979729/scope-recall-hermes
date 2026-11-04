@@ -16,12 +16,15 @@ from .candidate_lifecycle import CandidateEvaluator, candidate_identity_restored
 from .candidate_tables import UNRESOLVED_SUBJECT_REASON
 from .claim_normalization import normalize_frame
 from .claims import evidence_refs
+from .consolidate import candidate_evidence_sources
+from .entry_control import paused_since, sources_paused
 from .evidence_question import evidence_text, rooted_verdict
+from .evidence_support import SupportVerdict, positioned, support_fingerprint, using_support
+from .failure_policy import BUDGET_PAUSE_ERRORS
 from .failure_retry import validation_feedback
 from .mutate import apply_claim, validate_claims
 from .worker_consolidation import decode_consolidation_result
 from .worker_outcomes import (
-    BUDGET_PAUSE_ERRORS,
     budget_left,
     claim_versions_mark,
     claims_changed,
@@ -87,12 +90,6 @@ def _candidate_obsolete(
 
 def _apply_verdict(tx, item, current, value, live_sources, now):
     """Validate one decoded verdict and apply its proposal; None when it has none."""
-    # Which sources the question carried is this evaluation's own record, not something the model has to repeat.
-    # Asked to echo every supplied ref, a model left one out or miscopied a 70-character id in 5.2% of the evaluations
-    # with nine or more sources in one store (none with one), and each such verdict would be lost for good.  What the
-    # verdict cites -- a span, a counterexample, a state reference -- must still be one of them
-    # (``validate_proposal_references``).
-    value = dict(value, source_refs=[f"{ref}@{revision}" for ref, revision in current.evidence_refs])
     if len(value["claim_proposals"]) > 1:
         raise ContractError("DERIVATION_INVALID", "candidate_proposal_count")
 
@@ -123,7 +120,12 @@ def _apply_verdict(tx, item, current, value, live_sources, now):
     ]
     if not rooted_verdict(proposal, quoted):
         return None
-    applied = apply_claim(tx, proposal, item.scope_id, now)
+    verdicts = ()
+    if positioned(proposal):
+        contents = {(source.ref, source.revision): source.event["content"] for source in authorized_sources}
+        verdicts = (SupportVerdict(support_fingerprint(proposal, contents), "supported"),)
+    with using_support(verdicts):
+        applied = apply_claim(tx, proposal, item.scope_id, now)
     applied_version = tx.claims.version(applied.ref, applied.revision)
     if applied_version is None or applied_version.payload.get("subject") != expected_candidate.payload.get("subject"):
         raise ContractError("DERIVATION_INVALID", "candidate_subject_binding")
@@ -151,6 +153,10 @@ def _record_verdict(tx, item, evaluation, dependencies, value, result_digest: st
     """Record the model's verdict on a candidate, in the transaction that re-checked the lease: obsolete when the
     candidate, its evidence or anything it was judged on changed during the call; else the claim the verdict
     supports, if any, applied and the evaluation completed."""
+    if paused_since(tx, dependencies.entries or {}):
+        return work_result(
+            tx.candidates.defer_entry(evaluation.evaluation_id, item, now=now), error_code="entry_paused"
+        )
     current = tx.candidates.evaluation(evaluation.evaluation_id)
     if current is None:
         mutation = tx.candidates.obsolete(evaluation.evaluation_id, item, now=now, reason="authority_revoked")
@@ -198,7 +204,11 @@ def _record_verdict(tx, item, evaluation, dependencies, value, result_digest: st
         reason=reason,
         result_digest=result_digest,
     )
-    if (applied.ref, applied.revision) != (current.candidate.ref, current.candidate.revision):
+    applied_head = tx.claims.version(applied.ref, applied.revision)
+    if (applied.ref, applied.revision) != (
+        current.candidate.ref,
+        current.candidate.revision,
+    ) and applied_head.current_revision == applied.revision:
         tx.candidates.register(
             applied.ref,
             applied.revision,
@@ -206,6 +216,8 @@ def _record_verdict(tx, item, evaluation, dependencies, value, result_digest: st
             rule_version=current.candidate.rule_version,
             schedule_initial=False,
         )
+        if applied.ref == current.candidate.ref:
+            tx.candidates.inherit_answer(current, applied.revision, now=now)
     return work_result(mutation)
 
 
@@ -262,17 +274,18 @@ def process_candidate_evaluation(
         else:
             evidence_sources = live
             dependencies = read_derivation_fence(tx, scope_id=item.scope_id, sources=evidence_sources)
-            # A question a rule already answers needs no model call; see
-            # core/evidence_question.py.  Recorded like a verdict, with
-            # no attempt spent, so the at-most-once fence is untouched.
-            settled = tx.candidates.settle_without_model(
-                evaluation,
-                item,
-                evidence_sources,
-                now=clock.utc_now(),
-            )
+            # Defer paused evidence without spending an attempt; deterministic
+            # answers likewise settle before the model attempt is recorded.
+            if sources_paused(tx, evidence_sources):
+                settled = tx.work.defer_without_attempt(
+                    *item.lease, now=clock.utc_now(), error_code="entry_paused", seconds=60
+                )
+                settled_code = "entry_paused"
+            else:
+                settled = tx.candidates.settle_without_model(evaluation, item, evidence_sources, now=clock.utc_now())
+                settled_code = None
             if settled is not None:
-                return work_result(settled)
+                return work_result(settled, error_code=settled_code)
             if evaluation.model_attempted_at is None:
                 began = tx.candidates.begin_model_attempt(
                     evaluation.evaluation_id,
@@ -288,18 +301,38 @@ def process_candidate_evaluation(
             if invalid_reason is not None
             else fail(code="candidate_attempt_interrupted")
         )
+    assert dependencies is not None
     try:
         repair = {"validation_feedback": feedback} if feedback is not None else {}
-        if private.outbound_blocked(storage, clock, context, sources=evidence_sources, claims=(evaluation.candidate,)):
-            return fail(code="private_mode", budget_pause=True)
+        blocked = private.outbound_blocked(
+            storage, clock, context, sources=evidence_sources, claims=(evaluation.candidate,)
+        )
+        with storage.read(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
+            interrupted = paused_since(tx, dependencies.entries or {})
+        if blocked or interrupted:
+            return (
+                fail(code="private_mode", budget_pause=True)
+                if blocked
+                else _candidate_verdict(
+                    storage,
+                    clock,
+                    context,
+                    item,
+                    code="entry_paused",
+                    started=started,
+                    budget=budget,
+                    mutate=lambda tx, now: tx.candidates.defer_entry(evaluation.evaluation_id, item, now=now),
+                )
+            )
         with private.using_outbound_check(
             lambda: private.outbound_blocked(
                 storage, clock, context, sources=evidence_sources, claims=(evaluation.candidate,)
             )
         ):
+            model_sources = candidate_evidence_sources(evaluation.candidate, evidence_sources)
             raw = evaluator.evaluate_candidate(
                 evaluation.candidate,
-                evidence_sources,
+                model_sources,
                 remaining_seconds=budget_left(started, clock, budget),
                 **repair,
             )
@@ -310,7 +343,7 @@ def process_candidate_evaluation(
         code = model_failure(exc)[1]
         return fail(code=code, budget_pause=code in BUDGET_PAUSE_ERRORS)
     try:
-        value = decode_consolidation_result(raw, evidence_sources)
+        value = decode_consolidation_result(raw, model_sources, candidate=evaluation.candidate)
     except (ContractError, ValueError, TypeError, json.JSONDecodeError) as exc:
         contract = isinstance(exc, ContractError)
         return fail(

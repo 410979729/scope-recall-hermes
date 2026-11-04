@@ -9,8 +9,9 @@ from decimal import Decimal
 import pytest
 from scope_recall.core.candidate_lifecycle import CandidateSnapshot
 from scope_recall.core.consolidate import CANDIDATE_EVALUATION_INPUT_BUDGET, candidate_evaluation_messages
+from scope_recall.core.failure_policy import BUDGET_PAUSE_ERRORS
 from scope_recall.core.source_records import StoredSource
-from scope_recall.core.worker_outcomes import BUDGET_PAUSE_ERRORS, model_exception_outcome
+from scope_recall.core.worker_outcomes import model_exception_outcome
 from scope_recall.runtime.consolidation_models import ConsolidationRouteConfig, OpenAIConsolidationAdapter
 from scope_recall.runtime.model_budget import (
     AuxiliaryBudgetLedger,
@@ -111,7 +112,7 @@ def test_default_transport_accepts_the_bounded_candidate_without_losing_sources(
     (body,) = transport.bodies
     assert 32_000 < len(body) <= ledger.policy.max_request_bytes
     assert json.loads(body)["messages"] == messages
-    assert len(json.loads(messages[2]["content"])["sources"]) == 16
+    assert len(json.loads(messages[1]["content"])["sources"]) == 16
     assert read_auxiliary_budget_status(ledger.path)["requests"] == 1
 
 

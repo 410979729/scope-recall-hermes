@@ -14,6 +14,7 @@ import time
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
+from itertools import combinations
 from typing import Iterable, cast
 
 from ..contracts import (
@@ -23,6 +24,7 @@ from . import lexical_index, lineage
 from .claims import canonical_time, select_effective, select_proposal
 from .delete_storage import canonical, retraction_after
 from .events import lexical_terms
+from .injection_guard import held_roots_sql
 from .recall_policy import (
     claim_embedding_text,
     hard_identifiers,
@@ -41,6 +43,7 @@ from .retrieval import (
     SearchContext,
 )
 from .retrieval_hydration import RetrievalHydration, source_key
+from .summary_storage import summarized_rows
 from .visibility import OBJECT_KINDS
 
 _EXACT_REF = re.compile(r"(?:event|claim|episode|artifact|reference)-[A-Za-z0-9._/-]+@\d+")
@@ -88,26 +91,33 @@ def _searched_terms(tx, terms: tuple[str, ...], keep: tuple[str, ...] = ()) -> t
 
     Drop query terms too common to separate anything.
 
-    Document frequency is read once for the query's own terms, which is a
-    clustered range scan: ``lexical_postings`` is WITHOUT ROWID keyed on
-    ``(term_id, source_id)``.  If every term is that common the query keeps
-    its rarest ones: answering from a weak signal beats answering from none,
+    Counts stop once a term is known to be common and over budget. Every
+    retained unprotected term still has an exact count. If all terms are
+    common and their minimum saturated that bound, exact counts select the
+    true rarest ones: answering from a weak signal beats answering from none,
     and the vector and recent channels still contribute.
 
     ``keep`` is never dropped however common: the query's hard identifiers,
     which hydration requires of every source.  Without them the SQL cannot
     reach a single source hydration would admit.
     """
+    if len(terms) <= 1:
+        return terms, ()
     conn = tx._check()
-    frequencies = lexical_index.document_frequency(conn, terms)
+    # Query expansion and followups share this snapshot's corpus size.
+    ceiling = tx.remembered(("lexical_common_ceiling",), lambda: _common_term_ceiling(conn))
+    cap = max(ceiling, _LEXICAL_POSTING_BUDGET + 1)
+    frequencies = lexical_index.document_frequency(conn, terms, limit=cap)
     if not frequencies:
         return terms, ()
-    ceiling = _common_term_ceiling(conn)
     kept = tuple(term for term in terms if term in keep or frequencies.get(term, 0) < ceiling)
     if kept:
         searched = _within_posting_budget(kept, frequencies, keep)
         return searched, tuple(term for term in kept if term not in searched)
     rarest = min(frequencies.values())
+    if rarest == cap:
+        frequencies = lexical_index.document_frequency(conn, terms)
+        rarest = min(frequencies.values())
     return tuple(term for term in terms if frequencies.get(term, 0) == rarest) or terms, ()
 
 
@@ -169,18 +179,204 @@ def _discriminating_synonyms(tx, synonyms: dict[str, str], terms: tuple[str, ...
     if not live:
         return {}
     conn = tx._check()
-    frequencies = lexical_index.document_frequency(conn, live)
+    ceiling = tx.remembered(("lexical_common_ceiling",), lambda: _common_term_ceiling(conn))
+    frequencies = lexical_index.document_frequency(conn, live, limit=ceiling)
     if not frequencies:
         return {}
-    ceiling = _common_term_ceiling(conn)
     return {term: original for term, original in live.items() if 0 < frequencies.get(term, 0) < ceiling}
 
 
-#: Claims one query scores after the SQL prefilter.  Scoring loads a claim's
-#: versions, so this bounds a query's cost on an instance with many claims.
-_CLAIM_SCAN_LIMIT = 256
-#: Query terms the prefilter looks for, longest first (a query may have 128).
-_CLAIM_PREFILTER_TERMS = 32
+def _claim_visibility(context: SearchContext) -> tuple[str, tuple]:
+    """The fact prefilter's audience and policy, shared by every indexed intersection."""
+    trusted = context.trusted_context
+    scopes = tuple(sorted(trusted.allowed_scope_ids))
+    automatic = "AND c.suppressed=0" if context.mode == "auto" else ""
+    automatic_block = "OR b.suppressed=1" if context.mode == "auto" else ""
+    held = held_roots_sql("SELECT c.claim_id,'claim',c.claim_id")
+    return (
+        f"""c.scope_id IN ({_marks(scopes)}) AND c.read_blocked=0 {automatic} AND c.kind!='alias'
+            AND (c.project_id IS NULL OR c.project_id=?) AND (c.branch_id IS NULL OR c.branch_id=?)
+            AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='claim'
+                AND b.object_ref=c.claim_id AND (b.read_blocked=1 {automatic_block}))
+            AND NOT EXISTS(SELECT 1 FROM restored_absence_blocks a
+                WHERE a.object_kind='claim' AND a.object_ref=c.claim_id)
+            AND NOT EXISTS({held})""",
+        (*scopes, trusted.project_id, trusted.branch_id),
+    )
+
+
+def _claim_term_counts(conn, needles: tuple[str, ...]) -> list[tuple[int, int]]:
+    """Posting sizes for choosing an intersection driver, never for pruning or ranking.
+
+    A lone common term needs no full count. Several capped terms are measured
+    exactly so a shared word cannot hide a much cheaper intersection driver.
+    """
+    rows = conn.execute(
+        f"SELECT t.term_id,(SELECT COUNT(*) FROM (SELECT 1 FROM claim_lexical_postings p "
+        f"WHERE p.term_id=t.term_id LIMIT 1024)) AS n "
+        f"FROM lexical_terms t WHERE t.term IN ({_marks(needles)})",
+        needles,
+    ).fetchall()
+    counts = {int(row[0]): int(row[1]) for row in rows if row[1]}
+    capped = tuple(term for term, count in counts.items() if count == 1024)
+    if 1 < len(capped) and len(counts) <= 4:
+        counts.update(
+            (int(row[0]), int(row[1]))
+            for row in conn.execute(
+                f"SELECT term_id,COUNT(*) FROM claim_lexical_postings "
+                f"WHERE term_id IN ({_marks(capped)}) GROUP BY term_id",
+                capped,
+            )
+        )
+    return sorted(counts.items())
+
+
+def _claim_coverage(terms: tuple[int, ...], ref: str) -> str:
+    """Subject coverage from the posting reverse index, for a bounded candidate probe."""
+    return (
+        "(SELECT COUNT(*)*1.0/MAX(q.subject_terms) FROM claim_lexical_postings q "
+        f"WHERE q.claim_id={ref} AND q.subject_terms>0 AND q.term_id IN ({','.join(map(str, terms))}))"
+    )
+
+
+def _subject_claim_rows(tx, context, terms, *, simple: bool) -> list:
+    """Probe subject postings; only certified heads can use current-head coverage."""
+    if not terms:
+        return []
+    visibility, parameters = _claim_visibility(context)
+    ids = ",".join(map(str, terms))
+    coverage = "HAVING COUNT(*)*2>=MAX(p.subject_terms)" if simple else ""
+    return (
+        tx._check()
+        .execute(
+            f"""WITH subjects AS MATERIALIZED (
+            SELECT p.claim_id FROM claim_lexical_postings p INDEXED BY claim_lexical_subject
+            WHERE p.term_id IN ({ids}) AND p.subject_terms>0 GROUP BY p.claim_id
+            {coverage})
+            SELECT c.claim_id,(SELECT COUNT(*) FROM claim_lexical_postings q
+                WHERE q.claim_id=c.claim_id AND q.term_id IN ({ids})) AS hits
+            FROM subjects s CROSS JOIN claim_lexical_heads h ON h.claim_id=s.claim_id
+            CROSS JOIN claims c ON c.claim_id=s.claim_id
+            WHERE {visibility} AND h.is_simple={int(simple)} ORDER BY hits DESC,c.claim_id""",
+            parameters,
+        )
+        .fetchall()
+    )
+
+
+def _complex_claim_rows(tx, context, needles) -> list:
+    """Nominate only facts whose selected subject can overlap, across all versions.
+
+    The union never certifies a score: temporal selection, conditions and state
+    still use complete versions. Only unprojected direct truth edits bypass it.
+    """
+    visibility, parameters = _claim_visibility(context)
+    return (
+        tx._check()
+        .execute(
+            f"""WITH nominated AS MATERIALIZED (
+            SELECT p.claim_id FROM lexical_terms t
+            CROSS JOIN claim_version_postings p INDEXED BY claim_version_subject ON p.term_id=t.term_id
+            WHERE t.term IN ({_marks(needles)}) AND p.subject_term=1
+            UNION SELECT claim_id FROM claim_lexical_dirty)
+        SELECT c.claim_id,(SELECT COUNT(*) FROM claim_lexical_postings q
+            JOIN lexical_terms qt ON qt.term_id=q.term_id
+            WHERE q.claim_id=c.claim_id AND qt.term IN ({_marks(needles)})) AS hits FROM nominated n
+        CROSS JOIN claims c ON c.claim_id=n.claim_id
+        LEFT JOIN claim_lexical_heads h ON h.claim_id=c.claim_id
+        WHERE {visibility} AND (coalesce(h.is_simple,0)=0
+            OR EXISTS(SELECT 1 FROM claim_lexical_dirty d WHERE d.claim_id=c.claim_id))""",
+            (*needles, *needles, *parameters),
+        )
+        .fetchall()
+    )
+
+
+def _simple_claim_subset(tx, context, terms, subset, selected, limit) -> list:
+    """A final-rank prefix of one posting intersection, after all audience checks."""
+    ordered = sorted(subset, key=lambda term: term[1])
+    probes = " ".join(
+        f"CROSS JOIN claim_lexical_postings k{i} ON k{i}.term_id=? AND k{i}.claim_id=p.claim_id"
+        for i, _ in enumerate(ordered[1:])
+    )
+    visibility, parameters = _claim_visibility(context)
+    excluded = f"AND p.claim_id NOT IN ({_marks(selected)})" if selected else ""
+    return (
+        tx._check()
+        .execute(
+            f"""SELECT p.claim_id,h.recorded,{_claim_coverage(terms, "p.claim_id")} AS covered
+            FROM claim_lexical_postings p {probes}
+            CROSS JOIN claim_lexical_heads h ON h.claim_id=p.claim_id
+            CROSS JOIN claims c ON c.claim_id=p.claim_id
+            WHERE p.term_id=? AND h.is_simple=1 AND covered>=0.5 AND {visibility} {excluded}
+            ORDER BY covered DESC,h.recorded DESC,p.claim_id DESC LIMIT ?""",
+            (*(term for term, _ in ordered[1:]), ordered[0][0], *parameters, *selected, limit),
+        )
+        .fetchall()
+    )
+
+
+def _simple_claim_rows(tx, context, present, needed, limit) -> list:
+    """Exact top active heads, merging equal-hit prefixes by the final score's tie keys.
+
+    Subject coverage is between one half and one. A whole extra body hit always
+    wins over that interval, so descending hit levels need no lower-level scan
+    after the result limit is full. No certificate is used for a version that
+    could have conditions, another revision or temporal selection.
+    """
+    terms = tuple(term for term, _ in present)
+    if not tx._check().execute("SELECT 1 FROM claim_lexical_heads WHERE is_simple=1 LIMIT 1").fetchone():
+        return []
+    if len(present) > 4:
+        visibility, parameters = _claim_visibility(context)
+        ids = ",".join(map(str, terms))
+        return (
+            tx._check()
+            .execute(
+                f"""WITH hits AS MATERIALIZED (SELECT claim_id,COUNT(*) AS hits FROM claim_lexical_postings
+                WHERE term_id IN ({ids}) GROUP BY claim_id)
+                SELECT c.claim_id,p.hits,{_claim_coverage(terms, "c.claim_id")} AS covered
+                FROM hits p CROSS JOIN claim_lexical_heads h ON h.claim_id=p.claim_id
+                CROSS JOIN claims c ON c.claim_id=p.claim_id
+                WHERE h.is_simple=1 AND p.hits>=? AND covered>=0.5 AND {visibility}
+                ORDER BY p.hits+covered DESC,h.recorded DESC,c.claim_id DESC LIMIT ?""",
+                (needed, *parameters, limit),
+            )
+            .fetchall()
+        )
+    selected: dict[str, dict] = {}
+    for hits in range(len(present), needed - 1, -1):
+        remaining = limit - len(selected)
+        level = {}
+        for subset in combinations(present, hits):
+            for row in _simple_claim_subset(tx, context, terms, subset, selected, remaining):
+                level[row["claim_id"]] = dict(row, hits=hits)
+        ranked = sorted(
+            level.values(), key=lambda row: (row["covered"], row["recorded"], row["claim_id"]), reverse=True
+        )
+        selected.update((row["claim_id"], row) for row in ranked[:remaining])
+        if len(selected) == limit:
+            break
+    return list(selected.values())
+
+
+def _claim_rows(tx, context: SearchContext, needles: tuple[str, ...], limit: int = -1) -> list:
+    """Complete undecidable candidates plus an exact final-rank prefix of certified heads.
+
+    The certificate is atomically projected and conservatively invalidated by
+    SQLite truth edits. It only permits pruning heads whose final score is
+    completely known; every other version still uses the ordinary selector.
+    """
+    present = _claim_term_counts(tx._check(), needles)
+    terms = tuple(term for term, _ in present)
+    rows = _complex_claim_rows(tx, context, needles)
+    if present and context.mode != "as_of":
+        rows.extend(
+            _subject_claim_rows(tx, context, terms, simple=True)
+            if limit < 0
+            else _simple_claim_rows(tx, context, present, 1 if len(needles) == 1 else 2, limit)
+        )
+    return sorted(rows, key=lambda row: (-row["hits"], row["claim_id"]))
 
 
 def _claim_version_for(versions, context: SearchContext, instant: str):
@@ -226,6 +422,7 @@ class CollectionPage:
     next_cursor: PageCursor | None
     coverage: str
     memory_epoch: int
+    gaps: tuple[str, ...] = ()
 
 
 #: How long after a person's message its turn's replies may come, and how many are followed.
@@ -274,6 +471,21 @@ def _coarse_to_fine(items: list) -> list:
     would take a day's morning and leave its afternoon out."""
     bits = max(1, (len(items) - 1).bit_length())
     return [items[index] for index in sorted(range(len(items)), key=lambda index: int(f"{index:0{bits}b}"[::-1], 2))]
+
+
+def _scoped_day_selection(days, limit):
+    """Distribute candidate slots across days, spreading each day's retained messages."""
+    picks = []
+    for tiers, share in zip(days, _shares([sum(map(len, tiers)) for tiers in days], limit)):
+        day = []
+        for tier in tiers:
+            room = share - len(day)
+            if room <= 0:
+                break
+            step = max(1.0, len(tier) / room)
+            day.extend(_coarse_to_fine([tier[int(position * step)] for position in range(min(room, len(tier)))]))
+        picks.append(day)
+    return [day[turn] for turn in range(max(map(len, picks), default=0)) for day in picks if turn < len(day)]
 
 
 class RetrievalStorage(RetrievalHydration):
@@ -331,7 +543,8 @@ class RetrievalStorage(RetrievalHydration):
         credits = tuple(value for pair in synonyms.items() for value in pair)
         scopes = tuple(sorted(context.trusted_context.allowed_scope_ids))
         term_marks, scope_marks = _marks((*terms, *synonyms)), _marks(scopes)
-        identified = f"MAX(t.term IN ({_marks(identifiers)})) DESC," if identifiers else ""
+        identified = f",MAX(t.term IN ({_marks(identifiers)})) AS identified" if identifiers else ""
+        identifier_order = "m.identified DESC," if identifiers else ""
         current = (
             ""
             if context.mode in {"history", "as_of"}
@@ -352,32 +565,35 @@ class RetrievalStorage(RetrievalHydration):
             params.append(context.as_of)
         said = " AND (" + " OR ".join("(e.occurred_at>=? AND e.occurred_at<?)" for _ in within) + ")" if within else ""
         params.extend(bound for window in within for bound in window)
-        # The statement starts from the query's terms.  A store keeps no planner statistics, so SQLite weighs the terms
-        # against the scopes by rule of thumb, and with a long enough query it started from the scope index instead:
-        # every event of the audience read one by one, 21 s for a Telegram message of 72 characters on the shared
-        # store, and the recall empty at its deadline.  ``+`` keeps the scope filter from choosing the index.
+        # Aggregate integer postings before reading source metadata, so a long
+        # source holding several query terms is loaded only once. Every audience,
+        # version and time fence still precedes ordering and LIMIT. CROSS JOIN
+        # keeps the term dictionary first without depending on planner statistics.
         rows = (
             tx._check()
             .execute(
-                f"""SELECT e.event_id,e.source_revision,e.source_id,COUNT(DISTINCT {credit}) AS hits,
-                       GROUP_CONCAT(DISTINCT hex({credit})) AS matched_term_hexes
-                FROM {lexical_index.JOIN}
-                WHERE t.term IN ({term_marks}) AND +e.scope_id IN ({scope_marks})
+                f"""WITH matched AS MATERIALIZED (
+                    SELECT p.source_id,COUNT(DISTINCT {credit}) AS hits,
+                           GROUP_CONCAT(DISTINCT hex({credit})) AS matched_term_hexes{identified}
+                    FROM lexical_terms t CROSS JOIN lexical_postings p ON p.term_id=t.term_id
+                    WHERE t.term IN ({term_marks}) GROUP BY p.source_id
+                ) SELECT e.event_id,e.source_revision,e.source_id,m.hits,m.matched_term_hexes
+                FROM matched m CROSS JOIN source_events e ON e.source_id=m.source_id
+                WHERE +e.scope_id IN ({scope_marks})
                   AND e.read_blocked=0 {automatic} AND (e.project_id IS NULL OR e.project_id=?)
                   AND (e.branch_id IS NULL OR e.branch_id=?)
                   AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='event'
                       AND b.object_ref=e.event_id AND (b.read_blocked=1 {automatic_block}))
                   {current}{as_of}{said}
-                GROUP BY e.event_id,e.source_revision
                 ORDER BY CASE
                     WHEN e.role='tool' AND (
                         e.origin='memory_reinjection'
                         OR (e.origin='imported' AND e.source_original_origin='memory_reinjection')
                     ) THEN 1 ELSE 0
                 END,
-                {identified}hits DESC,e.occurred_at DESC,e.event_id,e.source_revision DESC
+                {identifier_order}hits DESC,e.occurred_at DESC,e.event_id,e.source_revision DESC
                 LIMIT ?""",
-                (*credits, *credits, *params, *identifiers, limit),
+                (*credits, *credits, *identifiers, *params, limit),
             )
             .fetchall()
         )
@@ -405,7 +621,7 @@ class RetrievalStorage(RetrievalHydration):
         """Sources said within the time the question names (``context.time``) that hold enough of what else it asks
         (``shares_enough``): the lexical statement for the question, on the words of what else it asks alone, kept to
         that time.  It searches none of the terms the plain statement leaves out, so it groups no posting that one
-        would not, and its windows drop the others before they are grouped.
+        would not. Its windows filter sources before candidate ordering and truncation.
 
         Weighed against the whole question, a note said on the day asked about is short of the words that name the
         day, which it never repeats ("September", "11"), and below the notes on its subject that hold more words; on
@@ -444,36 +660,18 @@ class RetrievalStorage(RetrievalHydration):
         terms = frozenset(meaningful_query_terms(context.query))
         if not terms or limit <= 0:
             return ()
-        trusted = context.trusted_context
-        scopes = tuple(sorted(trusted.allowed_scope_ids))
-        needles = tuple(sorted(terms, key=lambda term: (-len(term), term))[:_CLAIM_PREFILTER_TERMS])
-        matched = " + ".join("(instr(statement,?)>0)" for _ in needles)
-        automatic = "AND c.suppressed=0" if context.mode == "auto" else ""
-        automatic_block = "OR b.suppressed=1" if context.mode == "auto" else ""
-        rows = (
-            tx._check()
-            .execute(
-                f"""WITH heads AS MATERIALIZED (
-                    SELECT c.claim_id AS claim_id,
-                           lower(c.subject || ' ' || c.predicate || ' ' ||
-                                 coalesce(json_extract(v.payload_json,'$.value_text'),'')) AS statement
-                    FROM claims c JOIN claim_versions v ON v.claim_id=c.claim_id AND v.revision=c.current_revision
-                    WHERE c.scope_id IN ({_marks(scopes)}) AND c.read_blocked=0 {automatic} AND c.kind!='alias'
-                      AND (c.project_id IS NULL OR c.project_id=?) AND (c.branch_id IS NULL OR c.branch_id=?)
-                      AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='claim'
-                          AND b.object_ref=c.claim_id AND (b.read_blocked=1 {automatic_block})))
-                SELECT claim_id FROM (SELECT claim_id, {matched} AS hits FROM heads)
-                WHERE hits>0 ORDER BY hits DESC, claim_id LIMIT ?""",
-                (*scopes, trusted.project_id, trusted.branch_id, *needles, _CLAIM_SCAN_LIMIT),
-            )
-            .fetchall()
-        )
+        needles = tuple(sorted(terms))
+        rows = _claim_rows(tx, context, needles, limit)
         instant = context.as_of or context.now
         scored = []
         prefetch = getattr(tx.claims, "prefetch_versions", None)
         if prefetch is not None:
             prefetch(row["claim_id"] for row in rows)
         for row in rows:
+            # Scoring is Python work after the SQL statement. Its interrupt
+            # handler cannot stop it, so return the already scored prefix.
+            if self.clock.monotonic() >= context.deadline:
+                break
             chosen = _claim_version_for(tx.claims.versions(row["claim_id"]), context, instant)
             if chosen is None or chosen.payload.get("kind") == "alias":
                 continue
@@ -530,6 +728,7 @@ class RetrievalStorage(RetrievalHydration):
         The person's own messages and the replies they were shown, in the question's audience, from the named days
         (and entries), spread evenly across each day so it is seen whole rather than its last hour: the person's
         messages of a length a packet can deliver beside others first, then their longer ones, then the replies.
+        Longer replies follow the shorter candidates; the packet budget still decides what fits.
         A short message that says nothing ("继续", "好的，继续吧") is not offered.  The days share the slots evenly,
         a day with fewer messages handing the rest on, and take turns in the order offered, so the first-named day
         does not fill the packet.  Only lengths are read, and the text of short messages.
@@ -540,6 +739,7 @@ class RetrievalStorage(RetrievalHydration):
         trusted = context.trusted_context
         scopes = tuple(sorted(trusted.allowed_scope_ids))
         entries = f"AND e.entry_id IN ({_marks(scope.entry_ids)})" if scope.entry_ids else ""
+        sessions = f"AND e.session_id IN ({_marks(scope.session_ids)})" if scope.session_ids else ""
         current = (
             ""
             if context.mode in {"history", "as_of"}
@@ -555,7 +755,7 @@ class RetrievalStorage(RetrievalHydration):
                 .execute(
                     f"""SELECT e.event_id,e.source_revision,e.role,length(e.content) AS size,
                            CASE WHEN length(e.content)<=? THEN e.content END AS short FROM source_events e
-                    WHERE e.scope_id IN ({_marks(scopes)}) AND e.occurred_at>=? AND e.occurred_at<? {entries}
+                    WHERE e.scope_id IN ({_marks(scopes)}) AND e.occurred_at>=? AND e.occurred_at<? {entries} {sessions}
                       AND e.role IN ('user','assistant')
                       AND (e.origin IN ('human_direct','assistant_visible') OR (e.origin='imported'
                            AND e.import_provenance_sha256 IS NOT NULL
@@ -572,6 +772,7 @@ class RetrievalStorage(RetrievalHydration):
                         start,
                         end,
                         *scope.entry_ids,
+                        *scope.session_ids,
                         trusted.project_id,
                         trusted.branch_id,
                         *((context.as_of,) if as_of else ()),
@@ -580,35 +781,32 @@ class RetrievalStorage(RetrievalHydration):
                 )
                 .fetchall()
             )
-            rows = [
-                row
-                for row in rows
-                if source_key(row["event_id"], row["source_revision"]) not in excluded
-                and (row["short"] is None or says_something(row["short"]))
-            ]
-            # A message longer than an automatic packet can hold beside others is left out of it whole (the compiler
-            # never slices content), and on the coding clients' days most messages are: offered first, they would be
-            # dropped and other days' short items delivered instead.
+            rows = [row for row in rows if source_key(row["event_id"], row["source_revision"]) not in excluded]
+            rows = summarized_rows(tx, context, rows, limit=limit)
+            rows = [row for row in rows if row["short"] is None or says_something(row["short"])]
+            # Longer messages follow shorter candidates because the compiler
+            # cannot slice them to fit an automatic packet.
             days.append(
                 [
+                    [row for row in rows if row["role"] == "summary"],
                     [row for row in rows if row["role"] == "user" and row["size"] <= _SCOPED_ITEM_CHARS],
                     [row for row in rows if row["role"] == "user" and row["size"] > _SCOPED_ITEM_CHARS],
                     [row for row in rows if row["role"] == "assistant" and row["size"] <= _SCOPED_ITEM_CHARS],
+                    [row for row in rows if row["role"] == "assistant" and row["size"] > _SCOPED_ITEM_CHARS],
                 ]
             )
-        picks = []
-        for tiers, share in zip(days, _shares([sum(map(len, tiers)) for tiers in days], limit)):
-            day: list = []
-            for tier in tiers:
-                room = share - len(day)
-                if room <= 0:
-                    break
-                step = max(1.0, len(tier) / room)
-                day.extend(_coarse_to_fine([tier[int(position * step)] for position in range(min(room, len(tier)))]))
-            picks.append(day)
-        chosen = [day[turn] for turn in range(max(map(len, picks), default=0)) for day in picks if turn < len(day)]
+        # Long replies cannot reserve another day's short-message slots. They
+        # stay candidates when the other tiers leave room.
+        chosen = _scoped_day_selection([tiers[:-1] for tiers in days], limit)
+        chosen += _scoped_day_selection([[tiers[-1]] for tiers in days], limit - len(chosen))
         return tuple(
-            CandidateRef("event", row["event_id"], row["source_revision"], "scoped", rank=index)
+            CandidateRef(
+                row["candidate_kind"] if "candidate_kind" in row.keys() else "event",
+                row["event_id"],
+                row["source_revision"],
+                "scoped",
+                rank=index,
+            )
             for index, row in enumerate(chosen[:limit], 1)
         )
 

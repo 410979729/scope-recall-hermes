@@ -15,10 +15,20 @@ import pytest
 from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core import storage as storage_module
+from scope_recall.core.source_records import SourceWrite
+from scope_recall.core.source_storage import source_reference
 from scope_recall.core.storage import SQLiteStorage, Transaction
 from scope_recall.core.visibility import allowed
 from test_capture_row_crossings import Crossings
-from test_claims import Clock, accept, app, capture, draft, initial, revise_request  # noqa: F401  (fixtures)
+from test_claims import (  # noqa: F401  (fixtures)
+    Clock,
+    accept,
+    app,
+    capture,
+    draft,
+    initial,
+    revise_request,
+)
 from test_shared_store import NOW, put, shared, shared_context  # noqa: F401  (fixture)
 from v11_support import context, recall_request
 
@@ -31,18 +41,23 @@ def _sources(core, ctx, count: int):
     return [capture(core, ctx, f"TEST 第{index}条证据 ident{index:04d}。") for index in range(count)]
 
 
+def _capture_part(core, ctx, text, *, key, **changes):
+    capture(core, ctx, text, key=key, **changes)
+    return SourceWrite("inserted", source_reference(ctx.binding.installation_id, key), 1)
+
+
 def _shapes(core, ctx):
     """A plain source, a part of a message whose other part never came, a part of a whole one, and a version a newer
     one replaced."""
     plain = capture(core, ctx, "TEST 普通的一条。")
-    part = capture(
+    part = _capture_part(
         core,
         ctx,
         "TEST 只有前一半",
         key="TEST-part1",
         segment=dict(group_key="TEST-full-source", index=0, total=2, truncated=False),
     )
-    whole = capture(
+    whole = _capture_part(
         core,
         ctx,
         "TEST 完整的前一半",
@@ -64,7 +79,8 @@ def _shapes(core, ctx):
 def test_loaded_together_a_source_reads_exactly_as_loaded_alone(app):
     core, ctx = app
     shapes = _shapes(core, ctx)
-    assert "source_segments_incomplete" in shapes[1].capture_gaps
+    assert core.source(ctx, shapes[1].ref, 1) is None
+    assert core.inspect_object(ctx, shapes[1].ref, 1).value["state"] == "pending_review"
     with core.storage.read(ctx) as tx:
         assert "source_segments_incomplete" not in tx.source(shapes[2].ref, shapes[2].revision).capture_gaps
     with core.storage.read(ctx) as alone:
@@ -86,7 +102,7 @@ def test_loaded_together_a_source_reads_exactly_as_loaded_alone(app):
                 got.append(True)
             except ContractError as exc:
                 got.append(exc.code)
-    assert got == heads == [True, True, True, "VERSION_CONFLICT"]
+    assert got == heads == [True, "SOURCE_MISSING", True, "VERSION_CONFLICT"]
 
 
 def test_a_prefetched_source_is_read_again_without_a_statement(app, monkeypatch):
@@ -326,8 +342,7 @@ def _said_again(tmp_path, slots: int, *, replaced: bool):
 
 
 def test_a_recall_over_replaced_messages_does_not_grow_with_them(tmp_path, monkeypatch):
-    """Each replaced message read what replaced it on its own: the evidence of the version holding instead, then each
-    of its sources, a statement each, in every round and pass that hydrated it."""
+    """Extra current-read SQL stays bounded as more obsolete originals enter the same candidate pool."""
     stores = {
         (slots, replaced): _said_again(tmp_path, slots, replaced=replaced)
         for slots in (2, 8)
@@ -337,7 +352,7 @@ def test_a_recall_over_replaced_messages_does_not_grow_with_them(tmp_path, monke
     for slots in (2, 8):
         core, ctx = stores[slots, True]
         items = core.recall(ctx, request, deadline_seconds=30).items
-        assert sum(item.kind == "event" and item.temporal_status == "historical" for item in items) == slots
+        assert not any(item.kind == "event" and item.temporal_status == "historical" for item in items)
     crossings = Crossings(monkeypatch)
 
     def statements(slots: int, replaced: bool) -> int:
@@ -373,7 +388,7 @@ def test_a_recall_over_replaced_messages_answers_alike_whether_or_not_it_keeps_w
         ]
 
     kept = packets()
-    assert all(any(item["temporal_status"] == "historical" for item in packet["items"]) for packet in kept)
+    assert all("superseded_evidence_withheld:4" in packet["gaps"] for packet in kept)
     monkeypatch.setattr(Transaction, "remember", lambda self, key, value, size=0: None)
     monkeypatch.setattr(Transaction, "prefetch_sources", lambda self, pairs: None)
     assert packets() == kept
@@ -411,7 +426,7 @@ def test_a_source_blocked_from_reading_stays_out_of_reach_loaded_together(app):
 
 def test_a_part_whose_other_part_was_blocked_reads_incomplete_loaded_together(app):
     core, ctx = app
-    first = capture(
+    first = _capture_part(
         core,
         ctx,
         "TEST 完整的前一半",

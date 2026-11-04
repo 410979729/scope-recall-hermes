@@ -7,19 +7,21 @@ entry's grants in the store's manifest.
 
 from __future__ import annotations
 
-import hashlib
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
-from typing import Mapping
 
-from scope_recall.adapters.hermes.audiences import LOCAL_USER_ID
-from scope_recall.adapters.hermes.identity import host_scope_payload, principal_ref
+from scope_recall.adapters.audiences import LOCAL_USER_ID
+from scope_recall.adapters.host_identity import context_ref as _opaque_context
+from scope_recall.adapters.host_identity import entry_owner, host_scope_payload, principal_ref
 from scope_recall.contracts import ContractError, Origin, TrustedContext, TrustedSourcePrincipal
 from scope_recall.core.private import normalize_project_path
 from scope_recall.runtime.remote_clock import stored_session_id as session_identity
 
 from .config import CodexInstallationConfig, SharedClientConfig
+from .project import registered_worktree
 
 
 @dataclass(frozen=True)
@@ -38,11 +40,6 @@ class CodexRuntimeAudience:
 
 def _norm(path: Path) -> str:
     return os.path.normcase(os.path.abspath(os.fspath(path.resolve())))
-
-
-def _opaque_context(prefix: str, *parts: str) -> str:
-    payload = "\x1f".join(parts).encode("utf-8")
-    return f"context:{prefix}:v1:{hashlib.sha256(payload).hexdigest()}"
 
 
 def _shared_principal(config: SharedClientConfig, origin: Origin) -> TrustedSourcePrincipal | None:
@@ -113,6 +110,10 @@ def resolve_runtime_audience(config: CodexInstallationConfig | SharedClientConfi
                 matched_root = root
                 matched_scope = scope_id
     if not matched_root:
+        linked = registered_worktree(resolved, config.project_roots)
+        if linked is not None:
+            matched_root, matched_scope = linked
+    if not matched_root:
         return CodexRuntimeAudience(frozenset(), None, None, ("capability_gap:unrecognized_project_root",))
 
     allowed: set[str] = {matched_scope, config.audience_scopes["shared"]}
@@ -172,6 +173,7 @@ def trusted_context(
         task_anchor=anchor,
         source_principal=_source_principal(config, actor_origin),
         entry_id=config.entry_id if shared else None,
+        owner_resolver=partial(entry_owner, config.to_binding()) if shared else None,
         project_root=project_root_of(project_root, resolve_links=False)
         or project_root_of(audience.matched_project_root),
     )

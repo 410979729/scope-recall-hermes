@@ -15,6 +15,14 @@ from tests.contract.test_recall_dating_and_order import _say
 from tests.v11_support import recall_request
 
 
+def test_explicit_recall_never_sends_inline_private_text_to_vector_port(tmp_path):
+    core, ctx, vectors = _app(tmp_path)
+    _capture(core, ctx, "TEST-seed-private-query", "TEST visible topic.")
+    recall(core, ctx, query="TEST visible <private>TEST secret sentinel</private> topic", mode="current")
+    assert vectors.calls
+    assert "TEST secret sentinel" not in vectors.calls[0]["query"]
+
+
 def test_one_common_identifier_is_below_floor_but_explicit_recall_keeps_it(tmp_path):
     core, ctx, _ = _app(tmp_path)
     source = _capture(core, ctx, "one-word", "2a invoice archive")

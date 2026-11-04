@@ -735,7 +735,7 @@ def test_r1_candidate_1107_migration_preserves_work_ids_leases_and_error_history
         original(connection)
         raise RuntimeError("TEST migration rollback")
 
-    monkeypatch.setattr(storage_module, "upgrade_1107", fail_after_upgrade)
+    monkeypatch.setitem(storage_module.SCHEMA_MIGRATIONS, 1107, fail_after_upgrade)
     with pytest.raises(RuntimeError, match="migration rollback"):
         core.initialize()
     with sqlite3.connect(core.storage.path) as conn:
@@ -749,7 +749,7 @@ def test_r1_candidate_1107_migration_preserves_work_ids_leases_and_error_history
             "TEST-owner",
             "held",
         )
-    monkeypatch.setattr(storage_module, "upgrade_1107", original)
+    monkeypatch.setitem(storage_module.SCHEMA_MIGRATIONS, 1107, original)
     status = core.initialize()
     with sqlite3.connect(core.storage.path) as conn:
         assert status.schema_version == SCHEMA_VERSION
@@ -1018,7 +1018,7 @@ def _long_evidence_messages(core, ctx, content):
         "r1-candidate-v1",
     )
     messages = candidate_evaluation_messages(snapshot_, (long_source,))
-    record = json.loads(messages[2]["content"])["sources"][0]
+    record = json.loads(messages[1]["content"])["sources"][0]
     return record, long_source
 
 
@@ -1057,7 +1057,7 @@ def test_a_long_source_without_the_value_sends_its_head_and_a_short_one_is_whole
         "new_evidence",
         "r1-candidate-v1",
     )
-    whole = json.loads(candidate_evaluation_messages(snapshot_, (short_source,))[2]["content"])["sources"][0]
+    whole = json.loads(candidate_evaluation_messages(snapshot_, (short_source,))[1]["content"])["sources"][0]
     assert whole["content"] == short_source.event["content"] and "source_window" not in whole
 
 
@@ -1212,7 +1212,7 @@ def test_a_verdict_citing_a_source_it_was_not_given_is_still_refused(app):
             row[0]
             for row in conn.execute("SELECT error_field FROM work_error_details WHERE stage='candidate_evaluation'")
         }
-    assert fields == {"evidence_undeclared_source"}, fields
+    assert fields == {"claim_proposals[0].evidence_spans[0].source_ref"}, fields
 
 
 def test_evidence_that_cannot_pose_a_new_question_does_not_wake_a_candidate(app):
@@ -1290,3 +1290,56 @@ def test_a_pass_returns_a_candidate_left_pending_with_nothing_to_ask_to_waiting(
     assert _new_first_hand_evidence(core, ctx, "entity-blue property-blue 今天又讨论了一次。", "TEST-rc10/after") == 1
     core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
     assert evaluator.calls == 1
+
+
+def test_candidate_dispatch_returns_attempt_when_entry_pauses(app, monkeypatch):
+    from scope_recall.core import private
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    core, ctx = app
+    _candidate(core, ctx)
+    _finish_source_work(core)
+    owner = MemoryManagement(core, InstallationMaintenance(ctx))
+
+    def pause_during_preparation(*args, **kwargs):
+        owner.set_entry_state("local", "paused", actor="TEST-owner")
+        return False
+
+    monkeypatch.setattr(private, "outbound_blocked", pause_during_preparation)
+    evaluator = Evaluator()
+    core.drain_worker(ctx, max_items=1, remaining_seconds=10, consolidation=evaluator)
+    _lifecycle, evaluations, work = _candidate_rows(core)
+    assert evaluator.calls == 0
+    assert evaluations[0]["model_attempted_at"] is None
+    assert work[0]["state"] == "pending" and work[0]["last_error_code"] == "entry_paused"
+
+
+def test_candidate_pause_during_evaluation_remains_retryable(app):
+    from scope_recall.core.management import MemoryManagement
+    from scope_recall.core.restore import InstallationMaintenance
+
+    core, ctx = app
+    _candidate(core, ctx)
+    _finish_source_work(core)
+    owner = MemoryManagement(core, InstallationMaintenance(ctx))
+
+    def pause_and_resume():
+        owner.set_entry_state("local", "paused", actor="TEST-owner")
+        owner.set_entry_state("local", "normal", actor="TEST-owner")
+
+    evaluator = Evaluator(callback=pause_and_resume)
+    core.drain_worker(ctx, max_items=1, remaining_seconds=10, consolidation=evaluator)
+    lifecycle, evaluations, work = _candidate_rows(core)
+    assert work[0]["state"] == "pending" and work[0]["last_error_code"] == "entry_paused"
+    assert evaluations[0]["model_attempted_at"] is None
+    assert lifecycle[0]["processing_state"] == "pending_evaluation"
+
+    from datetime import datetime, timedelta
+
+    moment = datetime.fromisoformat(core.clock.now.replace("Z", "+00:00")) + timedelta(seconds=61)
+    core.clock.now = moment.isoformat().replace("+00:00", "Z")
+    evaluator.callback = None
+    core.drain_worker(ctx, max_items=1, remaining_seconds=10, consolidation=evaluator)
+    assert evaluator.calls == 2
+    assert _candidate_rows(core)[2][0]["state"] == "done"

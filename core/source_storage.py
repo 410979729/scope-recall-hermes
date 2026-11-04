@@ -14,6 +14,7 @@ from ..contracts import (
     import_source_fingerprint,
 )
 from . import lexical_index
+from .adoption_storage import invalidate_adoptions
 from .delete_storage import canonical, group_digest, purged_group_key
 from .events import (
     indexed_terms,
@@ -24,8 +25,10 @@ from .events import (
     withheld_tool_output,
 )
 from .inbox_rules import REKEY_MARKER, deleted_forms, deleted_text, holds_events, waiting
+from .injection_guard import notice
+from .secret_patterns import SECRET_RULES_VERSION, secret_structure_pattern_names
 from .source_records import PROJECT_IDENTITY_KEY, SourceWrite, StoredSource
-from .visibility import allowed
+from .visibility import allowed, deletion_allows
 
 
 def source_reference(installation_id: str, key: str) -> str:
@@ -260,7 +263,7 @@ class Sources:
         return [
             ref
             for ref in (self._source_ref(event["source_event_key"]) for event in events)
-            if not allowed(self._tx, "event", ref)
+            if not deletion_allows(self._tx, "event", ref)
         ]
 
     @staticmethod
@@ -357,14 +360,11 @@ class Sources:
             raise ContractError("IDENTITY_UNBOUND", "entry_required")
         if not shared and self._tx.context.entry_id is not None:
             raise ContractError("IDENTITY_UNBOUND", "entry_unexpected")
-        # The same statement records the entry's activity and proves it attached:
-        # an entry the store never registered has no row to update.
+        # Validate attachment before accepting input. A replay must not update
+        # entry activity or any other durable state.
         if (
             shared
-            and conn.execute(
-                "UPDATE entries SET last_seen=? WHERE entry_id=?", (persisted_at, self._tx.context.entry_id)
-            ).rowcount
-            != 1
+            and conn.execute("SELECT 1 FROM entries WHERE entry_id=?", (self._tx.context.entry_id,)).fetchone() is None
         ):
             raise ContractError("IDENTITY_UNBOUND", "entry_unregistered")
         event = self._admitted_source(event)
@@ -375,7 +375,7 @@ class Sources:
 
         # A message under a deleted key has been compared with the deleted one before its parts are stored
         # (``refuse_under_a_deleted_key``); a hidden key refuses whatever reaches it here.
-        if not allowed(self._tx, "event", ref):
+        if not deletion_allows(self._tx, "event", ref):
             raise ContractError("ACCESS_DENIED", "source_unavailable")
         revision = event["source_revision"]
         fingerprint_input = {k: v for k, v in event.items() if k != "recorded_at"}
@@ -398,6 +398,8 @@ class Sources:
         group_policy = self._check_source_group(conn, group_key, scope_id, revision, segment_total)
         if self._existing_revision(conn, ref, scope_id, revision, fingerprint):
             return SourceWrite("duplicate", ref, revision)
+        if shared:
+            conn.execute("UPDATE entries SET last_seen=? WHERE entry_id=?", (persisted_at, self._tx.context.entry_id))
         columns = (
             "source_event_key",
             "origin",
@@ -415,14 +417,15 @@ class Sources:
         }
         if self._tx.context.project_identity != "local":
             extras[PROJECT_IDENTITY_KEY] = self._tx.context.project_identity
+        body_digest = hashlib.sha256(event["content"].encode("utf-8")).hexdigest()
         conn.execute(
             """INSERT INTO source_events(event_id,source_revision,scope_id,session_id,project_id,branch_id,
             source_event_key,origin,role,content,occurred_at,recorded_at,time_precision,capture_state,
             content_sha256,event_sha256,persisted_at,source_original_origin,dataset_id,extra_json,
             source_group_key,segment_index,segment_total,capture_gaps_json,import_provenance_sha256,entry_id,source_id,
-            project_root)
+             project_root,secret_scan_version,secret_scan_names,secret_scan_input_sha256)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-            (SELECT COALESCE(MAX(source_id),0)+1 FROM source_events),?)""",
+            (SELECT COALESCE(MAX(source_id),0)+1 FROM source_events),?,?,?,?)""",
             (
                 ref,
                 revision,
@@ -431,7 +434,7 @@ class Sources:
                 self._tx.context.project_id,
                 self._tx.context.branch_id,
                 *(event[k] for k in columns),
-                hashlib.sha256(event["content"].encode("utf-8")).hexdigest(),
+                body_digest,
                 fingerprint,
                 persisted_at,
                 event.get("source_original_origin"),
@@ -444,6 +447,11 @@ class Sources:
                 provenance_hash,
                 self._tx.context.entry_id or "local",
                 self._tx.context.project_root,
+                # Admission has just revalidated these exact, already masked
+                # bytes. A secret would change or refuse the prepared event.
+                SECRET_RULES_VERSION,
+                "[]",
+                body_digest,
             ),
         )
         if (
@@ -455,6 +463,7 @@ class Sources:
                 "UPDATE source_events SET suppressed=1 WHERE event_id=? AND source_revision=?", (ref, revision)
             )
         conn.execute("UPDATE instance_meta SET memory_epoch=memory_epoch+1 WHERE singleton=1")
+        invalidate_adoptions(conn, ref, revision)
         return SourceWrite("inserted", ref, revision)
 
     def index_source(self, ref: str, revision: int) -> None:
@@ -474,6 +483,8 @@ class Sources:
         conn = self._tx._check()
         source = self._tx.source(ref, revision)
         if source is None:
+            if notice(self._tx, ref, revision) is not None:
+                return "not_indexed", "not_scheduled"
             raise ContractError("SOURCE_MISSING")
         actual = lexical_index.terms_of(conn, lexical_index.source_id(conn, ref, revision))
         lexical = "ready" if actual == indexed_terms(source.event) else "not_ready"
@@ -671,3 +682,93 @@ class Sources:
             VALUES (?,?,?,?,?,?,?) ON CONFLICT(work_type,subject_ref,subject_revision) DO NOTHING""",
             (work_type, ref, revision, source.scope_id, source.project_id, source.branch_id, available_at),
         )
+
+
+def backfill_secret_scans(tx, *, now, limit=8, remaining=lambda: 1.0):
+    """Fill a bounded page of body verdicts in the existing maintenance transaction.
+
+    Each authority partition and scanner version owns its cursor. New captures
+    already have verdicts; old bodies never block upgrading the stored format.
+    Return the visited ID count; out-of-scope bodies are never loaded.
+    """
+    conn = tx._check(write=True)
+    context = tx.context
+    scopes = json.dumps(sorted(context.allowed_scope_ids))
+    partition = canonical([scopes, context.project_id, context.branch_id, SECRET_RULES_VERSION])
+    cursor_name = "secret_body:" + hashlib.sha256(partition.encode("utf-8")).hexdigest()
+    cursor = conn.execute(
+        "SELECT position_ref,completed FROM candidate_scan_cursors WHERE cursor_name=?", (cursor_name,)
+    ).fetchone()
+    if cursor is not None and cursor[1]:
+        return 0
+    position = int(cursor[0] or 0) if cursor is not None else 0
+    # Page before authority filtering: even an empty or sparse partition must
+    # visit only this primary-key page while it holds the writer lease.
+    page = [
+        row[0]
+        for row in conn.execute(
+            "SELECT source_id FROM source_events WHERE source_id>? ORDER BY source_id LIMIT ?", (position, limit)
+        )
+    ]
+    processed, last = _scan_secret_page(tx, page, remaining)
+    position = last if processed else position
+    completed = processed == len(page) and len(page) < limit
+    conn.execute(
+        "INSERT INTO candidate_scan_cursors(cursor_name,position_ref,processed_count,completed,updated_at) "
+        "VALUES (?,?,?,?,?) ON CONFLICT(cursor_name) DO UPDATE SET position_ref=excluded.position_ref,"
+        "processed_count=processed_count+excluded.processed_count,completed=excluded.completed,updated_at=excluded.updated_at",
+        (cursor_name, str(position), processed, int(completed), now),
+    )
+    return processed
+
+
+def _scan_secret_page(tx, source_ids, remaining):
+    """Read only authorized bodies from one global page, scanning at most 256 KiB of UTF-8."""
+    conn = tx._check(write=True)
+    context = tx.context
+    rows = conn.execute(
+        "SELECT e.source_id,e.event_id,e.source_revision,e.secret_scan_version,e.secret_scan_names,"
+        "e.secret_scan_input_sha256,e.content_sha256 FROM json_each(?) page CROSS JOIN source_events e "
+        "ON e.source_id=page.value WHERE e.read_blocked=0 AND e.scope_id IN (SELECT value FROM json_each(?)) "
+        "AND (e.project_id IS NULL OR e.project_id=?) AND (e.branch_id IS NULL OR e.branch_id=?)",
+        (json.dumps(source_ids), json.dumps(sorted(context.allowed_scope_ids)), context.project_id, context.branch_id),
+    )
+    visible = {row[0]: tuple(row[1:]) for row in rows}
+    processed = position = used = 0
+    for source_id in source_ids:
+        if remaining() <= 0.02:
+            break
+        row = visible.get(source_id)
+        if (
+            row is not None
+            and (row[2] != SECRET_RULES_VERSION or row[3] is None or row[4] != row[5])
+            and allowed(tx, "event", row[0])
+        ):
+            # Resolve the same live fences as tx.source before even inspecting
+            # body length. A skipped identity still advances the global page.
+            loaded = conn.execute(
+                "SELECT content FROM source_events WHERE source_id=? AND length(CAST(content AS BLOB))<=262144",
+                (source_id,),
+            ).fetchone()
+            encoded = loaded[0].encode("utf-8") if loaded is not None else b""
+            size = len(encoded)
+            # One oversized UTF-16 original must not pin every later page.
+            # It keeps no receipt and remains subject to live release scanning.
+            if loaded is not None and size <= 262144:
+                if used + size > 262144:
+                    break
+                conn.execute(
+                    "UPDATE source_events SET secret_scan_version=?,secret_scan_names=?,secret_scan_input_sha256=? "
+                    "WHERE event_id=? AND source_revision=?",
+                    (
+                        SECRET_RULES_VERSION,
+                        canonical(secret_structure_pattern_names(loaded[0])),
+                        hashlib.sha256(encoded).hexdigest(),
+                        row[0],
+                        row[1],
+                    ),
+                )
+                used += size
+        position = source_id
+        processed += 1
+    return processed, position

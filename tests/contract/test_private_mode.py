@@ -53,6 +53,18 @@ def _count(core, ctx, table):
         return tx._check().execute(f"SELECT count(*) FROM {table}").fetchone()[0]
 
 
+def test_doctor_reports_active_private_session_metadata(app):
+    from scope_recall.maintenance.doctor_report import DoctorReport
+    from scope_recall.maintenance.doctor_store import check_storage
+
+    core, ctx, clock, owner = app
+    clock.now = datetime.now(UTC) - timedelta(seconds=2)
+    owner.private_on(target="session", session=ctx.session_id)
+    report = DoctorReport(host="codex", status="ok")
+    assert check_storage(report, ctx.binding, ctx.binding.data_directory)
+    assert any(rule["session_id"] == ctx.session_id and rule["mode"] == "full" for rule in report.private_rules)
+
+
 def test_the_table_holds_interval_metadata_and_nothing_spoken(app):
     core, ctx, _clock, _owner = app
     with closing(sqlite3.connect(core.storage.path)) as conn:
@@ -276,13 +288,17 @@ def test_previous_schema_migrates_to_private_intervals_without_losing_sources(ap
         core.record_event(ctx, _event(key=f"TEST-kept/{index}", content=f"TEST memory {index}"), scope_id="TEST-scope")
     downgrade_store(core.storage.path, 1111)
     with closing(sqlite3.connect(core.storage.path)) as conn:
-        before = conn.execute("SELECT * FROM source_events ORDER BY event_id,source_revision").fetchall()
+        columns = ",".join(row[1] for row in conn.execute("PRAGMA table_info(source_events)"))
+        before = conn.execute(f"SELECT {columns} FROM source_events ORDER BY event_id,source_revision").fetchall()
     assert core.initialize().schema_version == SCHEMA_VERSION
     assert core.source(ctx, source.event_refs[0].ref, 1).event["content"] == "TEST private colour is white."
     with closing(sqlite3.connect(core.storage.path)) as conn:
         assert conn.execute("SELECT count(*) FROM private_intervals").fetchone()[0] == 0
-        after = conn.execute("SELECT * FROM source_events ORDER BY event_id,source_revision").fetchall()
-        assert [row[:-1] for row in after] == before
+        after = conn.execute(f"SELECT {columns} FROM source_events ORDER BY event_id,source_revision").fetchall()
+        assert after == before
+        assert (
+            conn.execute("SELECT count(*) FROM source_events WHERE secret_scan_version IS NOT NULL").fetchone()[0] == 0
+        )
 
 
 def test_timed_global_can_be_ended_early_and_preserves_its_history(app):
@@ -336,13 +352,13 @@ def test_failed_private_migration_rolls_back_every_schema_write(app, monkeypatch
     core, ctx, _clock, _owner = app
     captured = core.record_event(ctx, _event(), scope_id="TEST-scope")
     downgrade_store(core.storage.path, 1111)
-    migrate = storage.upgrade_1111
+    migrate = storage.SCHEMA_MIGRATIONS[1111]
 
     def interrupted(connection):
         migrate(connection)
         raise RuntimeError("TEST migration interrupted")
 
-    monkeypatch.setattr(storage, "upgrade_1111", interrupted)
+    monkeypatch.setitem(storage.SCHEMA_MIGRATIONS, 1111, interrupted)
     with pytest.raises(RuntimeError, match="TEST migration interrupted"):
         core.initialize()
     with closing(sqlite3.connect(core.storage.path)) as conn:
@@ -351,7 +367,7 @@ def test_failed_private_migration_rolls_back_every_schema_write(app, monkeypatch
         assert conn.execute("SELECT count(*) FROM sqlite_master WHERE name='private_intervals'").fetchone()[0] == 0
         assert "project_root" not in {row[1] for row in conn.execute("PRAGMA table_info(source_events)")}
         assert conn.execute("SELECT content FROM source_events").fetchone()[0] == _event()["content"]
-    monkeypatch.setattr(storage, "upgrade_1111", migrate)
+    monkeypatch.setitem(storage.SCHEMA_MIGRATIONS, 1111, migrate)
     core.initialize()
     assert core.source(ctx, captured.event_refs[0].ref, 1).event["content"] == _event()["content"]
 

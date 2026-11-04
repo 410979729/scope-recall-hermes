@@ -1,9 +1,15 @@
 """Versioned target DDL. Only explicit initialization/maintenance executes this."""
 
-SCHEMA_VERSION = 1112
-#: Schemas a store may carry and be brought forward from, oldest first.  Any
+from .handoff_schema import STATEMENTS as HANDOFF_STATEMENTS
+from .injection_schema import SEED_STATEMENTS as INJECTION_SEEDS
+from .injection_schema import STATEMENTS as INJECTION_STATEMENTS
+from .injection_schema import install as install_injection_schema
+from .retractions import SAFETY_RETRACTIONS
+
+SCHEMA_VERSION = 1134
+#: Schemas a store may carry and be brought forward from, oldest first. Any
 #: other version is unsupported and never touched.
-UPGRADE_CHAIN = (1105, 1106, 1107, 1108, 1109, 1110, 1111)
+UPGRADE_CHAIN = tuple(range(1105, SCHEMA_VERSION))
 APPLICATION_ID = 0x5352434C
 
 # Session equality narrows capture's episode lookup before the source-version join.
@@ -11,6 +17,12 @@ APPLICATION_ID = 0x5352434C
 SOURCE_SESSION_INDEX = (
     "CREATE INDEX IF NOT EXISTS source_session ON source_events(session_id,scope_id,event_id,source_revision)"
 )
+
+# Profile selection must enumerate profile heads before joining their versions.
+# The predicate matches every profile window, including its audience flags.
+CLAIM_PROFILE_INDEX = """CREATE INDEX claim_profile_heads ON claims
+    (scope_id,project_id,branch_id,claim_id,current_revision,pinned,importance,kind)
+    WHERE kind IN ('preference','constraint') AND read_blocked=0 AND suppressed=0"""
 
 OBJECT_TABLES = {
     "event": ("source_events", "event_id"),
@@ -68,6 +80,17 @@ PRIVATE_INTERVALS_STATEMENT = """CREATE TABLE private_intervals (
     ),
     CHECK(ends_at IS NULL OR starts_at <= ends_at)
 ) STRICT"""
+
+# The latest accepted remote owner command fences replay per entry and session.
+# Its timestamp and random identifier are metadata, never conversation text.
+PRIVATE_COMMAND_FENCES_STATEMENT = """CREATE TABLE private_command_fences (
+    entry_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    command_id TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    PRIMARY KEY(entry_id,session_id)
+) STRICT, WITHOUT ROWID"""
+
 PRIVATE_TARGET_INDEX = (
     "CREATE INDEX private_target ON private_intervals(target_kind,session_id,project_path,ends_at,starts_at)"
 )
@@ -98,6 +121,91 @@ WORK_ITEMS_STATEMENT = """CREATE TABLE work_items (
         UNIQUE(work_type,subject_ref,subject_revision)
     ) STRICT"""
 
+# Cursor writes can change initialization admission without changing SQLite's
+# schema cookie. This generation invalidates structural verdicts, never authority.
+STORAGE_VALIDATION_STATEMENTS = tuple(
+    f"""CREATE TRIGGER storage_cursor_{operation.lower()} AFTER {operation} ON candidate_scan_cursors
+    WHEN {condition} BEGIN
+        UPDATE instance_meta SET storage_revision=storage_revision+1 WHERE singleton=1;
+    END"""
+    for operation, condition in (
+        ("INSERT", "NEW.cursor_name='claim_lexical'"),
+        ("UPDATE", "NEW.cursor_name='claim_lexical' OR OLD.cursor_name='claim_lexical'"),
+        ("DELETE", "OLD.cursor_name='claim_lexical'"),
+    )
+) + (
+    """CREATE TRIGGER source_secret_body_changed AFTER UPDATE OF content,content_sha256 ON source_events
+    WHEN NEW.content IS NOT OLD.content OR NEW.content_sha256 IS NOT OLD.content_sha256 BEGIN
+        UPDATE source_events SET secret_scan_version=NULL,secret_scan_names=NULL,secret_scan_input_sha256=NULL
+        WHERE event_id=NEW.event_id AND source_revision=NEW.source_revision;
+    END""",
+)
+
+
+ADOPTION_STATEMENTS = (
+    """CREATE TABLE adoption_relations (
+        confirmation_ref TEXT NOT NULL, confirmation_revision INTEGER NOT NULL,
+        assistant_ref TEXT NOT NULL, assistant_revision INTEGER NOT NULL,
+        scope_id TEXT NOT NULL REFERENCES instance_scopes(scope_id), project_id TEXT, branch_id TEXT,
+        scope TEXT, selection_json TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('bound','pending_review')),
+        reason TEXT, proposal_sha256 TEXT, claim_ref TEXT, claim_revision INTEGER, recorded_at TEXT NOT NULL,
+        PRIMARY KEY(confirmation_ref,confirmation_revision)
+    ) STRICT, WITHOUT ROWID""",
+    "CREATE INDEX adoption_assistant ON adoption_relations(assistant_ref,assistant_revision)",
+    "CREATE INDEX adoption_claim ON adoption_relations(claim_ref,claim_revision)",
+    "CREATE INDEX adoption_proposal ON adoption_relations(proposal_sha256) WHERE state='bound'",
+)
+
+
+ADOPTION_PROCESSING_STATEMENTS = (
+    """CREATE TABLE adoption_processing (
+        work_id INTEGER PRIMARY KEY REFERENCES work_items(work_id) ON DELETE CASCADE,
+        confirmation_ref TEXT NOT NULL, confirmation_revision INTEGER NOT NULL,
+        assistant_ref TEXT NOT NULL, assistant_revision INTEGER NOT NULL,
+        payload_json TEXT NOT NULL
+    ) STRICT""",
+    "CREATE INDEX adoption_processing_sources ON adoption_processing(assistant_ref,confirmation_ref)",
+)
+
+# The cached manifest holds object versions, never copied source text. The
+# reader rechecks each version through the ordinary authority boundary.
+
+SESSION_BRIEF_STATEMENTS = (
+    SAFETY_RETRACTIONS,
+    """CREATE TABLE session_briefs (
+        scope_id TEXT PRIMARY KEY NOT NULL REFERENCES instance_scopes(scope_id),
+        version INTEGER NOT NULL CHECK(version>=1), signature TEXT NOT NULL,
+        generated_at TEXT NOT NULL, items_json TEXT NOT NULL CHECK(json_valid(items_json))
+    ) STRICT, WITHOUT ROWID""",
+    """CREATE TABLE session_brief_injections (
+        entry_id TEXT NOT NULL, session_id TEXT NOT NULL,
+        object_kind TEXT NOT NULL, object_ref TEXT NOT NULL, revision INTEGER NOT NULL,
+        delivered_at TEXT NOT NULL, delivery_compacted_at TEXT, delivery_compacted_seq INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(entry_id,session_id,object_kind,object_ref,revision)
+    ) STRICT, WITHOUT ROWID""",
+    """CREATE TABLE session_brief_compaction_epochs (
+        entry_id TEXT NOT NULL, session_id TEXT NOT NULL, epoch TEXT NOT NULL,
+        base_seq INTEGER NOT NULL, local_seq INTEGER NOT NULL,
+        PRIMARY KEY(entry_id,session_id,epoch)
+    ) STRICT, WITHOUT ROWID""",
+    """CREATE TABLE session_brief_sessions (
+        entry_id TEXT NOT NULL, session_id TEXT NOT NULL, started INTEGER NOT NULL CHECK(started IN (0,1)),
+        started_at TEXT, started_compacted_at TEXT, compacted_at TEXT,
+        started_compacted_seq INTEGER NOT NULL DEFAULT 0, compacted_seq INTEGER NOT NULL DEFAULT 0,
+        compaction_epoch TEXT, compaction_local_seq INTEGER NOT NULL DEFAULT 0,
+        brief_tokens INTEGER NOT NULL DEFAULT 0, brief_elapsed_ms INTEGER NOT NULL DEFAULT 0,
+        recall_tokens INTEGER NOT NULL DEFAULT 0, recall_elapsed_ms INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(entry_id,session_id)
+    ) STRICT, WITHOUT ROWID""",
+)
+
+INJECTION_DELIVERY_STATEMENTS = (
+    "ALTER TABLE session_brief_injections ADD COLUMN source TEXT NOT NULL DEFAULT 'brief' "
+    "CHECK(source IN ('brief','question'))",
+    "ALTER TABLE session_brief_injections ADD COLUMN notice_marker TEXT",
+)
+
+
 #: Tool-output vectors the retention window expired (``runtime/vector_retention.py``).
 #: The source stays; the row says its vector is gone on purpose, so nothing
 #: counts it as missing or embeds it again.
@@ -116,6 +224,19 @@ ENTRIES_STATEMENT = """CREATE TABLE entries (
         host TEXT NOT NULL CHECK(length(host) BETWEEN 1 AND 32),
         first_seen TEXT NOT NULL, last_seen TEXT NOT NULL
     ) STRICT"""
+ENTRY_CONTROL_STATEMENTS = (
+    """CREATE TABLE entry_controls (
+        entry_id TEXT PRIMARY KEY NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('normal','read-only','paused')),
+        version INTEGER NOT NULL CHECK(version >= 1)
+    ) STRICT""",
+    """CREATE TABLE entry_control_history (
+        entry_id TEXT NOT NULL, version INTEGER NOT NULL,
+        from_state TEXT NOT NULL, to_state TEXT NOT NULL,
+        actor TEXT NOT NULL, account_id TEXT NOT NULL, changed_at TEXT NOT NULL,
+        PRIMARY KEY(entry_id, version)
+    ) STRICT, WITHOUT ROWID""",
+)
 #: The scope authorization a migrated source was admitted under.  The 2.0
 #: conversion wrote the same 600-byte record into every source's extra_json
 #: (97 distinct payloads across 167,000 sources, 102 MB, in one store).  It is
@@ -144,6 +265,83 @@ LEXICAL_STATEMENTS = (
     ) STRICT, WITHOUT ROWID""",
     "CREATE INDEX lexical_postings_source ON lexical_postings(source_id,term_id)",
 )
+# Posting keys include the public claim ref so a term range is already in the
+# nomination tie order. Bounded intersections need no corpus-sized sort.
+CLAIM_LEXICAL_STATEMENTS = (
+    """CREATE TABLE claim_lexical_postings (
+        term_id INTEGER NOT NULL,
+        claim_id TEXT NOT NULL REFERENCES claims(claim_id) ON DELETE CASCADE,
+        PRIMARY KEY(term_id,claim_id)
+    ) STRICT, WITHOUT ROWID""",
+    "CREATE INDEX claim_lexical_claim ON claim_lexical_postings(claim_id,term_id)",
+)
+
+# Subject markers share the body dictionary and writer boundary. A partial
+# posting range avoids scanning common predicate/value words during nomination.
+CLAIM_SUBJECT_STATEMENTS = (
+    "ALTER TABLE claim_lexical_postings ADD COLUMN subject_terms INTEGER NOT NULL DEFAULT 0 CHECK(subject_terms>=0)",
+    "CREATE INDEX claim_lexical_subject ON claim_lexical_postings(term_id,claim_id,subject_terms) "
+    "WHERE subject_terms>0",
+)
+
+# A rank certificate is derived from one immutable statement, not a second
+# version selector. Semantic edits invalidate it; derived processing flags do not
+# affect the selected statement or its rank. The partial truth index also keeps
+# multi-version subjects searchable independently of the current head's words.
+CLAIM_RANK_STATEMENTS = (
+    """CREATE TABLE claim_lexical_heads (
+        claim_id TEXT PRIMARY KEY REFERENCES claims(claim_id) ON DELETE CASCADE,
+        is_simple INTEGER NOT NULL CHECK(is_simple IN (0,1)), recorded TEXT NOT NULL
+    ) STRICT, WITHOUT ROWID""",
+    "CREATE INDEX claim_lexical_rank ON claim_lexical_heads(is_simple,claim_id)",
+    "CREATE INDEX claim_lexical_versions ON claim_versions(claim_id) WHERE revision>1",
+    *(
+        f"""CREATE TRIGGER claim_lexical_{operation.lower()} AFTER {operation} ON claim_versions BEGIN
+        UPDATE claim_lexical_heads SET is_simple=0 WHERE claim_id={source}.claim_id;
+    END"""
+        for operation, source in (("INSERT", "NEW"), ("DELETE", "OLD"))
+    ),
+    """CREATE TRIGGER claim_lexical_update AFTER UPDATE OF
+        claim_id,revision,payload_json,state,basis,qualification_reason,valid_from,valid_to,
+        recorded_from,recorded_to,replaces_revision,conflict_revisions_json ON claim_versions BEGIN
+        UPDATE claim_lexical_heads SET is_simple=0 WHERE claim_id IN (OLD.claim_id,NEW.claim_id);
+    END""",
+    """CREATE TRIGGER claim_lexical_head AFTER UPDATE OF current_revision,subject,predicate,kind ON claims BEGIN
+        UPDATE claim_lexical_heads SET is_simple=0 WHERE claim_id=NEW.claim_id;
+    END""",
+)
+
+# Version nomination cannot assume the selected subject equals the current head.
+# Dirty markers keep direct truth edits conservative until the ordinary writer
+# or resumable projection page replaces their terms in the same transaction.
+CLAIM_VERSION_TERM_STATEMENTS = (
+    """CREATE TABLE claim_version_postings (
+        term_id INTEGER NOT NULL,
+        claim_id TEXT NOT NULL REFERENCES claims(claim_id) ON DELETE CASCADE,
+        subject_term INTEGER NOT NULL CHECK(subject_term IN (0,1)),
+        PRIMARY KEY(term_id,claim_id)
+    ) STRICT, WITHOUT ROWID""",
+    "CREATE INDEX claim_version_claim ON claim_version_postings(claim_id,term_id)",
+    "CREATE INDEX claim_version_subject ON claim_version_postings(term_id,claim_id) WHERE subject_term=1",
+    """CREATE TABLE claim_lexical_dirty (
+        claim_id TEXT PRIMARY KEY REFERENCES claims(claim_id) ON DELETE CASCADE
+    ) STRICT, WITHOUT ROWID""",
+    *(
+        f"""CREATE TRIGGER claim_terms_{operation.lower()} AFTER {operation} ON claim_versions BEGIN
+            INSERT OR IGNORE INTO claim_lexical_dirty SELECT claim_id FROM claims WHERE claim_id={source}.claim_id;
+        END"""
+        for operation, source in (("INSERT", "NEW"), ("DELETE", "OLD"))
+    ),
+    """CREATE TRIGGER claim_terms_head AFTER UPDATE OF
+        current_revision,subject,predicate,kind,read_blocked ON claims BEGIN
+        INSERT OR IGNORE INTO claim_lexical_dirty VALUES (NEW.claim_id);
+    END""",
+    """CREATE TRIGGER claim_terms_update AFTER UPDATE OF claim_id,revision,payload_json ON claim_versions BEGIN
+        INSERT OR IGNORE INTO claim_lexical_dirty VALUES (OLD.claim_id);
+        INSERT OR IGNORE INTO claim_lexical_dirty VALUES (NEW.claim_id);
+    END""",
+)
+
 CANDIDATE_STATEMENTS = (
     """CREATE TABLE candidate_lifecycle (
         candidate_ref TEXT NOT NULL, candidate_revision INTEGER NOT NULL CHECK(candidate_revision>=1),
@@ -235,6 +433,190 @@ RECOVERY_STATEMENTS = (
     ) STRICT""",
 )
 
+_ENTITY_ALIAS_LABELS = """INSERT INTO entity_alias_labels
+    SELECT hex(json_array(c.scope_id,c.project_id,c.branch_id)),labels.value,c.claim_id,v.revision,sum(1<<labels.key)
+    FROM claims c JOIN claim_versions v ON v.claim_id=c.claim_id AND v.revision=c.current_revision
+    JOIN json_each(json_array(json_extract(v.payload_json,'$.alias.name'),
+         json_extract(v.payload_json,'$.value_text'),json_extract(v.payload_json,'$.subject'))) labels
+    WHERE c.kind='alias' AND c.read_blocked=0 AND c.suppressed=0 AND v.state='active'
+    AND typeof(labels.value)='text' {selection}
+    GROUP BY c.claim_id,v.revision,labels.value"""
+
+ENTITY_STATEMENTS = (
+    """CREATE TABLE entity_alias_proofs (
+        alias_ref TEXT NOT NULL, alias_revision INTEGER NOT NULL,
+        source_ref TEXT NOT NULL, source_revision INTEGER NOT NULL,
+        target_ref TEXT NOT NULL, target_revision INTEGER NOT NULL,
+        judgement_sha256 TEXT NOT NULL CHECK(length(judgement_sha256)=64),
+        PRIMARY KEY(alias_ref,alias_revision),
+        FOREIGN KEY(alias_ref,alias_revision) REFERENCES claim_versions(claim_id,revision) ON DELETE CASCADE
+    ) STRICT, WITHOUT ROWID""",
+    "CREATE INDEX entity_unresolved ON claim_versions(entity_resolved,claim_id,revision)",
+    "CREATE INDEX entity_index_pending ON claims(scope_id,project_id,branch_id,claim_id) "
+    "WHERE entity_indexed=0 AND kind IN ('fact','preference','constraint','decision','intention') "
+    "AND read_blocked=0 AND suppressed=0",
+    "CREATE INDEX entity_alias_scope ON claims(scope_id,project_id,branch_id,claim_id) WHERE kind='alias'",
+    "CREATE INDEX entity_subject_lookup ON claims(scope_id,project_id,branch_id,subject) "
+    "WHERE kind IN ('fact','preference','constraint','decision','intention') AND read_blocked=0 AND suppressed=0",
+    """CREATE TABLE entity_alias_labels (
+        audience TEXT NOT NULL,label TEXT NOT NULL,claim_ref TEXT NOT NULL,revision INTEGER NOT NULL,
+        roles INTEGER NOT NULL CHECK(roles BETWEEN 1 AND 7),
+        PRIMARY KEY(audience,label,claim_ref,revision),
+        FOREIGN KEY(claim_ref,revision) REFERENCES claim_versions(claim_id,revision) ON DELETE CASCADE
+    ) STRICT, WITHOUT ROWID""",
+    """CREATE TABLE entity_names (
+        name_id INTEGER PRIMARY KEY,audience TEXT NOT NULL,name TEXT NOT NULL,
+        normalized TEXT NOT NULL,terms TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','checked','withdrawn')),
+        source_ref TEXT,source_revision INTEGER,target_ref TEXT,target_revision INTEGER,
+        alias_ref TEXT,alias_revision INTEGER,work_id INTEGER,
+        UNIQUE(audience,name)
+    ) STRICT""",
+    "CREATE INDEX entity_alias_names ON entity_alias_labels(audience,label,claim_ref,revision) WHERE roles&3!=0",
+    "CREATE INDEX entity_subject_presence ON claims(scope_id,project_id,branch_id,subject) WHERE read_blocked=0",
+    "CREATE INDEX entity_alias_claim ON entity_alias_labels(claim_ref)",
+    "CREATE TRIGGER entity_alias_version AFTER INSERT ON claim_versions BEGIN "
+    "DELETE FROM entity_alias_labels WHERE claim_ref=new.claim_id "
+    "AND new.revision=(SELECT current_revision FROM claims WHERE claim_id=new.claim_id); "
+    + _ENTITY_ALIAS_LABELS.format(selection="AND c.claim_id=new.claim_id AND v.revision=new.revision")
+    + "; END",
+    "CREATE TRIGGER entity_alias_head AFTER UPDATE OF current_revision,read_blocked,suppressed "
+    "ON claims WHEN new.kind='alias' BEGIN "
+    "DELETE FROM entity_alias_labels WHERE claim_ref=new.claim_id; "
+    + _ENTITY_ALIAS_LABELS.format(selection="AND c.claim_id=new.claim_id")
+    + "; END",
+    "CREATE INDEX entity_name_source ON entity_names(source_ref)",
+    "CREATE INDEX entity_name_target ON entity_names(target_ref)",
+    "CREATE INDEX entity_name_alias ON entity_names(alias_ref)",
+    "CREATE VIRTUAL TABLE entity_name_search USING fts5(audience,terms,content='entity_names',content_rowid='name_id')",
+    """CREATE TRIGGER entity_name_index AFTER INSERT ON entity_names BEGIN
+        INSERT INTO entity_name_search(rowid,audience,terms) VALUES(new.name_id,new.audience,new.terms);
+    END""",
+    """CREATE TRIGGER entity_name_reindex AFTER UPDATE OF terms ON entity_names WHEN old.terms!=new.terms BEGIN
+        INSERT INTO entity_name_search(entity_name_search,rowid,audience,terms)
+        VALUES('delete',old.name_id,old.audience,old.terms);
+        INSERT INTO entity_name_search(rowid,audience,terms) VALUES(new.name_id,new.audience,new.terms);
+    END""",
+    """CREATE TRIGGER entity_name_unindex AFTER DELETE ON entity_names BEGIN
+        INSERT INTO entity_name_search(entity_name_search,rowid,audience,terms)
+        VALUES('delete',old.name_id,old.audience,old.terms);
+    END""",
+    """CREATE TABLE entity_name_mentions (
+        name_id INTEGER NOT NULL REFERENCES entity_names(name_id) ON DELETE CASCADE,
+        claim_ref TEXT NOT NULL,claim_revision INTEGER NOT NULL,usable INTEGER NOT NULL CHECK(usable IN (0,1)),
+        ordinal INTEGER NOT NULL,subject_name INTEGER NOT NULL CHECK(subject_name IN (0,1)),
+        PRIMARY KEY(name_id,claim_ref),
+        FOREIGN KEY(claim_ref,claim_revision) REFERENCES claim_versions(claim_id,revision) ON DELETE CASCADE
+    ) STRICT, WITHOUT ROWID""",
+    "CREATE INDEX entity_mention_claim ON entity_name_mentions(claim_ref,claim_revision)",
+    "CREATE INDEX entity_mention_live ON entity_name_mentions(name_id,usable,subject_name DESC,ordinal,claim_ref)",
+    """CREATE TRIGGER entity_name_orphan AFTER DELETE ON entity_name_mentions BEGIN
+        DELETE FROM entity_names WHERE name_id=old.name_id
+        AND NOT EXISTS(SELECT 1 FROM entity_name_mentions m WHERE m.name_id=old.name_id)
+        AND NOT EXISTS(SELECT 1 FROM claims c WHERE c.claim_id=entity_names.alias_ref);
+    END""",
+    """CREATE TRIGGER entity_name_pending AFTER UPDATE OF status ON entity_names WHEN new.status='pending' BEGIN
+        UPDATE claim_versions SET entity_resolved=0 WHERE (claim_id,revision)=(SELECT m.claim_ref,m.claim_revision
+        FROM entity_name_mentions m JOIN claims c ON c.claim_id=m.claim_ref AND c.current_revision=m.claim_revision
+        JOIN claim_versions v ON v.claim_id=c.claim_id AND v.revision=c.current_revision
+        WHERE m.name_id=new.name_id AND m.usable=1 AND v.state='active' AND c.read_blocked=0 AND c.suppressed=0
+        ORDER BY m.subject_name DESC,m.ordinal,m.claim_ref LIMIT 1);
+    END""",
+    """CREATE TRIGGER entity_name_changed AFTER UPDATE OF current_revision,read_blocked,suppressed ON claims BEGIN
+        UPDATE claims SET entity_indexed=0 WHERE claim_id=new.claim_id;
+        UPDATE entity_names SET status='pending' WHERE source_ref=old.claim_id AND status='checked';
+        UPDATE entity_names SET status='pending' WHERE target_ref=old.claim_id AND status='checked';
+        UPDATE entity_names SET status=CASE WHEN (SELECT state FROM claim_versions
+            WHERE claim_id=new.claim_id AND revision=new.current_revision)='retracted'
+            THEN 'withdrawn' ELSE 'pending' END
+        WHERE alias_ref=old.claim_id AND status!='withdrawn';
+        UPDATE entity_name_mentions SET usable=CASE WHEN new.read_blocked=0 AND new.suppressed=0 THEN 1 ELSE 0 END
+        WHERE claim_ref=old.claim_id AND (old.read_blocked!=new.read_blocked OR old.suppressed!=new.suppressed);
+        UPDATE entity_names SET status='pending' WHERE status='pending'
+        AND (old.read_blocked!=new.read_blocked OR old.suppressed!=new.suppressed)
+        AND name_id IN (SELECT name_id FROM entity_name_mentions WHERE claim_ref=old.claim_id);
+    END""",
+    """CREATE TRIGGER entity_name_deleted AFTER DELETE ON claims BEGIN
+        UPDATE entity_names SET status='pending' WHERE source_ref=old.claim_id AND status='checked';
+        UPDATE entity_names SET status='pending' WHERE target_ref=old.claim_id AND status='checked';
+        UPDATE entity_names SET status='pending' WHERE alias_ref=old.claim_id AND status='checked';
+        DELETE FROM entity_names WHERE alias_ref=old.claim_id
+        AND NOT EXISTS(SELECT 1 FROM entity_name_mentions m WHERE m.name_id=entity_names.name_id);
+    END""",
+    """CREATE TRIGGER entity_source_changed AFTER INSERT ON source_events WHEN EXISTS(SELECT 1 FROM source_events older
+        WHERE older.source_group_key=new.source_group_key AND older.source_revision<new.source_revision) BEGIN
+        UPDATE entity_names SET status='pending' WHERE status='checked' AND
+        (source_ref IN (SELECT e.object_ref FROM source_events older JOIN evidence_links e
+            ON e.source_ref=older.event_id AND e.source_revision=older.source_revision AND e.object_kind='claim'
+            WHERE older.source_group_key=new.source_group_key AND older.source_revision<new.source_revision)
+        OR target_ref IN (SELECT e.object_ref FROM source_events older JOIN evidence_links e
+            ON e.source_ref=older.event_id AND e.source_revision=older.source_revision AND e.object_kind='claim'
+            WHERE older.source_group_key=new.source_group_key AND older.source_revision<new.source_revision));
+    END""",
+)
+
+SUMMARY_STATEMENTS = (
+    "CREATE INDEX importance_backfill ON claims(claim_id) WHERE importance_assigned=0",
+    """CREATE TABLE summary_groups (
+        group_key TEXT PRIMARY KEY NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('session','task')),
+        subject_ref TEXT NOT NULL, scope_id TEXT NOT NULL, project_id TEXT, branch_id TEXT,
+        entry_id TEXT NOT NULL, last_activity TEXT NOT NULL, closed INTEGER NOT NULL DEFAULT 0,
+        generation INTEGER NOT NULL DEFAULT 0, manifest_json TEXT NOT NULL DEFAULT '[]',
+        state TEXT NOT NULL DEFAULT 'waiting', covered_units INTEGER NOT NULL DEFAULT 0,
+        total_units INTEGER NOT NULL DEFAULT 0, next_offset INTEGER NOT NULL DEFAULT 0,
+        signature TEXT NOT NULL DEFAULT '', failure TEXT
+    ) STRICT""",
+    "CREATE INDEX summary_due ON summary_groups(state,last_activity,group_key)",
+    """CREATE TABLE summary_parts (
+        group_key TEXT NOT NULL REFERENCES summary_groups(group_key), generation INTEGER NOT NULL,
+        ordinal INTEGER NOT NULL, claim_ref TEXT NOT NULL, claim_revision INTEGER NOT NULL,
+        coverage_json TEXT NOT NULL, dependencies_json TEXT NOT NULL,
+        PRIMARY KEY(group_key,generation,ordinal), UNIQUE(claim_ref,claim_revision)
+    ) STRICT""",
+    """CREATE TABLE summary_backfill (
+        audience TEXT PRIMARY KEY NOT NULL, position INTEGER NOT NULL DEFAULT 0
+    ) STRICT""",
+)
+
+REFLECTION_STATEMENTS = (
+    "CREATE TABLE reflection_cursors(audience TEXT PRIMARY KEY,position INTEGER NOT NULL DEFAULT 0) STRICT",
+    """CREATE TABLE reflection_groups(
+        group_key TEXT PRIMARY KEY,scope_id TEXT NOT NULL,project_id TEXT,branch_id TEXT,subject TEXT NOT NULL,
+        buffered_json TEXT NOT NULL DEFAULT '[]',job_ref TEXT,job_revision INTEGER,
+        manifest_json TEXT NOT NULL DEFAULT '[]',signature TEXT NOT NULL DEFAULT '',
+        proposals_json TEXT,next_proposal INTEGER NOT NULL DEFAULT 0) STRICT""",
+    "CREATE INDEX reflection_jobs ON reflection_groups(job_ref,job_revision)",
+    """CREATE TABLE observations(
+        claim_ref TEXT NOT NULL,claim_revision INTEGER NOT NULL,manifest_json TEXT NOT NULL,
+        signature TEXT NOT NULL,confirmed INTEGER NOT NULL DEFAULT 0 CHECK(confirmed IN (0,1)),
+        PRIMARY KEY(claim_ref,claim_revision)) STRICT""",
+)
+
+
+REFLECTION_POLICY_STATEMENTS = (
+    (
+        "CREATE TABLE reflection_daily_usage(scope_id TEXT NOT NULL,day TEXT NOT NULL,cal"
+        "ls INTEGER NOT NULL CHECK(calls>=0),PRIMARY KEY(scope_id,day)) STRICT"
+    ),
+    ("CREATE TABLE reflection_discovery(audience TEXT PRIMARY KEY,history_end INTEGER NOT NULL,next_at TEXT) STRICT"),
+    (
+        "CREATE TABLE observation_conflicts(claim_ref TEXT NOT NULL,claim_revision INTEGE"
+        "R NOT NULL,position INTEGER NOT NULL,conflicted INTEGER NOT NULL DEFAULT 0,PRIMA"
+        "RY KEY(claim_ref,claim_revision),FOREIGN KEY(claim_ref,claim_revision) REFERENCE"
+        "S observations(claim_ref,claim_revision) ON DELETE CASCADE) STRICT"
+    ),
+    (
+        "CREATE TABLE reflection_rejections(job_ref TEXT NOT NULL,job_revision INTEGER NO"
+        "T NULL,candidate INTEGER NOT NULL,reason TEXT NOT NULL,recorded_at TEXT NOT NULL"
+        ") STRICT"
+    ),
+    *(
+        f"ALTER TABLE reflection_groups ADD COLUMN {column} INTEGER NOT NULL DEFAULT {default}"
+        for column, default in (("empty_streak", 0), ("new_sources", 0), ("required_sources", 8))
+    ),
+)
+
+
 STATEMENTS = (
     (
         """CREATE TABLE instance_meta (
@@ -244,7 +626,9 @@ STATEMENTS = (
         memory_epoch INTEGER NOT NULL DEFAULT 0 CHECK(memory_epoch>=0),
         config_version INTEGER NOT NULL DEFAULT 1 CHECK(config_version>=1),
         test_mode INTEGER NOT NULL CHECK(test_mode IN (0,1)),
-        installation_kind TEXT NOT NULL DEFAULT 'local' CHECK(installation_kind IN ('local','shared'))
+        installation_kind TEXT NOT NULL DEFAULT 'local' CHECK(installation_kind IN ('local','shared')),
+        database_id TEXT NOT NULL DEFAULT '', database_created_at TEXT,
+        storage_revision INTEGER NOT NULL DEFAULT 0
     ) STRICT""",
         """CREATE TABLE instance_scopes (scope_id TEXT PRIMARY KEY NOT NULL) STRICT""",
         MANAGEMENT_STATEMENT,
@@ -253,6 +637,7 @@ STATEMENTS = (
         PRIVATE_ACTIVE_INDEX,
         """CREATE TABLE source_events (
         event_id TEXT NOT NULL, source_event_key TEXT NOT NULL,
+        secret_scan_version TEXT, secret_scan_names TEXT, secret_scan_input_sha256 TEXT,
         source_revision INTEGER NOT NULL CHECK(source_revision>=1),
         source_group_key TEXT NOT NULL,
         segment_index INTEGER NOT NULL DEFAULT 0 CHECK(segment_index>=0),
@@ -289,15 +674,23 @@ STATEMENTS = (
         WORK_ITEMS_STATEMENT,
         "CREATE INDEX work_ready ON work_items(state,available_at,work_id)",
         *LEXICAL_STATEMENTS,
+        *CLAIM_LEXICAL_STATEMENTS,
+        *CLAIM_SUBJECT_STATEMENTS,
         """CREATE TABLE claims (
         claim_id TEXT PRIMARY KEY NOT NULL,
         scope_id TEXT NOT NULL REFERENCES instance_scopes(scope_id),
         project_id TEXT, branch_id TEXT,
         subject TEXT NOT NULL, predicate TEXT NOT NULL,
-        kind TEXT NOT NULL CHECK(kind IN ('fact','preference','constraint','decision','procedure','intention','alias')),
+        kind TEXT NOT NULL CHECK(kind IN (
+            'fact','preference','constraint','decision','procedure','intention','alias','observation')),
         slot_key TEXT NOT NULL UNIQUE, current_revision INTEGER NOT NULL CHECK(current_revision>=1),
         read_blocked INTEGER NOT NULL DEFAULT 0 CHECK(read_blocked IN (0,1)),
         suppressed INTEGER NOT NULL DEFAULT 0 CHECK(suppressed IN (0,1)),
+        entity_indexed INTEGER NOT NULL DEFAULT 0 CHECK(entity_indexed IN (0,1)),
+        importance INTEGER NOT NULL DEFAULT 3 CHECK(importance BETWEEN 1 AND 5),
+        pinned INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0,1)),
+        importance_assigned INTEGER NOT NULL DEFAULT 0 CHECK(importance_assigned IN (0,1)),
+        importance_owner INTEGER NOT NULL DEFAULT 0 CHECK(importance_owner IN (0,1)),
         FOREIGN KEY(claim_id,current_revision) REFERENCES claim_versions(claim_id,revision) DEFERRABLE INITIALLY DEFERRED
     ) STRICT""",
         "CREATE INDEX claim_scope_subject ON claims(scope_id,subject,predicate,project_id,branch_id)",
@@ -309,6 +702,7 @@ STATEMENTS = (
         qualification_reason TEXT NOT NULL,
         valid_from TEXT, valid_to TEXT, recorded_from TEXT NOT NULL, recorded_to TEXT,
         replaces_revision INTEGER, conflict_revisions_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(conflict_revisions_json)),
+        entity_resolved INTEGER NOT NULL DEFAULT 0 CHECK(entity_resolved IN (0,1)),
         PRIMARY KEY(claim_id,revision),
         FOREIGN KEY(claim_id,replaces_revision) REFERENCES claim_versions(claim_id,revision),
         CHECK(valid_from IS NULL OR valid_to IS NULL OR valid_from<valid_to),
@@ -437,7 +831,40 @@ STATEMENTS = (
     )
     + RECOVERY_STATEMENTS
     + CANDIDATE_STATEMENTS
-    + (RESTORED_SUPPRESSION_STATEMENT,)
+    + ENTITY_STATEMENTS
+    + SUMMARY_STATEMENTS
+    + CLAIM_RANK_STATEMENTS
+    + CLAIM_VERSION_TERM_STATEMENTS
+    + (CLAIM_PROFILE_INDEX,)
+    + ADOPTION_STATEMENTS
+    + ADOPTION_PROCESSING_STATEMENTS
+    + SESSION_BRIEF_STATEMENTS
+    + HANDOFF_STATEMENTS
+    + INJECTION_DELIVERY_STATEMENTS
+    + REFLECTION_STATEMENTS
+    + REFLECTION_POLICY_STATEMENTS
+    + ENTRY_CONTROL_STATEMENTS
+    + INJECTION_STATEMENTS
+    + INJECTION_SEEDS
+    + (
+        RESTORED_SUPPRESSION_STATEMENT,
+        PRIVATE_COMMAND_FENCES_STATEMENT,
+        """CREATE TABLE scope_review_policy (
+        scope_id TEXT NOT NULL REFERENCES instance_scopes(scope_id),
+        version INTEGER NOT NULL CHECK(version>=1), enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
+        changed_at TEXT NOT NULL, changed_by TEXT NOT NULL CHECK(changed_by='local_user_management'),
+        PRIMARY KEY(scope_id,version)
+    ) STRICT, WITHOUT ROWID""",
+        """CREATE TABLE scope_memory_instructions (
+        scope_id TEXT NOT NULL REFERENCES instance_scopes(scope_id),
+        version INTEGER NOT NULL CHECK(version >= 1),
+        text TEXT NOT NULL CHECK(length(text) <= 2000),
+        changed_at TEXT NOT NULL,
+        changed_by TEXT NOT NULL CHECK(changed_by = 'local_user_management'),
+        PRIMARY KEY(scope_id,version)
+    ) STRICT, WITHOUT ROWID""",
+    )
+    + STORAGE_VALIDATION_STATEMENTS
     + tuple(statement for _name, statement in SUPPRESSION_TRIGGERS)
 )
 
@@ -652,6 +1079,22 @@ def upgrade_1111(connection):
     connection.execute("PRAGMA user_version=1112")
 
 
+def upgrade_1112(connection):
+    """Add entity judgement receipts without rewriting claims or waiting for models."""
+    connection.execute(
+        "ALTER TABLE claims ADD COLUMN entity_indexed INTEGER NOT NULL DEFAULT 0 CHECK(entity_indexed IN (0,1))"
+    )
+    connection.execute(
+        "ALTER TABLE claim_versions ADD COLUMN entity_resolved INTEGER NOT NULL DEFAULT 0 "
+        "CHECK(entity_resolved IN (0,1))"
+    )
+    for statement in ENTITY_STATEMENTS:
+        connection.execute(statement)
+    connection.execute(_ENTITY_ALIAS_LABELS.format(selection=""))
+    connection.execute("UPDATE instance_meta SET schema_version=1113 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1113")
+
+
 def normalize_scope_authorizations(connection) -> int:
     """Move each source's ``scope_authorization`` out of its extra_json, kept once per distinct payload.
 
@@ -667,3 +1110,234 @@ def normalize_scope_authorizations(connection) -> int:
         WHERE json_type(e.extra_json,'$.scope_authorization') IS NOT NULL""")
     return connection.execute("""UPDATE source_events SET extra_json=json_remove(extra_json,'$.scope_authorization')
         WHERE json_type(extra_json,'$.scope_authorization') IS NOT NULL""").rowcount
+
+
+def upgrade_1113(connection):
+    """Install source safety decisions and defaults under the upgrade coordinator."""
+    install_injection_schema(connection)
+    connection.execute("UPDATE instance_meta SET schema_version=1114 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1114")
+
+
+def upgrade_1114(connection):
+    """Install bounded source policy under the upgrade coordinator."""
+    from .injection_schema import upgrade_policy
+
+    upgrade_policy(connection)
+    connection.execute("UPDATE instance_meta SET schema_version=1115 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1115")
+
+
+def upgrade_1115(connection):
+    """Install content-bound screening checkpoints and bounded rule spans."""
+    from .injection_schema import SCAN_STATEMENT, upgrade_policy
+
+    upgrade_policy(connection)
+    connection.execute(SCAN_STATEMENT.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1))
+    connection.execute("UPDATE instance_meta SET schema_version=1116 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1116")
+
+
+def upgrade_1116(connection):
+    """Install current-fact postings and a durable cursor for bounded initialization pages."""
+    for statement in CLAIM_LEXICAL_STATEMENTS:
+        connection.execute(statement)
+    connection.execute(
+        "INSERT INTO candidate_scan_cursors(cursor_name,updated_at) VALUES ('claim_lexical',datetime('now'))"
+    )
+    connection.execute("UPDATE instance_meta SET schema_version=1117 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1117")
+
+
+def upgrade_1117(connection):
+    """Add subject eligibility postings and restart their resumable head projection."""
+    for statement in (*CLAIM_SUBJECT_STATEMENTS, *CLAIM_RANK_STATEMENTS):
+        connection.execute(statement)
+    connection.execute(
+        "INSERT INTO candidate_scan_cursors(cursor_name,updated_at) VALUES ('claim_lexical',datetime('now')) "
+        "ON CONFLICT(cursor_name) DO UPDATE SET position_ref=NULL,processed_count=0,completed=0,"
+        "updated_at=excluded.updated_at"
+    )
+    connection.execute("UPDATE instance_meta SET schema_version=1118 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1118")
+
+
+def upgrade_1118(connection) -> None:
+    """Give an existing database a stable lifetime identity without inventing its creation time."""
+    connection.execute("ALTER TABLE instance_meta ADD COLUMN database_id TEXT NOT NULL DEFAULT ''")
+    connection.execute("ALTER TABLE instance_meta ADD COLUMN database_created_at TEXT")
+    connection.execute(
+        "UPDATE instance_meta SET database_id=lower(hex(randomblob(16))),schema_version=1119 WHERE singleton=1"
+    )
+    connection.execute("PRAGMA user_version=1119")
+
+
+def upgrade_1119(connection):
+    """Add salience defaults and rebuildable summary bookkeeping without model work."""
+    for column, definition in (
+        ("importance", "INTEGER NOT NULL DEFAULT 3 CHECK(importance BETWEEN 1 AND 5)"),
+        ("pinned", "INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0,1))"),
+        ("importance_assigned", "INTEGER NOT NULL DEFAULT 0 CHECK(importance_assigned IN (0,1))"),
+        ("importance_owner", "INTEGER NOT NULL DEFAULT 0 CHECK(importance_owner IN (0,1))"),
+    ):
+        connection.execute(f"ALTER TABLE claims ADD COLUMN {column} {definition}")
+    for statement in SUMMARY_STATEMENTS:
+        connection.execute(statement)
+    connection.execute("UPDATE instance_meta SET schema_version=1120 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1120")
+
+
+def upgrade_1120(connection):
+    """Install owner adoption bindings; the upgrade coordinator keeps the rollback snapshot."""
+    for statement in ADOPTION_STATEMENTS:
+        connection.execute(statement)
+    connection.execute("UPDATE instance_meta SET schema_version=1121 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1121")
+
+
+def upgrade_1121(connection):
+    """Install resumable adoption work; ordinary consolidation data remains authoritative."""
+    for statement in ADOPTION_PROCESSING_STATEMENTS:
+        connection.execute(statement)
+    connection.execute("UPDATE instance_meta SET schema_version=1122 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1122")
+
+
+def upgrade_1122(connection):
+    """Extend the claim kind constraint without losing rows or dependent projections.
+
+    The coordinator owns a verified rollback snapshot and the transaction. Deferred
+    foreign keys permit replacing the table; cascading projections are copied back
+    before commit. Existing indexes retain their exact definitions.
+    """
+    connection.execute("PRAGMA defer_foreign_keys=ON")
+    indexes = [
+        row[0]
+        for row in connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='claims' AND sql IS NOT NULL"
+        )
+    ]
+    cascades = []
+    for (table,) in connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
+        if any(
+            row[2] == "claims" and row[6] == "CASCADE"
+            for row in connection.execute(f'PRAGMA foreign_key_list("{table}")')
+        ):
+            cascades.append(table)
+            connection.execute(f'CREATE TEMP TABLE "reflection_save_{table}" AS SELECT * FROM "{table}"')
+    triggers = connection.execute("SELECT name,sql FROM sqlite_master WHERE type='trigger'").fetchall()
+    for name, _sql in triggers:
+        connection.execute(f'DROP TRIGGER "{name}"')
+    definition = next(statement for statement in STATEMENTS if statement.startswith("CREATE TABLE claims ("))
+    connection.execute(definition.replace("CREATE TABLE claims (", "CREATE TABLE reflection_claims (", 1))
+    connection.execute("INSERT INTO reflection_claims SELECT * FROM claims")
+    connection.execute("DROP TABLE claims")
+    connection.execute("ALTER TABLE reflection_claims RENAME TO claims")
+    for statement in indexes:
+        connection.execute(statement)
+    for table in cascades:
+        connection.execute(f'INSERT INTO "{table}" SELECT * FROM "reflection_save_{table}"')
+        connection.execute(f'DROP TABLE "reflection_save_{table}"')
+    for _name, sql in triggers:
+        connection.execute(sql)
+    if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise ValueError("claim_kind_foreign_keys")
+    connection.execute("PRAGMA defer_foreign_keys=OFF")
+    for statement in REFLECTION_STATEMENTS:
+        connection.execute(statement)
+    connection.execute("UPDATE instance_meta SET schema_version=1123 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1123")
+
+
+def upgrade_1123(connection):
+    """Add durable reflection policy without rewriting observations or source evidence."""
+    for statement in REFLECTION_POLICY_STATEMENTS:
+        connection.execute(statement)
+    connection.execute("UPDATE reflection_groups SET new_sources=json_array_length(buffered_json)")
+    connection.execute("UPDATE instance_meta SET schema_version=1124 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1124")
+
+
+def upgrade_1124(connection):
+    """Add the rebuildable briefing manifests and safety retractions."""
+    for statement in SESSION_BRIEF_STATEMENTS:
+        connection.execute(statement)
+    connection.execute("UPDATE instance_meta SET schema_version=1125 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1125")
+
+
+def upgrade_1125(connection):
+    """Fence writers that cannot interpret reviewed cross-reference replacements."""
+    connection.execute("UPDATE instance_meta SET schema_version=1126 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1126")
+
+
+def upgrade_1126(connection):
+    """Add versioned instructions and replay fences together under the upgrade transaction."""
+    connection.execute(next(s for s in STATEMENTS if s.startswith("CREATE TABLE scope_memory_instructions")))
+    connection.execute(PRIVATE_COMMAND_FENCES_STATEMENT)
+    connection.execute("UPDATE instance_meta SET schema_version=1127 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1127")
+
+
+def upgrade_1127(connection):
+    """Add durable entry controls without changing existing entry grants."""
+    for statement in ENTRY_CONTROL_STATEMENTS:
+        connection.execute(statement)
+    connection.execute("UPDATE instance_meta SET schema_version=1128 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1128")
+
+
+def upgrade_1128(connection):
+    """Retain existing delivery marks while adding their source and notice state."""
+    for statement in INJECTION_DELIVERY_STATEMENTS:
+        connection.execute(statement)
+    connection.execute("UPDATE instance_meta SET schema_version=1129 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1129")
+
+
+def upgrade_1129(connection):
+    """Add complete entry-owned task reports without changing existing facts or work types."""
+    for statement in HANDOFF_STATEMENTS:
+        connection.execute(statement)
+    connection.execute("UPDATE instance_meta SET schema_version=1130 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1130")
+
+
+def upgrade_1130(connection):
+    """Install owner publication policy without changing existing facts."""
+    connection.execute(next(s for s in STATEMENTS if s.startswith("CREATE TABLE scope_review_policy")))
+    connection.execute("UPDATE instance_meta SET schema_version=1131 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1131")
+
+
+def upgrade_1131(connection):
+    """Install all-version nomination and atomically schedule its resumable projection."""
+    for statement in CLAIM_VERSION_TERM_STATEMENTS:
+        connection.execute(statement)
+    connection.execute("INSERT INTO claim_lexical_dirty SELECT claim_id FROM claims")
+    connection.execute(
+        "INSERT INTO candidate_scan_cursors(cursor_name,updated_at) VALUES ('claim_lexical',datetime('now')) "
+        "ON CONFLICT(cursor_name) DO UPDATE SET position_ref=NULL,processed_count=0,completed=0"
+    )
+    connection.execute("UPDATE instance_meta SET schema_version=1132 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1132")
+
+
+def upgrade_1132(connection):
+    """Install the profile covering index without rewriting facts or evidence."""
+    connection.execute(CLAIM_PROFILE_INDEX)
+    connection.execute("UPDATE instance_meta SET schema_version=1133 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1133")
+
+
+def upgrade_1133(connection):
+    """Add optional scan receipts without reading or rewriting existing bodies."""
+    connection.execute("ALTER TABLE source_events ADD COLUMN secret_scan_version TEXT")
+    connection.execute("ALTER TABLE source_events ADD COLUMN secret_scan_names TEXT")
+    connection.execute("ALTER TABLE source_events ADD COLUMN secret_scan_input_sha256 TEXT")
+    connection.execute("ALTER TABLE instance_meta ADD COLUMN storage_revision INTEGER NOT NULL DEFAULT 0")
+    for statement in STORAGE_VALIDATION_STATEMENTS:
+        connection.execute(statement)
+    connection.execute("UPDATE instance_meta SET schema_version=1134 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1134")

@@ -27,6 +27,18 @@ from jsonschema import Draft202012Validator
 from scope_recall.contracts import ENTRY_ID, InstanceBinding
 
 from .._version import __version__
+from ..core.backup_primitives import (
+    BackupError,
+    atomic_write,
+    backup_deadline,
+    backup_sqlite,
+    check_backup_deadline,
+    copy_stream,
+    exclusive_store,
+    safe_path,
+    sha256,
+    stream_digest,
+)
 from ..core.deletion_mirror import DELETION_MIRROR_FILENAME, configured_backup_dir, sync_deletion_mirror
 from ..core.endpoint_policy import endpoint_url_shape_ok
 from ..core.file_lock import advisory_file_lock
@@ -39,18 +51,6 @@ from .backup_external import (
     reject_credential_overlap,
     stage_entry_resources,
     stage_remote_clients,
-)
-from .backup_primitives import (
-    BackupError,
-    atomic_write,
-    backup_deadline,
-    backup_sqlite,
-    check_backup_deadline,
-    copy_stream,
-    exclusive_store,
-    safe_path,
-    sha256,
-    stream_digest,
 )
 from .backup_resources import BackupPrivacy, real_files, stage_instance_resources
 from .validation import validate_worker_day

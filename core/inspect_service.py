@@ -5,6 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..contracts import ContractError, TrustedContext
+from . import lineage
+from .injection_guard import notice
+from .review_policy import REVIEW_REASONS
 from .storage import SQLiteStorage
 from .visibility import ObjectRef, release_objects
 
@@ -17,10 +20,35 @@ class InspectedObject:
     value: object
     memory_epoch: int
     gaps: tuple[str, ...] = ()
+    historical: bool = False
+
+
+def _resolve(tx, ref, revision):
+    """Find a visible object using bounded repository lookups, in source-first order."""
+    value = tx.source(ref, revision) if revision is not None else tx.sources.source_current(ref)
+    if value is not None:
+        return "event", value
+    claim_revision = revision if revision is not None else tx.claims.current_revision(ref)
+    if claim_revision is not None:
+        value = tx.claims.version(ref, claim_revision)
+        if value is not None:
+            return "claim", value
+    for kind, repository in (("episode", tx.episodes), ("artifact", tx.artifacts), ("reference", tx.references)):
+        value = repository.get(ref, revision)
+        if value is not None:
+            return kind, value
+    raise ContractError("SOURCE_MISSING", "ref")
 
 
 def inspect_object(
-    storage: SQLiteStorage, clock, context: TrustedContext, ref: str, revision: int | None = None, *, limit: int = 24
+    storage: SQLiteStorage,
+    clock,
+    context: TrustedContext,
+    ref: str,
+    revision: int | None = None,
+    *,
+    limit: int = 24,
+    owner_authority=None,
 ) -> InspectedObject:
     """Resolve one object by direct repository lookups, then release it again.
 
@@ -36,33 +64,13 @@ def inspect_object(
         raise ContractError("INPUT_INVALID", "limit")
     with storage.read(context) as tx:
         status = tx.status()
-        kind: str | None = None
-        value = tx.source(ref, revision) if revision is not None else tx.sources.source_current(ref)
-        if value is not None:
-            kind = "event"
-        if value is None:
-            claim_revision = revision
-            if claim_revision is None:
-                claim_revision = tx.claims.current_revision(ref)
-            if claim_revision is not None:
-                value = tx.claims.version(ref, claim_revision)
-                if value is not None:
-                    kind = "claim"
-        if value is None:
-            value = tx.episodes.get(ref, revision)
-            if value is not None:
-                kind = "episode"
-        if value is None:
-            value = tx.artifacts.get(ref, revision)
-            if value is not None:
-                kind = "artifact"
-        if value is None:
-            value = tx.references.get(ref, revision)
-            if value is not None:
-                kind = "reference"
-        if value is None or kind is None:
-            raise ContractError("SOURCE_MISSING", "ref")
+        held = notice(tx, ref, revision)
+        if held is not None:
+            return InspectedObject("event", ref, held["revision"], held, status.memory_epoch, (held["state"],))
+        kind, value = _resolve(tx, ref, revision)
         actual_revision = int(value.revision)
+        if kind == "claim" and getattr(value, "reason", None) in REVIEW_REASONS and owner_authority is None:
+            return InspectedObject(kind, ref, actual_revision, None, status.memory_epoch, ("owner_review_required",))
     released = release_objects(
         storage,
         clock,
@@ -71,5 +79,20 @@ def inspect_object(
         expected_epoch=status.memory_epoch,
         automatic=False,
         history=revision is not None,
+        owner_authority=owner_authority,
     )
-    return InspectedObject(kind, ref, actual_revision, released[0], status.memory_epoch)
+    item = released[0]
+    historical = (
+        kind == "claim"
+        and revision is not None
+        and (item.revision != item.current_revision or item.state == "superseded")
+    )
+    gaps = ()
+    if kind == "event":
+        with storage.read(context) as tx:
+            obsolete, only_obsolete = lineage.source_evidence_status(
+                tx, ref, actual_revision, clock.utc_now(), include_history=True
+            )
+        historical |= only_obsolete
+        gaps = tuple(f"superseded_evidence:{claim}@{rev}" for claim, rev in obsolete[:limit])
+    return InspectedObject(kind, ref, actual_revision, item, status.memory_epoch, gaps=gaps, historical=historical)

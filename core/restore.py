@@ -20,9 +20,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from ..contracts import ContractError, TrustedContext
+from . import lexical_index
 from .delete_storage import OBJECT_TABLES, DeleteTarget, canonical, purge_work_ref
 from .retained_artifacts import extended_path
 from .schema import SCHEMA_VERSION
+from .source_records import clear_body_scan_receipts
 
 #: Beside ``memory.sqlite3`` while a restore is pending; every normal open refuses while it exists.
 MARKER_FILENAME = "restore-required.json"
@@ -36,6 +38,14 @@ LEDGER_FILENAME = "restore-ledger.json"
 #: deletions need anything this format does not carry exports another one, which the releases before it refuse.
 LEDGER_FORMAT = "scope-recall-deletion-ledger/2"
 LEGACY_LEDGER_FORMAT = "scope-recall-deletion-ledger/1"
+#: The oldest snapshot schema read by a release that carries the restore command.  A snapshot at an older one could be
+#: put back only by a release that cannot replay the ledger, so it is refused.
+RESTORE_SCHEMA_FLOOR = 1110
+
+
+def snapshot_schema_supported(schema: int) -> bool:
+    """Whether a snapshot's stamped schema can replay the deletion ledger safely."""
+    return RESTORE_SCHEMA_FLOOR <= schema <= SCHEMA_VERSION
 
 
 @dataclass(frozen=True)
@@ -62,6 +72,14 @@ def maintenance_context(storage, authority):
     }:
         raise ContractError("ACCESS_DENIED", "restore_authority")
     return context
+
+
+def validate_owner_context(storage, authority, context):
+    """Require the bound owner capability while permitting its selected partition."""
+    owner = maintenance_context(storage, authority)
+    if replace(context, project_id=owner.project_id, branch_id=owner.branch_id) != owner:
+        raise ContractError("ACCESS_DENIED", "owner_authority")
+    return owner
 
 
 def ledger_digest(ledger) -> str:
@@ -216,7 +234,8 @@ def finish_disaster_recovery(storage, authority: InstallationMaintenance, *, bef
     """Verify truth and persist the caller's receipt while fenced, then reopen admission."""
     context = maintenance_context(storage, authority)
     marker, _ = _pending_marker(storage, context)
-    with storage._transaction(context, writable=False, remaining_seconds=10, restoring=True) as tx:
+    with storage._transaction(context, writable=True, remaining_seconds=10, restoring=True) as tx:
+        clear_body_scan_receipts(tx._check(write=True))
         if tx._check().execute("PRAGMA quick_check").fetchone()[0] != "ok":
             raise ContractError("RESTORE_UNVERIFIED", "integrity")
     before_reopen()
@@ -372,6 +391,32 @@ def _restore_checkpoint(storage, context, ledger):
     if type(checkpoint_epoch) is not int or not 0 <= checkpoint_epoch < 9223372036854775807:
         raise ContractError("RESTORE_UNVERIFIED", "ledger_epoch")
     return marker, checkpoint_epoch
+
+
+def pending_restore_scopes(storage, authority: InstallationMaintenance, *, minimum: frozenset[str]) -> frozenset[str]:
+    """Recover the fenced ledger's scopes when a copied snapshot has additional registered scopes.
+
+    The marker binds the ledger to this installation and its digest. The selected scopes must include the manifest
+    binding and remain within the checked current registry; this capability never changes an entry's grants.
+    """
+    context = maintenance_context(storage, authority)
+    try:
+        _, marker = _pending_marker(storage, context)
+    except ContractError as exc:
+        if exc.field != "checkpoint_unreadable":
+            raise
+        return context.allowed_scope_ids
+    kept = _kept_ledger(storage)
+    if kept is None or ledger_digest(kept) != marker["expected_ledger_sha256"]:
+        return context.allowed_scope_ids
+    values = kept.get("scope_ids")
+    if not isinstance(values, list) or any(type(value) is not str for value in values):
+        raise ContractError("RESTORE_UNVERIFIED", "ledger_identity")
+    scopes = frozenset(values)
+    if values != sorted(scopes) or not minimum <= scopes <= context.allowed_scope_ids:
+        raise ContractError("RESTORE_UNVERIFIED", "ledger_identity")
+    _restore_checkpoint(storage, replace(context, allowed_scope_ids=scopes), kept)
+    return scopes
 
 
 def pending_restore_ledger(storage, authority: InstallationMaintenance) -> tuple[dict, bool]:
@@ -583,6 +628,7 @@ def _replay_withdrawal(conn, context, ledger, withdrawal) -> None:
             "UPDATE claims SET current_revision=? WHERE claim_id=?",
             (withdrawal["current_revision"], withdrawal["claim_id"]),
         )
+        lexical_index.index_claim(conn, withdrawal["claim_id"])
         conn.execute(
             "UPDATE work_items SET state='obsolete',lease_token=lease_token+1 WHERE subject_ref=? AND state IN ('pending','leased')",
             (withdrawal["claim_id"],),
@@ -640,6 +686,7 @@ def replay_deletion_ledger(
     count = 0
     with storage._transaction(context, writable=True, remaining_seconds=remaining_seconds, restoring=True) as tx:
         conn = tx._check(write=True)
+        clear_body_scan_receipts(conn)
         # Transient input captured before this explicit restore cannot be
         # treated as fresh post-restore authorization. Rebuild partial derived
         # summaries from the restored source, with its normal tombstone checks.

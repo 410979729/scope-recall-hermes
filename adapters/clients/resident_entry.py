@@ -1,20 +1,7 @@
-"""A client's prompt recall server, a process of its own beside the client's (``local_endpoint.ensure_resident``).
+"""Worker-owned resident recall process, with a single lock for the shared library.
 
-On Windows, a resident server that remains in a WorkBuddy job with kill-on-close behavior ends when that job closes.
-``start_detached`` attempts to leave the parent job and falls back to starting within it, so the server's lifetime
-also depends on the host's job policy.
-
-WorkBuddy starts the entry's MCP server, and with it the recall server its prompt hooks ask, with each conversation's
-agent process and stops it with that process.  Cold vector and embedding startup can exceed the prompt hook's
-budget.  This server is started by the entry's hook or MCP server when none runs, names itself resident (hooks ask it
-first), and ends ``resident_recall_minutes`` after the last
-prompt's recall or the last mark of a live client process (``local_endpoint.keep_resident``), once the minutes are 0,
-once its package on disk is replaced, or once a recall has been stuck for minutes.  One runs for each entry and
-client: a second of the same version gives way to the first, and a prompt hook that finds one of another version stops
-it, where it can prove and end it, and starts its own (``local_endpoint.ensure_resident``).  It writes nothing to the
-store.
-
-    python -I -B -m scope_recall.adapters.codex.resident_entry --home <entry home> --host workbuddy [--env-file <file>]
+Every local entry uses the same signed loopback endpoint. Entry grants and private intervals are checked by each
+request's normal handler. An idle, disabled, replaced or stuck process releases its routes and exits.
 """
 
 from __future__ import annotations
@@ -25,6 +12,7 @@ import os
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from ... import _version
@@ -34,13 +22,11 @@ from ...runtime.running_code import version_on_disk
 from ...runtime.worker_entry import host_process_credential_environment
 from .config import load_shared_client
 from .local_endpoint import (
-    configured_minutes,
     endpoints,
     package_upgrading,
     remove_quietly,
     resident_alive,
     resident_lock,
-    resident_minutes,
     resident_record,
     serve,
     stop_residents,
@@ -106,7 +92,13 @@ def main(argv: list[str] | None = None) -> int:
             command += ["--env-file", str(args.env_file)]
         return 0 if start_detached(command, cwd=endpoints(home)) else 1
     configured = args.idle_seconds is None
-    idle = resident_minutes(home, args.host) * 60.0 if configured else args.idle_seconds
+    from .store_service import library_minutes
+
+    idle = (
+        (library_minutes(load_shared_client(home, args.host).to_binding()) or 0) * 60.0
+        if configured
+        else args.idle_seconds
+    )
     if idle <= 0 or package_upgrading():
         return 0  # none kept, or the package being replaced: a later look starts one from the new files
     # One of another version runs the code it was started with, and hooks ask it nothing.  The
@@ -123,11 +115,13 @@ def main(argv: list[str] | None = None) -> int:
 
 def _serve_until_idle(home: Path, host: str, env_file: Path | None, idle: float, *, configured: bool) -> int:
     config = load_shared_client(home, host)
-    credentials = None
+    credentials: Callable[[], dict[str, str]] | None = None
     if env_file is not None:
 
-        def credentials() -> dict[str, str]:
+        def load_credentials() -> dict[str, str]:
             return host_process_credential_environment(config.runtime_config_path, env_file)
+
+        credentials = load_credentials
 
     endpoint = serve(
         home,
@@ -137,18 +131,27 @@ def _serve_until_idle(home: Path, host: str, env_file: Path | None, idle: float,
         credentials=credentials,
         warm=True,
         resident=True,
+        library=True,
     )
     if endpoint is None:
         return 1
     record = resident_record(home, host)
-    _keep_record(record, host)
+    _keep_record(record, "*")
     alive = resident_alive(home, host)
     stopped = threading.Event()
     unsure = 0
     try:
         while not stopped.wait(min(IDLE_CHECK_SECONDS, idle)):
             package = _package_state()
-            minutes = configured_minutes(home, host, missing=None) if configured else None
+            if configured:
+                from .store_service import library_minutes
+
+                try:
+                    minutes = library_minutes(config.to_binding(), missing=None)
+                except (OSError, ValueError, RuntimeError):
+                    minutes = None
+            else:
+                minutes = None
             if minutes is not None:
                 # A change of the entry's minutes is taken here: otherwise, set to 0 to free the server's memory, it
                 # would keep serving, and every prompt would put its end off.

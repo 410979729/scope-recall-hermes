@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from scope_recall.adapters.hermes import ScopeRecallHermesAdapter, install_hermes_scope_recall
-from scope_recall.adapters.hermes.installation import _build_audience_scope_ids
+from scope_recall.adapters.installation import _build_audience_scope_ids
 
 
 def _payload(text: str, *, key: str) -> dict:
@@ -77,6 +77,10 @@ def test_operator_tools_expose_frozen_names_and_strict_boundary(adapter):
         "forget",
         "status",
         "trace",
+        "handoff_write",
+        "handoff_list",
+        "handoff_accept",
+        "handoff_cancel",
     ]
     assert all(schema["parameters"]["additionalProperties"] is False for schema in schemas)
 
@@ -518,3 +522,48 @@ def test_every_tool_declaration_is_one_gemini_accepts(adapter):
     for name, schema in schemas.items():
         assert _refused_by_gemini(schema["parameters"]) == [], name
     assert schemas["revise"]["parameters"]["properties"]["new_value"] == {"type": ["string", "object", "null"]}
+
+
+def test_handoff_provider_uses_existing_tool_dispatch(adapter):
+    provider, _clock = adapter
+    reply = json.loads(provider.handle_tool_call("handoff_list", {"protocol_version": "1.1"}))
+    assert reply["result"]["items"] == []
+    assert {"handoff_write", "handoff_list", "handoff_accept", "handoff_cancel"} <= {
+        s["name"] for s in provider.get_tool_schemas()
+    }
+    refused = json.loads(
+        provider.handle_tool_call(
+            "handoff_accept", {"protocol_version": "1.1", "ref": "TEST-missing", "expected_revision": True}
+        )
+    )
+    assert refused["error"]["code"] == "INPUT_INVALID"
+
+
+def test_handoff_provider_records_the_bound_host_session(adapter, tmp_path, monkeypatch):
+    provider, _clock = adapter
+    identity = provider._identity
+    monkeypatch.setattr(type(identity), "_agent_workspace_path", lambda self: str(tmp_path))
+    context = identity.trusted_context()
+    core = provider._core
+    source = core.record_event(
+        context,
+        _payload("TEST layout task", key="TEST-handoff-session"),
+        scope_id=identity.local_scope_id,
+        remaining_seconds=5,
+    ).event_refs[0]
+    task = core.episodes(context)[0]
+    result = json.loads(
+        provider.handle_tool_call(
+            "handoff_write",
+            dict(
+                protocol_version="1.1",
+                report=dict(
+                    task_ref=task.ref,
+                    progress="TEST ready",
+                    evidence_refs=[source.ref + "@1"],
+                    session_label="TEST-label",
+                ),
+            ),
+        )
+    )
+    assert result["result"]["sender_session"] == context.session_id

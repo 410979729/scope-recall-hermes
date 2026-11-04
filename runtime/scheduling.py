@@ -11,15 +11,16 @@ import json
 import os
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from ..core.failure_retry import AUTO_RECOVERABLE_ERRORS
+from ..core.failure_policy import AUTO_RECOVERABLE_ERRORS, CAPABILITY_RECHECK, SETTLE_RETRY, SUPERVISOR_RETRY
 from ..core.file_lock import advisory_file_lock
 from ..core.inbox_rules import REPLAY_CANDIDATES, RETRIED, deferred_until, replayable
 from ..core.installation_copy import copy_task_name, installation_copy_id
 from ..core.storage import SQLiteStorage
 from ..core.work_storage import AUTO_RECOVERABLE_WORK_TYPES
+from .auxiliary import summary_budget_enabled
 from .backup_upkeep import BACKUP_JOB_SECONDS, next_backup_wake
 from .model_budget import provider_holds
 from .worker_entry import (
@@ -34,7 +35,7 @@ from .worker_entry import (
 #: truth writer was held, before it tries again.  At the plain interval a long
 #: maintenance write was met with a pass every few seconds; failing instead
 #: stopped the supervisor until the next autostart wake.
-BUSY_BACKOFF_SECONDS = 30.0
+BUSY_BACKOFF_SECONDS = SUPERVISOR_RETRY.delay()
 #: Hard worker failures in a row before a supervisor stops accepting wakes.
 #: One is not a broken worker: a pass can raise on one item, lose a lease to a
 #: maintenance command, or meet a bound nobody had met before.  Standing down on
@@ -42,7 +43,7 @@ BUSY_BACKOFF_SECONDS = 30.0
 #: and say so nowhere, with the queue left waiting.  Three in a row, each after
 #: a backoff, is a worker that
 #: is not going to work, and then standing down is right.
-MAX_CONSECUTIVE_WORKER_FAILURES = 3
+MAX_CONSECUTIVE_WORKER_FAILURES = SUPERVISOR_RETRY.attempts or 0
 #: The work types a model or embedding route does.  A pass can find one unavailable (no port, or a port that
 #: refused before any attempt); the supervisor then cools it down and records how long it stays unavailable.
 ROUTED_WORK_TYPES = frozenset({"embed", "consolidate", "evaluate_candidate"})
@@ -50,7 +51,7 @@ ROUTED_WORK_TYPES = frozenset({"embed", "consolidate", "evaluate_candidate"})
 PAUSE_POLL_SECONDS = 5.0
 #: Seconds before a worker is woken for settled candidates again after a pass that did not sweep them: a provider
 #: hold, the evaluation queue full, or a pass kept out, cut short or failed.
-SETTLE_RETRY_SECONDS = 900
+SETTLE_RETRY_SECONDS = SETTLE_RETRY.delay()
 BACKUP_JOB_REASONS = frozenset({"daily_backup", "backup_retention"})
 
 
@@ -66,11 +67,11 @@ def _utc(value: str) -> datetime:
     result = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if result.tzinfo is None:
         raise ValueError("supervisor_timestamp")
-    return result.astimezone(timezone.utc)
+    return result.astimezone(UTC)
 
 
 def _stamp(value: datetime) -> str:
-    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 @dataclass(frozen=True)
@@ -190,19 +191,54 @@ def _control_stamp(config, field: str) -> datetime | None:
         return None
 
 
+def _consolidation_candidates(tx, capable, now, base, params, scheduled, legacy_schedule, auxiliary):
+    """Wake bounded source repair and ended-summary discovery through the existing model cooldown."""
+    if "consolidate" not in capable:
+        return []
+    from ..core.reflection_storage import next_reflection_due
+    from ..core.summary_storage import next_summary_due
+
+    result = []
+    if summary_budget_enabled(auxiliary):
+        for label, discover in (("summary_due", next_summary_due), ("reflection_due", next_reflection_due)):
+            due = discover(tx, now=_stamp(now))
+            if due is not None:
+                result.append(scheduled("consolidate", max(_utc(due), now), label))
+    # Offset-zero failures each receive one inspection; checked sources no longer wake this repair.
+    legacy = (
+        tx._check()
+        .execute(
+            f"SELECT 1 FROM work_items WHERE {base} AND work_type='consolidate' AND state='failed' "
+            "AND last_error_code='INPUT_INVALID' AND consolidation_offset=0 LIMIT 1",
+            params,
+        )
+        .fetchone()
+    )
+    if legacy is not None:
+        result.append(legacy_schedule(now, "legacy_source_repair"))
+    return result
+
+
+def _conflict_wakes(tx, now):
+    """Local dependency checks can progress even when no model route is authorized."""
+    from ..core.reflection_conflicts import conflict_candidates
+
+    return [(now, "observation_conflict_scan")] if conflict_candidates(tx) else []
+
+
 def next_wake(config, *, now: datetime | None = None, unavailable_until=None) -> WakePlan:
     """Read only generic work fields under the same partition as claim_next.
 
     Candidate timing is advisory. Core rechecks deletion, scope, epoch and
     leases before every real mutation; this function grants no permission.
     """
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     unavailable_until = dict(unavailable_until or {})
     # A provider on hold keeps its work types asleep until the hold ends, so a
     # refusing provider is asked once per hold instead of once per wake.
 
     for work_type, (_model, until) in provider_holds(config.auxiliary, now=now.timestamp()).items():
-        held = datetime.fromtimestamp(until, timezone.utc)
+        held = datetime.fromtimestamp(until, UTC)
         if work_type not in unavailable_until or unavailable_until[work_type] < held:
             unavailable_until[work_type] = held
     capable = capable_work_types(config)
@@ -233,8 +269,8 @@ def next_wake(config, *, now: datetime | None = None, unavailable_until=None) ->
     storage = SQLiteStorage(config.binding)
     with storage.read(config.context(), remaining_seconds=1.0) as tx:
         conn = tx._check()
-        source_pages = tx.candidates.pending_source_pages()
-        if source_pages:
+        candidates.extend(_conflict_wakes(tx, now))
+        if source_pages := tx.candidates.pending_source_pages():
             pending += source_pages
             if "evaluate_candidate" in capable:
                 cooldown = unavailable_until.get("evaluate_candidate", unavailable_until.get("consolidate"))
@@ -291,19 +327,18 @@ def next_wake(config, *, now: datetime | None = None, unavailable_until=None) ->
                 due += timedelta(milliseconds=1)  # release_stale uses strict <.
             reason = "lease_expiry" if row["state"] == "leased" else "work_available"
             candidates.append(scheduled(row["work_type"], due, reason))
-        # Schema 1106 gives each legacy offset-zero failure one inspection.
-        # Core marks BOTH repaired and non-repairable candidates, so even a
-        # page with recovered=0 makes bounded progress and cannot hide the next
-        # page. Never revive a checked failure or a failed later chunk here.
-        if "consolidate" in capable:
-            legacy = conn.execute(
-                f"""SELECT 1 FROM work_items WHERE {base}
-                AND work_type='consolidate' AND state='failed'
-                AND last_error_code='INPUT_INVALID' AND consolidation_offset=0 LIMIT 1""",
+        candidates.extend(
+            _consolidation_candidates(
+                tx,
+                capable,
+                now,
+                base,
                 params,
-            ).fetchone()
-            if legacy is not None:
-                candidates.append(cooled(*budgeted(now, "legacy_source_repair"), unavailable_until.get("consolidate")))
+                scheduled,
+                lambda due, reason: cooled(*budgeted(due, reason), unavailable_until.get("consolidate")),
+                config.auxiliary,
+            )
+        )
         if config.max_auto_recoveries:
             for row in _auto_recovery_rows(conn, base, params, config):
                 if row["work_type"] not in capable or row["work_type"] not in AUTO_RECOVERABLE_WORK_TYPES:
@@ -315,6 +350,18 @@ def next_wake(config, *, now: datetime | None = None, unavailable_until=None) ->
 
 def _wake_plan(config, now, candidates, pending, blocked, failed) -> WakePlan:
     """Choose one wake from queue work and independent local maintenance."""
+    from .vector_upkeep import next_vector_wake
+
+    ledger = (
+        read_worker_metadata(worker_metadata_path(config, "transcript-replay.json"))
+        if isinstance(config.binding.data_directory, Path)
+        else {}
+    )
+    if type(ledger.get("next_at")) in (int, float):
+        candidates.append((datetime.fromtimestamp(ledger["next_at"], UTC), "transcript_replay"))
+    vector_wake = next_vector_wake(config, now)
+    if vector_wake is not None:
+        candidates.append(vector_wake)
     backup_wake = next_backup_wake(config.binding.data_directory, now)
     if backup_wake is not None:
         candidates.append(backup_wake)
@@ -481,7 +528,7 @@ def supervise(
     delay_seconds=0.0,
     clock=time.monotonic,
     sleep=time.sleep,
-    utc_now=lambda: datetime.now(timezone.utc),
+    utc_now=lambda: datetime.now(UTC),
     planner=next_wake,
     backup_once=None,
 ) -> int:
@@ -618,7 +665,7 @@ def supervise(
             }
             unavailable = set(payload.get("unavailable_work_types", ())) & ROUTED_WORK_TYPES
             unavailable_until = {
-                kind: utc_now() + timedelta(seconds=min(config.auto_retry_cooldown_seconds, 300))
+                kind: utc_now() + timedelta(seconds=min(config.auto_retry_cooldown_seconds, CAPABILITY_RECHECK.delay()))
                 for kind in unavailable
             }
             if code in (0, 75, 124):

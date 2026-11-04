@@ -12,16 +12,24 @@ from typing import Any, Protocol
 
 from ..contracts import ContractError, decode_payload, utc_instant, validate_payload
 from . import private
+from .adoption_work import adoption_checkpoint, process_adoption
+from .candidate_lifecycle import candidate_model_subject
 from .consolidate import (
     ConsolidationWorkFence,
     accept_consolidation,
     candidate_evaluation_messages,
     consolidation_messages,
+    using_memory_instruction,
 )
 from .consolidation_chunks import source_chunk
 from .consolidation_summary import resume_seed
-from .episodes import source_origin
+from .entry_control import sources_paused, sources_paused_now
+from .episodes import source_origin, source_watermark
 from .evidence_question import DERIVATION_ROOT_ORIGINS
+from .evidence_quote import align_claim_evidence
+from .evidence_support import using_support
+from .failure_policy import failure_category
+from .semantic_proposals import prepare_publication
 from .source_records import StoredSource
 from .worker_outcomes import (
     Outcome,
@@ -30,6 +38,7 @@ from .worker_outcomes import (
     derivation_changed,
     epoch_changed,
     finalize_work,
+    hold_for_entry_state,
     hold_for_private_mode,
     mark_obsolete,
     model_failure,
@@ -194,7 +203,7 @@ def _undecorate_claim(claim: dict, source_text: dict) -> None:
     for kind_field in ("procedure", "intention", "alias"):
         if claim.get("kind") != kind_field and claim.get(kind_field) in (None, {}):
             claim.pop(kind_field, None)
-    for time_field in ("valid_from", "valid_to"):
+    for time_field in ("valid_from", "valid_to", "occurred_at"):
         if time_field in claim:
             claim[time_field] = utc_instant(claim[time_field])
     spans = claim.get("evidence_spans")
@@ -224,7 +233,50 @@ def _bare_source_ref(span: dict, source_text: dict) -> None:
         span["source_ref"] = bare
 
 
-def decode_consolidation_result(raw: str, sources=()) -> dict:
+def _validate_aligned_result(value, indices):
+    """Keep repair fields in the original response's array after per-claim rejection."""
+    try:
+        return validate_payload("consolidation_result", value, indexed_errors=True)
+    except ContractError as exc:
+        for kept, original in enumerate(indices):
+            prefix = f"claim_proposals[{kept}]"
+            if exc.field.startswith(prefix):
+                raise ContractError(
+                    exc.code, exc.field.replace(prefix, f"claim_proposals[{original}]", 1), exc.hint
+                ) from exc
+        raise
+
+
+def _restore_request_fields(value, sources, episode_ref, candidate):
+    """Rebuild request constants; selected evidence and values remain model choices."""
+    # Missing/null arrays express no proposals; other types must reach validation.
+    for field in ("claim_proposals", "resume_proposals", "reference_proposals"):
+        if value.get(field) is None:
+            value[field] = []
+    value["protocol_version"] = "1.1"
+    if not sources:
+        return
+    refs = [f"{s.ref}@{s.revision}" for s in sources]
+    value["source_refs"] = refs
+    if candidate is not None:
+        claims = value.get("claim_proposals")
+        for claim in claims if isinstance(claims, list) else ():
+            if isinstance(claim, dict):
+                claim.update(
+                    kind=candidate.payload["kind"],
+                    subject=candidate_model_subject(candidate, sources),
+                    predicate=candidate.payload["predicate"],
+                )
+    resumes = value.get("resume_proposals")
+    watermark = source_watermark(refs)
+    for resume in resumes if isinstance(resumes, list) else ():
+        if isinstance(resume, dict):
+            resume.update(episode_ref=episode_ref, evidence_refs=list(refs), source_watermark=watermark)
+
+
+def decode_consolidation_result(
+    raw: str, sources=(), *, rejected_evidence: list[str] | None = None, episode_ref=None, candidate=None
+) -> dict:
     """Decode the model envelope without relaxing the consolidation contract.
 
     Some OpenAI-compatible gateways/models still wrap a JSON-object response in
@@ -235,24 +287,52 @@ def decode_consolidation_result(raw: str, sources=()) -> dict:
     and a ``valid_from``/``valid_to`` written with a numeric offset names the
     same instant as its UTC form (see ``contracts.utc_instant``).  All other shape,
     source, quote, and authority checks remain in the existing validators below.
+
+    Missing or null proposal arrays mean no proposals. Other array types and all
+    items retain strict validation. Request metadata, candidate identity and source
+    positions are filled by code. With
+    ``rejected_evidence``, unlocatable claims are omitted and their indexed
+    fields collected there. Without it, unlocatable quotes in supplied sources remain
+    untrusted envelope data; live publication validates them before any write.
+    Candidate requests and unavailable source versions retain indexed refusals.
+    Omitting sources retains envelope-only decoding; publication always
+    validates evidence against live authorized source versions.
     """
     if type(raw) is not str:
         raise ValueError("consolidation_result_not_text")
-    candidate = raw.strip()
-    if candidate.startswith("```"):
-        lines = candidate.splitlines()
+    encoded = raw.strip()
+    if encoded.startswith("```"):
+        lines = encoded.splitlines()
         if len(lines) < 3 or lines[0].strip() not in {"```", "```json"} or lines[-1].strip() != "```":
             raise ValueError("consolidation_result_fence")
-        candidate = "\n".join(lines[1:-1]).strip()
-    value = decode_payload(candidate)
+        encoded = "\n".join(lines[1:-1]).strip()
+    value = decode_payload(encoded)
+    _restore_request_fields(value, sources, episode_ref, candidate)
     source_text = {(s.ref, s.revision): s.event["content"] for s in sources}
+    available = {(s.ref, s.revision): s for s in sources}
     claims = value.get("claim_proposals")
+    indices = []
     if isinstance(claims, list):
-        for claim in claims:
+        kept = []
+        for index, claim in enumerate(claims):
             if not isinstance(claim, dict):
+                kept.append(claim)
+                indices.append(index)
                 continue
             _undecorate_claim(claim, source_text)
-    return validate_payload("consolidation_result", value)
+            try:
+                if available:
+                    align_claim_evidence(claim, available, index=index)
+            except ContractError as exc:
+                if rejected_evidence is not None:
+                    rejected_evidence.append(exc.field)
+                    continue
+                if candidate is not None or not exc.field.endswith(".quote"):
+                    raise
+            kept.append(claim)
+            indices.append(index)
+        value["claim_proposals"] = kept
+    return _validate_aligned_result(value, indices)
 
 
 @dataclass(frozen=True)
@@ -293,6 +373,9 @@ def _read_batch(tx, item, clock) -> _ConsolidationBatch:
     # A full interval may cover only some sources of an episode.  Leave those out
     # of this request; their own work items stay pending and will run when it ends.
     batch = private.filter_sources(intervals, batch)
+    # Excluded entries keep their own queued work; another entry's source can
+    # proceed without being coupled to a paused member of the same episode.
+    batch = tuple(source for source in batch if not sources_paused(tx, (source,)))
     roots = _root_only_sources(tx, batch)
     # The dependencies come from the same snapshot as the batch itself.
     dependencies = read_derivation_fence(tx, scope_id=item.scope_id, sources=(source, *batch), episode_ref=episode_ref)
@@ -341,8 +424,12 @@ def _needs_chunk(roots, episode_ref, feedback, offset) -> bool:
     return False
 
 
-def _decode_refused(finish, exc: Exception):
+def _decode_refused(finish, exc: Exception, *, private_hold=None):
     """A model answer that does not decode: a bounded fresh attempt, with the clause or envelope that failed."""
+    if isinstance(exc, ContractError) and exc.field == "private_mode" and private_hold is not None:
+        return private_hold()
+    if isinstance(exc, ContractError) and exc.code in {"SOURCE_MISSING", "VERSION_CONFLICT", "ACCESS_DENIED"}:
+        return _accept_refused(finish, exc)
     detail = exc.field if isinstance(exc, ContractError) else "json_envelope"
     return Outcome(
         *finish(
@@ -400,13 +487,28 @@ def process_consolidate(
     started: float,
     budget: float,
 ) -> tuple[str, str | None, str]:
-    finish = partial(finalize_work, storage, clock, context, item, started=started, budget=budget)
     with storage.read(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
         feedback = tx.work.derivation_feedback(item.work_id)
         if not tx.work._verify_lease(*item.lease, now=clock.utc_now()):
             state = tx.work.read_state(item.work_id) or "stale"
             return "stale", "authority_revoked" if state == "obsolete" else None, state
-        read = _read_batch(tx, item, clock)
+        checkpoint = adoption_checkpoint(tx, item.work_id)
+        read = _read_batch(tx, item, clock) if checkpoint is None else None
+        source = tx.source(item.subject_ref, item.subject_revision)
+        entry_paused = source is not None and sources_paused(tx, (source,))
+    if entry_paused:
+        return hold_for_entry_state(storage, clock, context, item, started=started, budget=budget)
+    if checkpoint is not None:
+        return process_adoption(storage, clock, context, item, checkpoint, model, started=started, budget=budget)
+    return _process_ordinary(
+        storage, clock, context, item, (read, feedback), model=model, started=started, budget=budget
+    )
+
+
+def _process_ordinary(storage, clock, context, item, prepared, *, model, started, budget):
+    """Run ordinary consolidation independently of any pending adoption stage."""
+    read, feedback = prepared
+    finish = partial(finalize_work, storage, clock, context, item, started=started, budget=budget)
     # Do not open a write transaction while the read transaction above is
     # still active.  SQLite's reader lock otherwise turns an obsolete source
     # into a spurious "database is locked" failure.
@@ -430,7 +532,22 @@ def process_consolidate(
         repair = {"validation_feedback": feedback} if feedback is not None else {}
         if private.outbound_blocked(storage, clock, context, sources=roots):
             return hold_for_private_mode(storage, clock, context, item, started=started, budget=budget)
-        with private.using_outbound_check(lambda: private.outbound_blocked(storage, clock, context, sources=roots)):
+        if sources_paused_now(storage, context, roots, remaining_seconds=budget_left(started, clock, budget)):
+            return hold_for_entry_state(storage, clock, context, item, started=started, budget=budget)
+        with storage.read(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
+            row = (
+                tx._check()
+                .execute(
+                    "SELECT text FROM scope_memory_instructions WHERE scope_id=? ORDER BY version DESC LIMIT 1",
+                    (source.scope_id,),
+                )
+                .fetchone()
+            )
+            instruction = row[0] if row else None
+        with (
+            using_memory_instruction(instruction),
+            private.using_outbound_check(lambda: private.outbound_blocked(storage, clock, context, sources=roots)),
+        ):
             raw = model.propose(
                 roots, episode_ref=episode_ref, remaining_seconds=budget_left(started, clock, budget), **repair
             )
@@ -442,9 +559,29 @@ def process_consolidate(
     except Exception as exc:
         return finish(*model_failure(exc))
     try:
-        value = decode_consolidation_result(raw, roots)
+        rejected_evidence: list[str] = []
+        value = decode_consolidation_result(raw, roots, rejected_evidence=rejected_evidence, episode_ref=episode_ref)
+        verdicts = prepare_publication(
+            storage,
+            context,
+            value,
+            roots,
+            getattr(model, "judge", None),
+            remaining_seconds=budget_left(started, clock, budget),
+            clock=clock,
+        )
     except (ContractError, ValueError, TypeError, json.JSONDecodeError) as exc:
-        return _decode_refused(finish, exc)
+        # A suppression replay can block support preparation before publication's
+        # dependency check. Missing sources remain an obsolete authority fence.
+        if isinstance(exc, ContractError) and exc.code == "ACCESS_DENIED":
+            with storage.read(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
+                if derivation_changed(tx, read.dependencies) is not None:
+                    exc = ContractError("VERSION_CONFLICT", "memory_epoch")
+        return _decode_refused(
+            finish,
+            exc,
+            private_hold=partial(hold_for_private_mode, storage, clock, context, item, started=started, budget=budget),
+        )
     fence = ConsolidationWorkFence(
         item.work_id,
         item.lease_token,
@@ -456,27 +593,41 @@ def process_consolidate(
         skipped_source_refs=frozenset(f"{s.ref}@{s.revision}" for s in batch) - allowed_refs,
         pending_sources=pending_sources,
         chunk=chunk,
+        rejected_claims=tuple(rejected_evidence),
     )
     try:
-        accept_consolidation(
-            storage,
-            clock,
-            # A durable work item runs outside the originating host session.
-            # Use the session from its freshly read source, never from model
-            # output, so current_human can validate that session's actual
-            # latest evidence. Scope, project and the work/dependency fence
-            # remain unchanged; stale or unrelated human evidence still fails.
-            replace(context, session_id=source.session_id, recent_messages=()),
-            value,
-            scope_id=item.scope_id,
-            remaining_seconds=budget_left(started, clock, budget),
-            work_fence=fence,
-        )
+        with using_support(verdicts):
+            accept_consolidation(
+                storage,
+                clock,
+                # A durable work item runs outside the originating host session.
+                # Use the session from its freshly read source, never from model
+                # output, so current_human can validate that session's actual
+                # latest evidence. Scope, project and the work/dependency fence
+                # remain unchanged; stale or unrelated human evidence still fails.
+                replace(context, session_id=source.session_id, recent_messages=()),
+                value,
+                scope_id=item.scope_id,
+                remaining_seconds=budget_left(started, clock, budget),
+                work_fence=fence,
+            )
     except ContractError as exc:
         return _accept_refused(finish, exc)
+    return _consolidation_outcome(
+        storage, context, item, verdicts, chunk, remaining_seconds=budget_left(started, clock, budget)
+    )
+
+
+def _consolidation_outcome(storage, context, item, verdicts, chunk, *, remaining_seconds):
+    """Reflect the durable row when ordinary work handed off to adoption stages."""
+    support_failure = next((v.failure_code for v in verdicts if v.failure_code), None)
     if chunk is not None and not chunk.final:
-        return "deferred", None, "pending"
-    return "completed", None, "done"
+        return "deferred", support_failure, "pending"
+    with storage.read(context, remaining_seconds=remaining_seconds) as tx:
+        if tx.work.read_state(item.work_id) == "pending":
+            return "deferred", support_failure, "pending"
+    disposition = "deferred" if support_failure and failure_category(support_failure) == "capability" else "completed"
+    return disposition, support_failure, "done"
 
 
 def build_consolidation_model(port) -> ConsolidationModel | None:
@@ -484,12 +635,30 @@ def build_consolidation_model(port) -> ConsolidationModel | None:
         return None
 
     class Adapter:
+        def __init__(self):
+            self._used = 0
+
+        @property
+        def remaining_calls(self):
+            """Expose a pass allowance without renewing or replacing the model port."""
+            if hasattr(port, "remaining_calls"):
+                return port.remaining_calls
+            limit = getattr(port, "max_calls_per_pass", None)
+            return max(0, limit - self._used) if limit is not None else None
+
+        def _call(self, messages, remaining_seconds):
+            self._used += 1
+            return port.propose(messages, remaining_seconds=remaining_seconds)
+
+        def judge(self, messages, *, remaining_seconds=1.0):
+            return self._call(messages, remaining_seconds)
+
         def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0, validation_feedback=None):
             messages = consolidation_messages(sources, episode_ref=episode_ref, validation_feedback=validation_feedback)
-            return port.propose(messages, remaining_seconds=remaining_seconds)
+            return self._call(messages, remaining_seconds)
 
         def evaluate_candidate(self, candidate, sources, *, remaining_seconds=1.0, validation_feedback=None):
             messages = candidate_evaluation_messages(candidate, sources, validation_feedback=validation_feedback)
-            return port.propose(messages, remaining_seconds=remaining_seconds)
+            return self._call(messages, remaining_seconds)
 
     return Adapter()

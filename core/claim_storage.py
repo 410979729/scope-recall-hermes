@@ -7,13 +7,25 @@ import json
 from typing import TYPE_CHECKING
 
 from ..contracts import ClaimProposal, ContractError
-from . import lineage
+from . import lexical_index, lineage
 from .claim_normalization import PROJECT_TAG, normalize_frame
-from .claims import ClaimVersion, Qualification, RootEvidence, canonical_time, claim_slot, evidence_refs
+from .claims import (
+    ClaimVersion,
+    Qualification,
+    RootEvidence,
+    canonical_time,
+    claim_slot,
+    evidence_refs,
+    persisted_claim_payload,
+)
 from .delete_storage import canonical
+from .importance import record_importance
+from .review_policy import publication_qualification
+from .summary_validity import is_conversation_summary
 from .visibility import allowed, allowed_refs
 
 if TYPE_CHECKING:
+    from .source_records import StoredSource
     from .storage import Transaction
 
 
@@ -47,6 +59,8 @@ _VERSION_COLUMNS = (
     "v.replaces_revision",
     "v.conflict_revisions_json",
     "c.suppressed",
+    "c.importance",
+    "c.pinned",
 )
 #: Claims ``Claims.prefetch_versions`` loads per statement.
 _PREFETCH_PAGE = 400
@@ -77,7 +91,53 @@ def _claim_version(row) -> ClaimVersion:
         row["replaces_revision"],
         tuple(json.loads(row["conflict_revisions_json"])),
         bool(row["suppressed"]),
+        5 if row["pinned"] else int(row["importance"]),
+        bool(row["pinned"]),
+        int(row["importance"]),
     )
+
+
+def _project_claim(tx, version, *, now, advance_head):
+    """Queue ordinary fact projections; grounded summaries already own their rebuildable representation."""
+    if not advance_head:
+        return
+    conn = tx._check(write=True)
+    if is_conversation_summary(version) or version.payload["kind"] == "observation":
+        conn.execute("UPDATE claims SET entity_indexed=1 WHERE claim_id=?", (version.ref,))
+        conn.execute(
+            "UPDATE claim_versions SET entity_resolved=1 WHERE claim_id=? AND revision=?",
+            (version.ref, version.revision),
+        )
+        return
+    conn.execute(
+        "UPDATE summary_groups SET state='waiting' WHERE group_key IN ("
+        "SELECT DISTINCT p.group_key FROM summary_parts p JOIN evidence_links s ON s.object_kind='claim' "
+        "AND s.object_ref=p.claim_ref AND s.object_revision=p.claim_revision JOIN evidence_links f "
+        "ON f.source_ref=s.source_ref AND f.source_revision=s.source_revision "
+        "WHERE f.object_kind='claim' AND f.object_ref=?)",
+        (version.ref,),
+    )
+    context = (version.ref, version.revision, version.scope_id, version.project_id, version.branch_id, now)
+    if version.state != "proposed":
+        # A vector already attempted may have landed; its acknowledgement remains useful after a revision.
+        conn.execute(
+            "UPDATE work_items SET state='obsolete' WHERE subject_ref=? AND state IN ('pending','leased') "
+            "AND NOT (work_type='embed' AND lease_token>0)",
+            (version.ref,),
+        )
+        conn.execute(
+            "INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,project_id,branch_id,available_at) "
+            "VALUES ('rebuild_projection',?,?,?,?,?,?)",
+            context,
+        )
+    conn.execute(
+        "INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,project_id,branch_id,available_at) "
+        "VALUES ('embed',?,?,?,?,?,?) ON CONFLICT(work_type,subject_ref,subject_revision) DO NOTHING",
+        context,
+    )
+    from .entity_names import index_claim
+
+    index_claim(tx, version)
 
 
 class Claims:
@@ -221,6 +281,159 @@ class Claims:
             raise ContractError("ACCESS_DENIED", "claim_unavailable")
         return self.versions(row["claim_id"])
 
+    def merge_lookup(
+        self,
+        scope_id,
+        *,
+        subjects=(),
+        predicate=None,
+        kind=None,
+        conditions=None,
+        alias_name=None,
+        instant=None,
+        options=None,
+    ) -> tuple[str, ...]:
+        """Find bounded normalized slot/alias matches after filtering the complete authorized scope.
+
+        Normalization is connection-local and creates no stored state. Filtering
+        precedes the result limit, so unrelated facts cannot hide an older slot.
+        """
+        from .fact_identity import normalize_fact_component
+
+        options = options or {}
+        entity = options.get("entity")
+        after, limit = options.get("after"), options.get("limit", 16)
+        if entity is not None:
+            return self._entity_lookup(scope_id, *entity)
+        self._tx._scope(scope_id)
+        conn, ctx = self._tx._check(), self._tx.context
+
+        def normalize(value):
+            return normalize_fact_component(value, max_chars=2048, allow_empty=True)
+
+        conn.create_function("scope_recall_fact_component", 1, normalize, deterministic=True)
+        filters = [
+            "c.scope_id=?",
+            "c.project_id IS ?",
+            "c.branch_id IS ?",
+            "c.kind=?",
+            "c.read_blocked=0",
+            "c.suppressed=0",
+            "v.state='active'" if alias_name is not None else "v.state IN ('active','proposed','disputed')",
+            "NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='claim' AND b.object_ref=c.claim_id "
+            "AND (b.read_blocked=1 OR b.suppressed=1))",
+        ]
+        params = [scope_id, ctx.project_id, ctx.branch_id, "alias" if alias_name is not None else kind]
+        if after is not None:
+            filters.append("c.claim_id>?")
+            params.append(after)
+        if alias_name is not None:
+            instant = canonical_time(instant)
+            if instant is None:
+                raise ContractError("INPUT_INVALID", "alias_instant")
+            conn.create_function("scope_recall_instant", 1, canonical_time, deterministic=True)
+            filters += [
+                "scope_recall_fact_component(json_extract(v.payload_json,'$.alias.name'))=?",
+                "(v.valid_from IS NULL OR scope_recall_instant(v.valid_from)<=?)",
+                "(v.valid_to IS NULL OR ?<scope_recall_instant(v.valid_to))",
+            ]
+            params += [normalize(alias_name), instant, instant]
+        else:
+            filters += [
+                "scope_recall_fact_component(c.subject) IN (SELECT value FROM json_each(?))",
+                "scope_recall_fact_component(c.predicate)=?",
+                "(SELECT json_group_array(value) FROM (SELECT DISTINCT value FROM "
+                "json_each(v.payload_json,'$.conditions') ORDER BY value))=?",
+            ]
+            params += [
+                json.dumps(sorted(subjects)),
+                predicate,
+                json.dumps(sorted(set(conditions or ())), ensure_ascii=False, separators=(",", ":")),
+            ]
+        return tuple(
+            row[0]
+            for row in conn.execute(
+                "SELECT c.claim_id FROM claims c JOIN claim_versions v "
+                "ON v.claim_id=c.claim_id AND v.revision=c.current_revision WHERE "
+                + " AND ".join(filters)
+                + " ORDER BY c.claim_id LIMIT ?",
+                [*params, limit],
+            )
+        )
+
+    def _entity_lookup(self, scope_id, name, vector_refs, evidence_text):
+        """Nominate indexed, ranked name representatives in the exact audience."""
+        from .entity_names import candidate_refs
+
+        return candidate_refs(self._tx, scope_id, name, vector_refs, evidence_text)
+
+    def aliases_for_query(self, query: str, *, limit: int = 200) -> tuple[str, ...]:
+        """Probe possible query labels by index without scanning stored aliases."""
+        from .entity_names import audience, query_keys
+
+        keys = query_keys(query)
+        if not keys:
+            return ()
+        ctx = self._tx.context
+        return tuple(
+            row[0]
+            for row in self._tx._check().execute(
+                "SELECT DISTINCT c.claim_id FROM entity_alias_labels l CROSS JOIN "
+                "claims c INDEXED BY sqlite_autoindex_claims_1 ON c.claim_id=l.claim_ref "
+                "CROSS JOIN claim_versions v ON v.claim_id=c.claim_id AND v.revision=c.current_revision "
+                "WHERE l.audience IN (SELECT value FROM json_each(?)) AND l.label IN (SELECT value FROM json_each(?)) "
+                "AND l.revision=c.current_revision AND c.kind='alias' AND c.read_blocked=0 AND c.suppressed=0 "
+                "AND v.state='active' AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='claim' "
+                "AND b.object_ref=c.claim_id AND (b.read_blocked=1 OR b.suppressed=1)) LIMIT ?",
+                (json.dumps([audience(ctx, s) for s in sorted(ctx.allowed_scope_ids)]), json.dumps(keys), limit),
+            )
+        )
+
+    def entity_names_for_query(self, query: str, *, matches=(), limit: int = 200) -> tuple[str, ...] | None:
+        """Probe complete labels by exact audience keys, never a nullable range condition."""
+        from .entity_names import query_keys, visible_audiences
+
+        keys = query_keys(query, matches)
+        if keys is None:
+            return None
+        return tuple(
+            row[0]
+            for row in self._tx._check().execute(
+                "SELECT q.value FROM json_each(?) q WHERE EXISTS(SELECT 1 FROM json_each(?) a "
+                "CROSS JOIN claims c INDEXED BY entity_subject_lookup "
+                "WHERE c.scope_id=json_extract(a.value,'$[0]') AND c.project_id IS json_extract(a.value,'$[1]') "
+                "AND c.branch_id IS json_extract(a.value,'$[2]') AND c.subject=q.value "
+                "AND c.kind IN ('fact','preference','constraint','decision','intention') "
+                "AND c.read_blocked=0 AND c.suppressed=0 AND NOT EXISTS(SELECT 1 FROM object_blocks b "
+                "WHERE b.object_kind='claim' AND b.object_ref=c.claim_id "
+                "AND (b.read_blocked=1 OR b.suppressed=1))) LIMIT ?",
+                (json.dumps(keys), json.dumps(visible_audiences(self._tx.context)), limit),
+            )
+        )
+
+    def subject_audiences(self, names, *, all_kinds: bool = False):
+        """Read conservative name-collision metadata without enumerating a subject's facts."""
+        from .entity_names import visible_audiences
+
+        index = "entity_subject_presence" if all_kinds else "entity_subject_lookup"
+        kinds = (
+            ""
+            if all_kinds
+            else "AND c.kind IN ('fact','preference','constraint','decision','intention') AND c.suppressed=0 "
+        )
+        rows = self._tx._check().execute(
+            "SELECT a.value FROM json_each(?) a WHERE EXISTS(SELECT 1 FROM claims c INDEXED BY "
+            + index
+            + " WHERE c.scope_id=json_extract(a.value,'$[0]') AND c.project_id IS json_extract(a.value,'$[1]') "
+            "AND c.branch_id IS json_extract(a.value,'$[2]') AND c.subject IN (SELECT value FROM json_each(?)) "
+            "AND c.read_blocked=0 "
+            + kinds
+            + "AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='claim' "
+            "AND b.object_ref=c.claim_id AND b.read_blocked=1))",
+            (json.dumps(visible_audiences(self._tx.context)), json.dumps(tuple(names))),
+        )
+        return {tuple(json.loads(row[0])) for row in rows}
+
     def list_refs(
         self,
         *,
@@ -253,7 +466,8 @@ class Claims:
             raise ContractError("INPUT_INVALID", "value_text")
         if alias_name is not None and (type(alias_name) is not str or not 1 <= len(alias_name) <= 240):
             raise ContractError("INPUT_INVALID", "alias_name")
-        if value_text is None and alias_name is None:
+        alias_subject = alias_name is None and kind == "alias" and subject is not None
+        if value_text is None and alias_name is None and not alias_subject:
             filters = [
                 f"scope_id IN ({','.join('?' for _ in scopes)})",
                 "read_blocked=0",
@@ -288,13 +502,34 @@ class Claims:
         if value_text is not None:
             filters.append("json_extract(v.payload_json,'$.value_text')=?")
             params.append(value_text)
-        if alias_name is not None:
+        if alias_name is not None or alias_subject:
             filters.append("c.kind='alias'")
-            filters.append(
-                "(json_extract(v.payload_json,'$.value_text')=? OR json_extract(v.payload_json,'$.alias.name')=?)"
+            from dataclasses import replace
+
+            from .entity_names import audience
+
+            audiences = [
+                audience(replace(ctx, project_id=project, branch_id=branch), scope)
+                for scope in scopes
+                for project in {None, ctx.project_id}
+                for branch in {None, ctx.branch_id}
+            ]
+            filters.extend(
+                (
+                    "l.audience IN (SELECT value FROM json_each(?))",
+                    "l.label=?",
+                    "l.roles&4!=0" if alias_subject else "l.roles&3!=0",
+                )
             )
-            params.extend((alias_name, alias_name))
-        source = "claims c JOIN claim_versions v ON v.claim_id=c.claim_id"
+            params.extend((json.dumps(audiences), subject if alias_subject else alias_name))
+        # Fresh alias data can leave partial-index statistics stale; every label joins one identity by its key.
+        source = (
+            "entity_alias_labels l CROSS JOIN claims c INDEXED BY sqlite_autoindex_claims_1 "
+            "ON c.claim_id=l.claim_ref "
+            "CROSS JOIN claim_versions v ON v.claim_id=c.claim_id AND v.revision=l.revision"
+            if alias_name is not None or alias_subject
+            else "claims c JOIN claim_versions v ON v.claim_id=c.claim_id"
+        )
         return tuple(
             r[0]
             for r in self._tx._check().execute(
@@ -451,6 +686,16 @@ class Claims:
     ) -> ClaimVersion:
         conn = self._tx._check(write=True)
         self._tx._scope(scope_id)
+        # Exact conversation excerpts are source views with their own dependency
+        # fence; changing their identity would turn quotes into ordinary facts.
+        qualification = publication_qualification(
+            self._tx,
+            scope_id,
+            qualification,
+            previous,
+            proposal,
+            source_view=is_conversation_summary(qualification),
+        )
         ctx = self._tx.context
         recorded = canonical_time(recorded_at)
         slot_key = claim_slot(scope_id, ctx.project_id, ctx.branch_id, proposal)
@@ -500,6 +745,7 @@ class Claims:
                     slot_key,
                 ),
             )
+        record_importance(self._tx, ref, proposal, advance_head=advance_head)
         if previous and advance_head:
             conn.execute(
                 "UPDATE claim_versions SET recorded_to=? WHERE claim_id=? AND revision=?",
@@ -511,7 +757,7 @@ class Claims:
             (
                 ref,
                 revision,
-                canonical(proposal),
+                canonical(persisted_claim_payload(proposal)),
                 qualification.state,
                 qualification.basis,
                 qualification.reason,
@@ -527,6 +773,7 @@ class Claims:
                 "UPDATE claims SET current_revision=?,slot_key=?,subject=?,predicate=? WHERE claim_id=?",
                 (revision, slot_key, proposal["subject"], proposal["predicate"], ref),
             )
+        lexical_index.index_claim(conn, ref)
         for span in proposal["evidence_spans"]:
             source = self._tx.source(span["source_ref"], span["source_revision"])
             # Three different findings, each with its own name, so a diagnostic
@@ -567,31 +814,9 @@ class Claims:
                     raise ContractError("ACCESS_DENIED", "evidence_scope")
                 lineage.link(conn, "claim", ref, revision, *key, relation=relation)
         conn.execute("UPDATE instance_meta SET memory_epoch=memory_epoch+1 WHERE singleton=1")
-        if advance_head and qualification.state != "proposed":
-            # The old revision's work is moot, except an embed that has held a lease: its vector may have landed
-            # already, and it completes against its own revision, which stays readable, as one done a moment earlier
-            # would have.  That includes one sent back to wait after it wrote (a dependency or its deadline moved).
-            # Made obsolete, it would leave a point in the store no ledger expected.
-            conn.execute(
-                """UPDATE work_items SET state='obsolete' WHERE subject_ref=? AND state IN ('pending','leased')
-                            AND NOT (work_type='embed' AND lease_token>0)""",
-                (ref,),
-            )
-            conn.execute(
-                "INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,project_id,branch_id,available_at) VALUES ('rebuild_projection',?,?,?,?,?,?)",
-                (ref, revision, scope_id, ctx.project_id, ctx.branch_id, recorded),
-            )
-        # Every head, promoted or not, is queued for the vector index. Proposals
-        # are admitted to recall labelled, and search cannot surface what it has
-        # no vector for: the lexical, vector and recent channels all yield
-        # events, leaving relation expansion as a claim's only other route in.
-        if advance_head:
-            conn.execute(
-                """INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,project_id,branch_id,available_at)
-                   VALUES ('embed',?,?,?,?,?,?) ON CONFLICT(work_type,subject_ref,subject_revision) DO NOTHING""",
-                (ref, revision, scope_id, ctx.project_id, ctx.branch_id, recorded),
-            )
-        return next(v for v in self.versions(ref) if v.revision == revision)
+        version = next(v for v in self.versions(ref) if v.revision == revision)
+        _project_claim(self._tx, version, now=recorded, advance_head=advance_head)
+        return version
 
     def require_target(self, version: ClaimVersion) -> None:
         ctx = self._tx.context
@@ -615,7 +840,8 @@ class Claims:
             self.require_live_source(source.ref, source.revision)
         return sources
 
-    def require_live_source(self, ref: str, revision: int) -> None:
+    def require_live_source(self, ref: str, revision: int) -> StoredSource:
+        """Return this visible source after enforcing the context and newest-version fences."""
         source = self._tx.source(ref, revision)
         ctx = self._tx.context
         if source is None or (source.project_id, source.branch_id) != (ctx.project_id, ctx.branch_id):
@@ -636,6 +862,7 @@ class Claims:
         )
         if not head:
             raise ContractError("VERSION_CONFLICT", "source_revision")
+        return source
 
     def current_human(self, refs: tuple[str, ...], scope_id: str):
         ctx = self._tx.context

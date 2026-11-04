@@ -1,0 +1,271 @@
+{
+  "_ISO_DATE": {
+    "pattern": "(?<![\\d_\\-./])(?P<year>\\d{4})\\s*[-/]\\s*(?P<month>\\d{1,2})\\s*[-/]\\s*(?P<day>\\d{1,2})(?![A-Za-z\\d_\\-]|[./][A-Za-z\\d_])",
+    "flags": 32
+  },
+  "_CN_DATE": {
+    "pattern": "(?<!\\d)(?P<year>\\d{4})\\s*年\\s*(?P<month>\\d{1,2})\\s*月\\s*(?P<day>\\d{1,2})\\s*[日号]?(?!\\d)",
+    "flags": 32
+  },
+  "_MONTH_DAY": {
+    "pattern": "(?<![\\d.])(?P<month>\\d{1,2})\\s*月\\s*(?P<day>\\d{1,2})\\s*[日号]?(?![\\d.])",
+    "flags": 32
+  },
+  "_EN_MONTH_NAMES": "jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?",
+  "_EN_MONTH": "(?P<month>jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?",
+  "_EN_MONTHS": [
+    "jan",
+    "feb",
+    "mar",
+    "apr",
+    "may",
+    "jun",
+    "jul",
+    "aug",
+    "sep",
+    "oct",
+    "nov",
+    "dec"
+  ],
+  "_EN_MONTH_DAY": {
+    "pattern": "(?<![a-z])(?P<month>jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?\\s+(?P<day>\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(?P<year>\\d{4}))?(?![\\d:a-z]|\\.\\d)",
+    "flags": 34
+  },
+  "_EN_DAY_MONTH": {
+    "pattern": "(?<![\\d.])(?P<day>\\d{1,2})(?:st|nd|rd|th)\\s+(?:of\\s+)?(?P<month>jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?(?:,?\\s+(?P<year>\\d{4}))?(?![\\d:a-z]|\\.\\d)",
+    "flags": 34
+  },
+  "_EN_ORDINAL_DAY": {
+    "pattern": "(?<![a-z])on\\s+the\\s+(?P<day>\\d{1,2})(?:st|nd|rd|th)(?=\\s*(?:$|[^\\w\\s]|about\\b|regarding\\b))",
+    "flags": 34
+  },
+  "_RANGE_TAIL": {
+    "pattern": "\\s*(?:到|至|~|～|-|—|–)\\s*(?:(?P<year>\\d{4})\\s*[-/年]\\s*)?(?:(?P<month>\\d{1,2})\\s*[-/月]\\s*)?(?P<day>\\d{1,2})\\s*[日号]?(?![\\d.:月])",
+    "flags": 32
+  },
+  "_EN_RANGE_TAIL": {
+    "pattern": "\\s*(?:-|–|—|to|through|thru|until|till)\\s*(?P<day>\\d{1,2})(?:st|nd|rd|th)?(?![\\d:a-z]|\\.\\d)",
+    "flags": 34
+  },
+  "_DATE_FORMS": [
+    [
+      {
+        "pattern": "(?<![\\d_\\-./])(?P<year>\\d{4})\\s*[-/]\\s*(?P<month>\\d{1,2})\\s*[-/]\\s*(?P<day>\\d{1,2})(?![A-Za-z\\d_\\-]|[./][A-Za-z\\d_])",
+        "flags": 32
+      },
+      {
+        "pattern": "\\s*(?:到|至|~|～|-|—|–)\\s*(?:(?P<year>\\d{4})\\s*[-/年]\\s*)?(?:(?P<month>\\d{1,2})\\s*[-/月]\\s*)?(?P<day>\\d{1,2})\\s*[日号]?(?![\\d.:月])",
+        "flags": 32
+      }
+    ],
+    [
+      {
+        "pattern": "(?<!\\d)(?P<year>\\d{4})\\s*年\\s*(?P<month>\\d{1,2})\\s*月\\s*(?P<day>\\d{1,2})\\s*[日号]?(?!\\d)",
+        "flags": 32
+      },
+      {
+        "pattern": "\\s*(?:到|至|~|～|-|—|–)\\s*(?:(?P<year>\\d{4})\\s*[-/年]\\s*)?(?:(?P<month>\\d{1,2})\\s*[-/月]\\s*)?(?P<day>\\d{1,2})\\s*[日号]?(?![\\d.:月])",
+        "flags": 32
+      }
+    ],
+    [
+      {
+        "pattern": "(?<![\\d.])(?P<month>\\d{1,2})\\s*月\\s*(?P<day>\\d{1,2})\\s*[日号]?(?![\\d.])",
+        "flags": 32
+      },
+      {
+        "pattern": "\\s*(?:到|至|~|～|-|—|–)\\s*(?:(?P<year>\\d{4})\\s*[-/年]\\s*)?(?:(?P<month>\\d{1,2})\\s*[-/月]\\s*)?(?P<day>\\d{1,2})\\s*[日号]?(?![\\d.:月])",
+        "flags": 32
+      }
+    ],
+    [
+      {
+        "pattern": "(?<![a-z])(?P<month>jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?\\s+(?P<day>\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(?P<year>\\d{4}))?(?![\\d:a-z]|\\.\\d)",
+        "flags": 34
+      },
+      {
+        "pattern": "\\s*(?:-|–|—|to|through|thru|until|till)\\s*(?P<day>\\d{1,2})(?:st|nd|rd|th)?(?![\\d:a-z]|\\.\\d)",
+        "flags": 34
+      }
+    ],
+    [
+      {
+        "pattern": "(?<![\\d.])(?P<day>\\d{1,2})(?:st|nd|rd|th)\\s+(?:of\\s+)?(?P<month>jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?(?:,?\\s+(?P<year>\\d{4}))?(?![\\d:a-z]|\\.\\d)",
+        "flags": 34
+      },
+      null
+    ],
+    [
+      {
+        "pattern": "(?<![a-z])on\\s+the\\s+(?P<day>\\d{1,2})(?:st|nd|rd|th)(?=\\s*(?:$|[^\\w\\s]|about\\b|regarding\\b))",
+        "flags": 34
+      },
+      null
+    ]
+  ],
+  "_MONTH": {
+    "pattern": "(?<![\\d.])(?:(?P<year>\\d{4})\\s*年\\s*)?(?P<month>\\d{1,2})\\s*月份?(?!\\s*\\d)",
+    "flags": 32
+  },
+  "_EN_MONTH_ALONE": {
+    "pattern": "(?<![a-z])(?:(?:in|during)\\s+|(?=(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?\\s+\\d{4}(?!\\d)))(?P<month>jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?(?:\\s+(?P<year>\\d{4}))?(?![\\d:a-z]|\\.\\d)",
+    "flags": 34
+  },
+  "_RANGE": {
+    "pattern": "\\s*(?:到|至|~|～|-|—|–|to|through|thru|until|till)\\s*",
+    "flags": 34
+  },
+  "_JOINER": {
+    "pattern": "\\s*(?:和|跟|与|及|以及|还有|、|,|，|and|&)\\s*",
+    "flags": 34
+  },
+  "_LEADS": {
+    "pattern": "(?:(?<![a-z])(?:between|from)\\s+|从\\s*)$",
+    "flags": 34
+  },
+  "_TRAILS": {
+    "pattern": "\\s*(?:之间|那一?天|当天)",
+    "flags": 32
+  },
+  "_BEFORE": {
+    "pattern": "(?<![a-z])(?:before|prior\\s+to)\\s+$",
+    "flags": 34
+  },
+  "_SINCE": {
+    "pattern": "(?<![a-z])(?:after|since)\\s+$",
+    "flags": 34
+  },
+  "_BEFORE_ZH": {
+    "pattern": "\\s*(?:之前|以前)",
+    "flags": 32
+  },
+  "_SINCE_ZH": {
+    "pattern": "\\s*(?:之后|以后|以来)",
+    "flags": 32
+  },
+  "_HELD_BEFORE_EN": {
+    "pattern": "(?<![a-z])(?:used\\s+to|previously|formerly|originally)(?![a-z])|(?<![a-z])the\\s+(?:old|former)\\s+(?=[a-z])|(?<![a-z])before(?:\\s+(?:that|then|now))?\\s*(?:[?？.!！。]|$)",
+    "flags": 34
+  },
+  "_BEFORE_WORD_ZH": "(?:以前|之前|原来|曾经|过去)",
+  "_HELD_BEFORE_ZH": {
+    "pattern": "(?:以前|之前|原来|曾经|过去)\\s*(?:一直|都|还|总|常|经常|曾)?\\s*(?:是(?!不是|否)|用|叫|喜欢|爱|住|有|在)|原来\\s*的|^\\s*(?:以前|之前|原来|曾经|过去)(?![\\s,，]*(?:说|讲|提|聊|谈|发|问|写|告诉|[一二两三四五六七八九十几\\d]))",
+    "flags": 32
+  },
+  "_RELATIVE": [
+    [
+      "大前天",
+      3,
+      false
+    ],
+    [
+      "前天",
+      2,
+      false
+    ],
+    [
+      "昨天",
+      1,
+      false
+    ],
+    [
+      "昨日",
+      1,
+      false
+    ],
+    [
+      "昨晚",
+      1,
+      true
+    ],
+    [
+      "昨夜",
+      1,
+      true
+    ],
+    [
+      "今天",
+      0,
+      false
+    ],
+    [
+      "今日",
+      0,
+      false
+    ],
+    [
+      "今早",
+      0,
+      true
+    ],
+    [
+      "今晨",
+      0,
+      true
+    ],
+    [
+      "今晚",
+      0,
+      true
+    ],
+    [
+      "今夜",
+      0,
+      true
+    ]
+  ],
+  "_NOT_A_DAY_AFTER": [
+    "以",
+    "之",
+    "至",
+    "往",
+    "目",
+    "提",
+    "向",
+    "如"
+  ],
+  "_MAX_DAY_MENTIONS": 16,
+  "_RELATIVE_EN": {
+    "pattern": "(?<![A-Za-z])(today|yesterday|last night|tonight|this morning)(?![A-Za-z])",
+    "flags": 34
+  },
+  "_EN_PARTS_OF_DAY": [
+    "this morning",
+    "last night",
+    "tonight"
+  ],
+  "_PERIODS": [
+    [
+      "last_week",
+      {
+        "pattern": "(?<![早晚马线网路加以])上[个一]?(?:周(?![期边围])|星期|礼拜)|(?<![a-z])last\\s+week(?![a-z])",
+        "flags": 34
+      }
+    ],
+    [
+      "this_week",
+      {
+        "pattern": "(?:本|这[个一]?)(?:周(?![期边围])|星期|礼拜)|(?<![a-z])this\\s+week(?![a-z])",
+        "flags": 34
+      }
+    ],
+    [
+      "last_month",
+      {
+        "pattern": "上个月|(?<![a-z])last\\s+month(?![a-z])",
+        "flags": 34
+      }
+    ],
+    [
+      "this_month",
+      {
+        "pattern": "(?:本|这个)月|(?<![a-z])this\\s+month(?![a-z])",
+        "flags": 34
+      }
+    ]
+  ],
+  "previous_conversation": {
+    "pattern": "(?:上次(?:聊|说)到哪(?:里|儿)?(?:了)?|where (?:did we leave off|were we)|what did we discuss last time)[?？。.!！]*",
+    "flags": 2
+  }
+}

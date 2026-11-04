@@ -1,7 +1,6 @@
 # 让 Agent 安装或升级 Scope Recall
 
-用户只需要说「帮我安装 Scope Recall」或「帮我升级一下 scoperecall」。
-下面的流程由 Agent 执行，不要求用户操作命令行、填写权限映射或审阅记忆。
+安装与升级可由助手执行。先区分新安装、Core 包升级与旧格式转换，再选择对应入口。
 
 `scope-recall-setup` 技能会随安装器交付到 Hermes 和 Codex 的技能发现目录。
 它只包含触发条件与分流入口；升级时才读取完整的
@@ -17,12 +16,35 @@
 | 已使用当前 Core | 备份、升级包和适配器、必要的 schema 升级、宿主检查 | 保留现有记忆和配置 |
 | 使用旧版 SQLite | 固定快照与权限、迁移、核验、恢复检索、切换宿主 | 旧记忆继续可用，后台恢复向量索引 |
 
-Agent 首先执行 `scope-recall setup --host <hermes-or-codex> --home <实际实例目录>`。
+Agent 首先执行 `scope-recall setup --host hermes --home /path/to/hermes-home`（其他宿主使用对应的 `--host` 值）。
 存在多个旧库、损坏、未知格式时，会明确返回待检查原因；不能当作新用户覆盖安装。
+
+## 从 3.16 升级到 4.0
+
+3.16 使用 Core 存储，走包升级和协调结构升级，不走旧格式转换。先停止共享库的全部宿主、远程服务、常驻召回进程和 worker，备份 SQLite、宿主配置、清单及旧包，再将 worker 与各入口升级到同一版本。
+
+共享库可通过已挂接的入口运行 `scope-recall upgrade-store --host codex --instance-root /path/to/attached-codex-home --backup-dir /path/to/new-upgrade-backups`。
+该命令的 `--host` 只接受 hermes 或 codex，本地库也用对应宿主的 home；其他入口通过 setup 或普通访问触发协调升级。当前结构号为 1134；升级会先保存核验快照，前台命令没有总时限，索引回填完成前普通召回可能不可用。
+
+每个入口重新运行 setup，刷新复制的插件和钩子。Hermes 包管理器自建的插件环境还需[单独重建](install/hermes.md#package-managed-plugin-environments)：版本不在包索引时，每次重建都要提供包含精确 wheel 的 `UV_FIND_LINKS` 目录，包括 `hermes update` 之后。最后逐入口运行 doctor，启动新会话，验证实际宿主捕获和召回。保留升级前快照、旧包和配置供退回使用。
+
+## 从 4.0 退回 3.16
+
+常规退回使用 [restore 流程](install.md#going-back-to-a-backup)，由新版本保存删除账本，再由读取快照的旧版本完成重放。3.16 的 restore 要求共享库登记范围与清单范围完全相等；若数据库 `instance_scopes` 有 `installation.json` 顶层 `scope_ids` 之外的范围，它不能完成第二步。doctor 不显示这两组范围的差异；可在停写后只读查询数据库的 `SELECT scope_id FROM instance_scopes`，与清单顶层 `scope_ids` 比较。
+
+这种情况下可冷退回到升级前快照，前提是快照之后没有需要保留的删除、撤回、对象屏蔽或原文组屏蔽等保护状态。**冷退回不重放删除账本：这些保护状态会丢失，已删除内容可能重新出现；原本不进自动召回的内容可能重新参与召回，原文组后续分段也会失去继承的屏蔽。**正常的 `restore` 会导出并重放这些保护状态。若有需要保留的保护，不要直接打开冷退回的库；保留当前库，先找到能在旧版本完整恢复这些保护的方案。快照之后的新写入和修改也会丢失。
+
+恢复信任操作者提供的本机材料：快照按安装身份核对并计算摘要，待恢复标记和删除账本按安装身份及账本摘要核对，以防误用其他安装的文件。这些核对不是签名，不能防止同机上的人同时改写材料；手工往同身份快照里添加的范围会在恢复后成为登记范围。
+
+1. 停止这个库的所有宿主和 worker，确认没有进程打开库。保留升级前快照及旧版配置。
+2. 在覆盖前，用 SQLite 一致性备份保存当时的库，包括尚在 WAL 的数据，并保留升级前快照的独立副本。
+3. 确认没有待完成的 restore 标记；若已有，先处理该待恢复状态，不要直接绕过它。
+4. 用升级前快照替换 `memory.sqlite3`，并删除旧的 `memory.sqlite3-wal` 和 `memory.sqlite3-shm`，它们属于被替换的新结构库。
+5. 用 3.16 打开恢复后的库并验证记忆，再重新启用宿主和 worker。
 
 ## 旧版迁移的执行边界
 
-操作指引由 `scope-recall setup --workflow` 输出，并包含以下步骤：
+普通安装和配置使用 `scope-recall setup`；需要处理旧格式和运行中宿主时，按 [迁移与宿主协调指引](../maintenance/AGENT_WORKFLOW.md) 执行以下步骤：
 
 1. 查明实际运行环境、数据路径、服务控制方式和旧版权限配置。
 2. 在独立目标中准备安装清单。保留可验证的账户、私聊、群聊和项目权限。
@@ -39,11 +61,23 @@ Agent 首先执行 `scope-recall setup --host <hermes-or-codex> --home <实际�
 
 源库变动、快照损坏、安装清单变更、权限缺失、未知转换语义都会阻止切换。
 任务记录保留失败原因，最多允许三次转换尝试；不无限重试同一个问题。
-所有这些检查和处理都由 Agent 完成，不创建人工记忆治理队列。
+迁移验证不要求逐条审批已有记忆；发布前审查是独立的、默认关闭的范围设置。
+
+## 事实词法索引升级
+
+已有库升级时，事实正文、主语词标记和可精确排序的头部信息按每页 500 条回填，游标与该页索引同事务提交。
+中断后再次升级会从已提交的页继续。升级耗时取决于事实数、正文长度、磁盘和同机负载；
+前台 `upgrade-store` 没有总时限，应等待它完成再验证召回。
+进程暂停和后台调度间隔会延长空窗，实际以升级命令完成为准。
+
+回填完成前，普通召回若没有足够预算完成升级，公开的 `recall_packet()` 入口抛出
+`SCHEMA_UNSUPPORTED`；直接调用召回管线时返回空结果和 `sqlite_unavailable:SCHEMA_UNSUPPORTED` 缺口。
+两者均影响整次召回，包括事件和事实通道。这不代表记忆被删除；升级成功后召回恢复。
+不使用全表子串扫描作为回退。
 
 ## 支持与验收
 
-转换器支持已验证的官方 578b SQLite 基线及明确实现的兼容扩展。
+转换器按 `maintenance/legacy_catalog.py` 与 `maintenance/migration_mapping.json` 中的旧表、字段和兼容扩展识别输入。
 2.0.1 旧库的记忆读取语义需要 Agent 核对后显式选用对应契约
 （`--legacy-reader-contract legacy-2.0.1/memories-physical-scope-in-accessible-scopes`）。
 旧向量目录不直接导入；SQLite 是真值，向量由 worker 重建。

@@ -43,7 +43,11 @@ _TEST_TARGETS = {
     "XDG_CONFIG_HOME": _TEST_ROOT / "xdg-config",
     "XDG_CACHE_HOME": _TEST_ROOT / "xdg-cache",
     "PIP_CACHE_DIR": _TEST_ROOT / "pip-cache",
+    "HYPOTHESIS_STORAGE_DIRECTORY": _TEST_ROOT / "hypothesis",
     "HERMES_HOME": _TEST_HERMES_HOME,
+    "CODEX_HOME": _TEST_ROOT / "codex-home",
+    "CLAUDE_CONFIG_DIR": _TEST_ROOT / "claude-home",
+    "CODEBUDDY_CONFIG_DIR": _TEST_ROOT / "workbuddy-home",
     "SCOPE_RECALL_DB": _TEST_ROOT / "truth" / "memory.sqlite3",
     "SCOPE_RECALL_LOG_DIR": _TEST_ROOT / "logs",
     "SCOPE_RECALL_LEASE_DIR": _TEST_ROOT / "leases",
@@ -102,14 +106,3 @@ def _isolate_posix_truth_hardening_cache():
     yield
     if callable(reset):
         reset()
-
-
-@pytest.fixture(autouse=True)
-def _isolate_shared_vector_stores():
-    """A server started in a test shares its vector stores for the rest of the process (``process_store.share``)."""
-
-    import scope_recall.vector.process_store as process_store
-
-    process_store._reset_sharing_for_tests()
-    yield
-    process_store._reset_sharing_for_tests()

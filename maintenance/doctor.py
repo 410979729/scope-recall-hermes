@@ -25,8 +25,16 @@ from scope_recall.adapters.hermes.audiences import LOCAL_USER_ID
 from scope_recall.adapters.hermes.identity import unbound_session_hint
 from scope_recall.adapters.hermes.shared_entries import read_attachment
 from scope_recall.adapters.hermes.unbound_sessions import owner_sessions_unbound
+from scope_recall.adapters.host_memory import inspect_host_memory
+from scope_recall.core.recall_policy import RecallPolicy, embedding_space_id
 from scope_recall.runtime.instance_config import RuntimeInstanceConfig
-from scope_recall.runtime.model_budget import budget_totals, budget_window, pre_request_refusals, provider_refusals
+from scope_recall.runtime.model_budget import (
+    budget_totals,
+    budget_window,
+    pre_request_refusals,
+    prepare_budget_totals,
+    provider_refusals,
+)
 from scope_recall.runtime.running_code import live_records, stale_records
 
 from . import package_health
@@ -48,6 +56,7 @@ from .doctor_store import (
     check_unreached,
     check_vector_store,
 )
+from .import_progress import read_progress
 from .install_common import RUNTIME_CONFIG_LIMIT
 
 #: Run as a file by the target interpreter, so an installed package that
@@ -137,9 +146,9 @@ def _check_hermes_runtime(report: DoctorReport, instance: Path, config: RuntimeI
         record_check(report, "hermes_runtime", "unreadable")
         return
     version = _installed_version(names, "hermes-scope-recall")
-    vectors = all(_installed_version(names, name) is not None for name in ("lancedb", "pyarrow"))
+    vectors = all(_installed_version(names, name) is not None for name in ("numpy",))
     vector = config.vector if config is not None else None
-    needs_vectors = vector is not None and vector.backend == "lancedb"
+    needs_vectors = vector is not None
     report.hermes_runtime = {
         "environment": str(environment),
         "package_version": version,
@@ -158,11 +167,11 @@ def _check_hermes_runtime(report: DoctorReport, instance: Path, config: RuntimeI
 def _check_vector_dependencies(
     report: DoctorReport, probe: dict[str, Any], config: RuntimeInstanceConfig | None
 ) -> None:
-    """Report missing vector packages only for a configured LanceDB store.
+    """Report missing vector packages for a configured vector companion.
 
     Hermes-managed environments are checked separately. A probe without dependency metadata supplies no finding."""
     vector = config.vector if config is not None else None
-    if report.hermes_runtime is not None or vector is None or vector.backend != "lancedb":
+    if report.hermes_runtime is not None or vector is None:
         return
     found = probe.get("vector_dependencies")
     if not isinstance(found, dict):
@@ -200,11 +209,17 @@ def _read_control_file(path: Path) -> dict[str, Any] | None:
     return loaded
 
 
-def _probe_python_package(python: Path) -> dict[str, Any]:
+def probe_python_package(python: Path) -> dict[str, Any]:
     """What the target interpreter imports; empty when it cannot answer cleanly."""
     try:
         result = subprocess.run(
-            [str(python), "-I", "-B", str(_PACKAGE_PROBE)], capture_output=True, text=True, timeout=30, check=False
+            [str(python), "-I", "-B", str(_PACKAGE_PROBE)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
         )
         found = json.loads(result.stdout) if result.returncode == 0 and len(result.stdout) <= 65536 else None
     except (OSError, subprocess.TimeoutExpired, ValueError):
@@ -244,6 +259,7 @@ def _ledger_headroom(ledger_path: Path | None, policy: Any) -> dict[str, Any]:
         window = budget_window(policy, time.time_ns()) if period == "monthly" else None
         with closing(sqlite3.connect(uri, uri=True, timeout=5)) as db:
             db.execute("BEGIN")
+            prepare_budget_totals(db, policy, readonly=True)
             totals = budget_totals(db, window)
             lifetime = budget_totals(db) if window is not None else totals
     except (sqlite3.Error, OSError, ValueError):
@@ -284,8 +300,8 @@ def _ledger_headroom(ledger_path: Path | None, policy: Any) -> dict[str, Any]:
 #: ``worker_capability_unavailable`` fires because the operator declined
 #: external consolidation, so the work type is unavailable by configuration.
 #: ``vector_threshold_unconfigured`` is vector recall wired without a threshold:
-#: recall still answers lexically, and no value can be supplied for the operator
-#: because a threshold is calibrated for one embedding model.
+#: recall still answers lexically. Only the built-in space has a default;
+#: another space needs its own calibration.
 #: ``audience_owner_unverified`` is an owner grant whose user is no owner
 #: principal: it grants nothing until the owner approves that user, and only
 #: the owner knows whether to.
@@ -313,6 +329,7 @@ _NON_ACTIONABLE_GAPS = frozenset(
 _WORKER_STATUS_KEYS = frozenset(
     {
         "status",
+        "transcript_replay",
         "installation_id",
         "started_at",
         "finished_at",
@@ -459,7 +476,7 @@ def _check_python_package(report: DoctorReport, python: Path) -> dict[str, Any]:
         record_check(report, "python_executable", "missing")
         return {}
     report.python_executable = str(python)
-    probe = _probe_python_package(python)
+    probe = probe_python_package(python)
     if not probe:
         report.capability_gaps.append("python_package_missing")
         record_check(report, "python_package", "missing")
@@ -599,6 +616,32 @@ def _serves(worker, binding) -> bool:
     ) and binding.scope_ids <= worker.scope_ids
 
 
+def _check_transcript_replay(report: DoctorReport, states: object) -> None:
+    """Show content-free ledger outcomes beside the worker's ordinary queue status."""
+    if not isinstance(states, dict):
+        return
+
+    def count(name):
+        return states.get(name, 0) if type(states.get(name, 0)) is int else 0
+
+    if count("given_up") or count("stopped"):
+        record_check(
+            report,
+            "transcript_replay",
+            "blocked",
+            (
+                "Ledger capture stopped; retry-failures --apply reopens given-up and denied checkpoints after repair. "
+                "Invalid input must be corrected at the source."
+            ),
+        )
+    elif count("deferred") or count("ready"):
+        record_check(
+            report, "transcript_replay", "pending", "The worker retains the ledger checkpoint for a later pass."
+        )
+    else:
+        record_check(report, "transcript_replay", "caught_up", "The last bounded ledger pass completed.")
+
+
 def _check_worker_status(report: DoctorReport, binding, data_directory: Path) -> None:
     """The worker's last receipt, when it left one for this binding."""
     try:
@@ -617,6 +660,8 @@ def _check_worker_status(report: DoctorReport, binding, data_directory: Path) ->
         report.capability_gaps.append("worker_last_exit_failed")
     if report.pending_work and status.get("unavailable_work_types"):
         report.capability_gaps.append("worker_capability_unavailable")
+
+    _check_transcript_replay(report, status.get("transcript_replay"))
 
 
 #: Passes in a row that may leave a work type the config enables unavailable before the doctor says so.  One
@@ -775,13 +820,7 @@ def _entry_runtime_config(instance: Path, data_directory: Path):
 
 
 def _check_vector_threshold(report: DoctorReport, binding, data_directory: Path) -> None:
-    """Vector recall that is wired but admits nothing, named instead of silent.
-
-    Reads the ``runtime-config.json`` every host loads by default.  With a
-    vector store and an approved embedding route but no ``vector_threshold``,
-    sources and queries are still embedded while recall refuses every vector hit
-    as ``vector_threshold_unconfigured``.  No threshold is assumed here.
-    """
+    """Report recall's built-in default or configured floor without changing configuration."""
     try:
         raw = _read_control_file(data_directory / "runtime-config.json")
         config = None if raw is None else RuntimeInstanceConfig.from_mapping(raw)
@@ -798,8 +837,12 @@ def _check_vector_threshold(report: DoctorReport, binding, data_directory: Path)
         or auxiliary.embedding is None
     ):
         return
-    if config.vector_threshold is not None:
-        record_check(report, "vector_threshold", "configured", str(config.vector_threshold))
+    policy = RecallPolicy(
+        vector_threshold=config.vector_threshold, embedding_space_id=embedding_space_id(config.embedding_space())
+    )
+    if policy.vector_threshold is not None:
+        state = "default" if config.vector_threshold is None else "configured"
+        record_check(report, "vector_threshold", state, str(policy.vector_threshold))
         return
     model = str(config.embedding_space()["model"])[:64]
     report.capability_gaps.append("vector_threshold_unconfigured")
@@ -827,17 +870,49 @@ def _classify_status(report: DoctorReport) -> None:
     report.status = "degraded" if actionable else ("attention" if attention else "ok")
 
 
+def _check_capture_authorization(report: DoctorReport, instance: Path, binding) -> None:
+    """Report unsafe local grant metadata without changing the owner's authorization."""
+    if report.host != "codex" or binding.installation_kind != "local":
+        return
+    from scope_recall.adapters.clients.ledger_state import authorization_problem
+
+    config = load_codex_config(instance / "codex-installation.json")
+    reason = authorization_problem(config)
+    if reason is not None:
+        report.capability_gaps.append("capture_authorization_invalid")
+        record_check(
+            report,
+            "capture_authorization",
+            "blocked",
+            reason + "; automatic replay is stopped. Re-run the trusted installer for this instance to "
+            "authorize only future capture from the current time, or restore valid authorization state "
+            "from a trusted backup of this database. Do not infer an earlier grant.",
+        )
+
+
 def run_doctor(
     *,
     host: str,
     instance_root: Path | str,
     python_executable: Path | str | None = None,
+    recall_request_id: str | None = None,
+    project_root: Path | str | None = None,
 ) -> DoctorReport:
     if host not in ("hermes", "codex", "claude-code", "workbuddy", "dsh"):
         raise ValueError("host must be 'hermes', 'codex', 'claude-code', 'workbuddy' or 'dsh'")
     instance = _require_absolute(Path(instance_root), "instance_root")
     python = Path(python_executable) if python_executable is not None else None
+    # Imported here: both read sibling packages (runtime budgets, the Codex adapter's config), and
+    # importing them with the module would make ``maintenance`` unimportable as a top-level package.
+    from .doctor_recall import check_recall_log
+    from .setup_projects import project_suggestions
+    from .setup_workload import recommended_workload
+
     report = DoctorReport(host=host, status="degraded")
+    report.host_memory = inspect_host_memory(host, instance, project=Path(project_root or Path.cwd()))
+    report.model_workload_per_100_turns = recommended_workload()
+    if host == "codex":
+        report.project_copy_suggestions = project_suggestions(instance, Path(project_root or Path.cwd()))
 
     _check_host_registration(report, instance, python)
     probe = _check_current_package(report) if python is None else _check_python_package(report, python)
@@ -849,6 +924,7 @@ def run_doctor(
         return report
     binding, data_directory = bound
     _check_audiences(report, instance)
+    report.memory_import = read_progress(data_directory)
     _check_local_sessions(report, data_directory)
     _check_running_code(report, data_directory)
     package_health.apply_package_health(report, instance, probe)
@@ -856,6 +932,7 @@ def run_doctor(
     _check_vector_threshold(report, binding, data_directory)
 
     readable = check_storage(report, binding, data_directory)
+    check_recall_log(report, binding, request_id=recall_request_id)
     config = _runtime_config(data_directory)
     entry_config = _entry_runtime_config(instance, data_directory)
     _check_hermes_runtime(report, instance, entry_config)
@@ -863,6 +940,7 @@ def run_doctor(
     check_vector_store(report, entry_config, binding)
     check_footprint(report, data_directory, config)
     if readable:
+        _check_capture_authorization(report, instance, binding)
         _check_worker_status(report, binding, data_directory)
         wake_seconds = _check_autostart(report, binding, data_directory)
         _check_supervisor(report, data_directory)

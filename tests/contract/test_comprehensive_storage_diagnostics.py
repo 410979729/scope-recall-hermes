@@ -15,7 +15,7 @@ from scope_recall._version import __version__
 from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.admission import AdmissionPolicy
-from scope_recall.core.recall_policy import SPACE_ID
+from scope_recall.core.recall_policy import SPACE_ID, RecallPolicy
 from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.maintenance import doctor, doctor_store
 from test_autonomous_admission import app_at, capture
@@ -219,6 +219,9 @@ def test_doctor_checks_the_configured_sqlite_companion(tmp_path, monkeypatch, st
             )
         elif state != "missing":
             writer.open()
+            if state == "readable":
+                writer.register_space("TEST-space", {"model": "gemini-embedding-2", "dimensions": 3072})
+                writer.maintain_index()
         if state == "unreadable":
             reader = build_vector_store(
                 config.backend,
@@ -240,6 +243,11 @@ def test_doctor_checks_the_configured_sqlite_companion(tmp_path, monkeypatch, st
         elif state == "missing":
             assert "worker" in check["detail"] and "first pass" in check["detail"]
             assert not writer.db_path.exists()
+        else:
+            runtime = report.index_metadata["vector_runtime"]
+            assert runtime["engine"] == "numpy-prefix" and runtime["coarse_dimensions"] == 768
+            assert runtime["candidate_target"] == 1024 and 1 <= runtime["compute_threads"] <= 4
+            assert check["detail"] == "numpy-prefix; sqlite-bruteforce -> sqlite"
     finally:
         writer.close()
 
@@ -336,7 +344,7 @@ def test_doctor_labels_vector_path_permission_errors_as_unreadable(tmp_path, mon
 
 
 @pytest.mark.parametrize("configured", ["lancedb", "no-vector", "no-config"])
-def test_doctor_skips_companion_open_without_a_sqlite_backend(tmp_path, monkeypatch, configured):
+def test_doctor_checks_legacy_sqlite_mapping_without_loading_lance(tmp_path, monkeypatch, configured):
     import builtins
 
     _app, ctx = _doctor_app(tmp_path, monkeypatch)
@@ -350,7 +358,7 @@ def test_doctor_skips_companion_open_without_a_sqlite_backend(tmp_path, monkeypa
 
     monkeypatch.setattr(builtins, "__import__", without_lance)
     report = doctor.run_doctor(host="hermes", instance_root=ctx.binding.data_directory)
-    assert not any(item["name"] == "vector_store" for item in report.checks)
+    assert any(item["name"] == "vector_store" for item in report.checks) is (configured == "lancedb")
     assert "vector_store_unreadable" not in report.capability_gaps
 
 
@@ -380,7 +388,7 @@ def _runtime_gaps(report):
             {"hermes_runtime_package_mismatch", "hermes_runtime_vector_dependencies_missing"},
         ),
         ({}, {"hermes_runtime_package_missing", "hermes_runtime_vector_dependencies_missing"}),
-        ({"hermes_scope_recall": __version__, "lancedb": "0.37.1", "pyarrow": "24.0.0"}, set()),
+        ({"hermes_scope_recall": __version__, "numpy": "2.5.4"}, set()),
     ],
 )
 def test_doctor_reads_the_environment_a_hermes_really_runs_plugins_in(tmp_path, monkeypatch, packages, gaps):
@@ -411,14 +419,13 @@ def test_a_hermes_that_runs_plugins_in_its_venv_has_no_environment_to_read(tmp_p
 @pytest.mark.parametrize(
     ("installed", "missing"),
     [
-        ({"lancedb": None, "pyarrow": None}, "lancedb,pyarrow"),
-        ({"lancedb": "0.37.1", "pyarrow": None}, "pyarrow"),
-        ({"lancedb": "0.37.1", "pyarrow": "24.0.0"}, ""),
+        ({"numpy": None}, "numpy"),
+        ({"numpy": None, "sqlite-vec": "0.1.9"}, "numpy"),
+        ({"numpy": "2.5.4"}, ""),
     ],
 )
-def test_doctor_names_a_lancedb_store_the_interpreter_cannot_open(tmp_path, monkeypatch, installed, missing):
-    """Installed without the ``lancedb`` extra, with a LanceDB store configured, every recall runs by words alone,
-    and the doctor names that, not only the threshold."""
+def test_doctor_names_a_companion_without_numpy(tmp_path, monkeypatch, installed, missing):
+    """A raw companion still requires NumPy when the optional binary extension is installed."""
     _app, ctx = _doctor_app(tmp_path, monkeypatch)
     home = ctx.binding.data_directory
     _write_runtime_config(ctx)
@@ -431,9 +438,11 @@ def test_doctor_names_a_lancedb_store_the_interpreter_cannot_open(tmp_path, monk
         "result": "missing" if missing else "ok",
         **({"detail": missing} if missing else {}),
     } in report.checks
-    # A store that needs neither, and no store at all, are no finding.
+    # Both legacy names map to the same NumPy-dependent raw store.
     _write_runtime_config(ctx, vector={**_vector_block(ctx), "backend": "sqlite-bruteforce"})
-    assert "vector_dependencies_missing" not in doctor.run_doctor(host="hermes", instance_root=home).capability_gaps
+    assert (
+        "vector_dependencies_missing" in doctor.run_doctor(host="hermes", instance_root=home).capability_gaps
+    ) is bool(missing)
     _write_runtime_config(ctx, vector=None, auxiliary={"external_embedding": False, "external_consolidation": False})
     assert "vector_dependencies_missing" not in doctor.run_doctor(host="hermes", instance_root=home).capability_gaps
 
@@ -443,12 +452,12 @@ def test_an_attached_entry_is_read_against_its_own_runtime_config(tmp_path, monk
     shared worker's.  An entry with no routes of its own needs no vector extra, whatever the worker uses."""
     _app, ctx = _doctor_app(tmp_path, monkeypatch)
     store = ctx.binding.data_directory
-    _write_runtime_config(ctx)  # the shared worker's: a LanceDB store
+    _write_runtime_config(ctx)  # the shared worker's companion
     entry = tmp_path / "TEST-entry-home" / "scope-recall"
     entry.mkdir(parents=True)
     (entry / "attachment.json").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(doctor, "_hermes_data_dir", lambda root: root / "scope-recall")
-    without = {"vector_dependencies": {"lancedb": None, "pyarrow": None}}
+    without = {"vector_dependencies": {"numpy": None}}
     lexical = doctor.DoctorReport(host="claude-code", status="degraded")
     doctor._check_vector_dependencies(lexical, without, doctor._entry_runtime_config(entry.parent, store))
     assert lexical.capability_gaps == []
@@ -460,11 +469,11 @@ def test_an_attached_entry_is_read_against_its_own_runtime_config(tmp_path, monk
     assert doctor._entry_runtime_config(entry.parent, store).vector is not None  # a local install: beside its store
 
 
-def test_the_probe_reads_the_vector_extra_without_importing_it():
+def test_the_probe_reads_numpy_metadata_without_importing_it():
     from scope_recall.maintenance import package_health
 
     found = package_health.package_probe()["vector_dependencies"]
-    assert set(found) == {"lancedb", "pyarrow"}
+    assert set(found) == {"numpy"}
     assert all(version is None or isinstance(version, str) for version in found.values())
     assert package_health.installed_version("TEST-not-a-distribution") is None
 
@@ -492,18 +501,16 @@ def test_an_environment_this_account_cannot_read_is_unknown_not_missing(tmp_path
     assert {"name": "hermes_runtime", "result": "unreadable"} in report.checks
 
 
-def test_doctor_names_vector_recall_configured_without_a_threshold(tmp_path, monkeypatch):
-    """No installer writes vector_threshold, and without it recall refuses every
-    vector hit while sources are still embedded; the doctor has to say so."""
+def test_doctor_resolves_builtin_threshold_and_names_unconfigured_other_spaces(tmp_path, monkeypatch):
+    """The built-in space has a default; other spaces need an explicit threshold."""
     app, ctx = _doctor_app(tmp_path, monkeypatch)
     _write_runtime_config(ctx)
     before = app.storage.path.read_bytes()
     result = doctor.run_doctor(host="hermes", instance_root=ctx.binding.data_directory)
-    assert "vector_threshold_unconfigured" in result.capability_gaps
+    assert "vector_threshold_unconfigured" not in result.capability_gaps
     [check] = [item for item in result.checks if item["name"] == "vector_threshold"]
-    assert check["result"] == "unconfigured"
-    for fragment in ("runtime-config.json", "gemini-embedding-2", "no vector_threshold", "lexical only"):
-        assert fragment in check["detail"]
+    assert check["result"] == "default"
+    assert float(check["detail"]) == RecallPolicy(vector_threshold=None).vector_threshold == 0.70
     assert app.storage.path.read_bytes() == before
     # Worth a look, not a fault: recall still answers lexically.
     alone = doctor.DoctorReport(host="hermes", status="degraded", capability_gaps=["vector_threshold_unconfigured"])

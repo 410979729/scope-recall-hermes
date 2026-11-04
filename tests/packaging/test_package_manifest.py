@@ -67,10 +67,17 @@ def test_post_release_versions_are_not_reintroduced():
     assert ".post" not in inventory.source_version(REPO_ROOT)
 
 
+@pytest.mark.parametrize("version", ["4.0.0.dev0", "3.1.0rc39", "3.17.0", "3.1.0rc2.post1"])
+def test_plugin_manifests_spell_the_version_as_the_installers_do(version):
+    from scope_recall.maintenance.install_common import manifest_version
+
+    assert inventory.manifest_version(version) == manifest_version(version)
+
+
 def test_stamping_a_manifest_preserves_everything_else(tmp_path):
     original = "name: scope-recall\nversion: 1.2.3\ndescription: unchanged\n"
     stamped = inventory.stamped_manifest(original, "9.9.9rc1")
-    assert stamped == "name: scope-recall\nversion: 9.9.9rc1\ndescription: unchanged\n"
+    assert stamped == "name: scope-recall\nversion: 9.9.9-rc.1\ndescription: unchanged\n"
     with pytest.raises(RuntimeError):
         inventory.stamped_manifest("name: no-version-line\n", "9.9.9rc1")
 
@@ -98,16 +105,22 @@ def test_the_readme_does_not_still_advertise_an_older_candidate() -> None:
     assert not stale, f"README.md still names an older candidate: {stale}"
 
 
-def test_the_readme_installs_the_vector_extra_and_no_older_release() -> None:
-    """The README's install commands carry ``[lancedb]`` and pin no older release: whoever follows the first page
-    (PyPI shows it too) gets the current release and recall with vectors."""
+def test_the_readme_installs_the_default_vector_runtime_and_no_older_release() -> None:
+    """The README installs the base vector runtime and keeps release requirements current."""
     import re
 
     version = inventory.source_version(REPO_ROOT)
     readme = _read("README.md")
     installs = [line.strip() for line in readme.splitlines() if "pip install" in line and "hermes-scope-recall" in line]
     assert installs, "README.md has no install command"
-    assert all("[lancedb" in line for line in installs), f"an install without the vector extra: {installs}"
+    assert all("lancedb" not in line for line in installs), f"a legacy reader in the default install: {installs}"
+    import tomllib
+
+    from packaging.requirements import Requirement
+
+    project = tomllib.loads(_read("pyproject.toml"))["project"]
+    assert "numpy" in {Requirement(value).name for value in project["dependencies"]}
+    assert project["optional-dependencies"]["vectors"] == []
     # Unpinned, pip keeps an older install that satisfies the name and only adds the extra.
     unpinned = [line for line in installs if "==" not in line]
     assert all(" -U " in line or " --upgrade " in line for line in unpinned), f"no upgrade: {unpinned}"

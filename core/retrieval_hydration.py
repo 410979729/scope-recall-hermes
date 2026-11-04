@@ -7,8 +7,10 @@ half of ``retrieval_storage.RetrievalStorage``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterable
+from dataclasses import replace
 from datetime import timedelta, timezone
 from typing import cast
 
@@ -25,10 +27,13 @@ from .candidate_tables import awaits_first_judgement
 from .claim_storage import parse_source_ref
 from .claims import canonical_time, dated_after, holds_instead, select_effective, select_proposal, states_a_value
 from .episodes import source_origin
+from .events import withheld_tool_output
 from .recall_policy import applicability, in_time_window, parse_time
+from .reflection_validity import reflection_live
 from .resume_compaction import resume_evidence_refs
 from .retrieval import STALE_RESUME_GAPS, CandidateRef, RetrievedObject, SearchContext
-from .visibility import CLOSED_INTENTION_STATES, allowed, allowed_refs
+from .summary_validity import is_conversation_summary, summary_live, summary_origin
+from .visibility import CLOSED_INTENTION_STATES, allowed, allowed_refs, check_claim_release
 
 #: Modes in which a delivered source must still be live, not merely visible.
 LIVE_MODES = frozenset({"auto", "current", "method"})
@@ -54,6 +59,16 @@ _JUDGEMENT_PAGE = 400
 
 def source_key(ref: str, revision: int) -> str:
     return f"{ref}@{revision}"
+
+
+def note_superseded_evidence(tx, gaps: list[str], seen: set | None = None) -> set:
+    """Merge snapshot-local withheld identities; only a deduplicated count leaves core."""
+    seen = set() if seen is None else seen
+    seen.update(getattr(tx, "withheld_evidence", ()))
+    if seen:
+        gaps[:] = [gap for gap in gaps if not gap.startswith("superseded_evidence_withheld:")]
+        gaps.insert(0, f"superseded_evidence_withheld:{len(seen)}")
+    return seen
 
 
 def _is_source_ref(value: object) -> bool:
@@ -104,6 +119,15 @@ def _source_live(tx, ref: str, revision: int) -> bool:
     return True
 
 
+def _deliverable_source(tx, ref: str, revision: int, mode: str) -> bool:
+    """Check one source version in this snapshot; no permission result crosses transactions."""
+    try:
+        source = tx.claims.require_live_source(ref, revision) if mode in LIVE_MODES else tx.source(ref, revision)
+    except ContractError:
+        return False
+    return source is not None and not (source.suppressed and mode == "auto")
+
+
 def _has_first_hand_root(tx, evidence: Iterable[str]) -> bool:
     """Whether any evidence root is first-hand rather than the system's own echo.
 
@@ -125,9 +149,11 @@ def _has_first_hand_root(tx, evidence: Iterable[str]) -> bool:
     return False
 
 
-def evidence_source_contexts(tx, evidence: Iterable[str]) -> list[SourceContext]:
-    """Distinct, bounded source contexts of the sources behind ``evidence`` refs."""
-    collected: list[SourceContext] = []
+def _evidence_labels(tx, evidence: Iterable[str], *, include_entries: bool = False):
+    """Collect bounded contexts and optional entry labels in one pass over source versions."""
+    contexts: list[SourceContext] = []
+    entries: list[EntryLabel] = []
+    shared = include_entries and tx.context.binding.installation_kind == "shared"
     for ref in evidence:
         try:
             source_ref, source_revision = parse_source_ref(ref)
@@ -136,13 +162,22 @@ def evidence_source_contexts(tx, evidence: Iterable[str]) -> list[SourceContext]
         source = tx.source(source_ref, source_revision)
         if source is None:
             continue
-        context = bounded_source_context(source.event.get("source_context"))
-        if context is None or context in collected:
-            continue
-        collected.append(context)
-        if len(collected) >= SOURCE_CONTEXTS_MAX_ITEMS:
+        if len(contexts) < SOURCE_CONTEXTS_MAX_ITEMS:
+            context = bounded_source_context(source.event.get("source_context"))
+            if context is not None and context not in contexts:
+                contexts.append(context)
+        if shared and len(entries) < ENTRY_LABELS_MAX_ITEMS:
+            label = tx.entry_label(source.entry_id)
+            if label is not None and label not in entries:
+                entries.append(label)
+        if len(contexts) >= SOURCE_CONTEXTS_MAX_ITEMS and (not shared or len(entries) >= ENTRY_LABELS_MAX_ITEMS):
             break
-    return collected
+    return contexts, sorted(entries, key=lambda label: label["id"])
+
+
+def evidence_source_contexts(tx, evidence: Iterable[str]) -> list[SourceContext]:
+    """Distinct, bounded source contexts of the sources behind ``evidence`` refs."""
+    return _evidence_labels(tx, evidence)[0]
 
 
 def _source_contexts_metadata(contexts: list[SourceContext]) -> tuple[tuple[str, str], ...]:
@@ -151,30 +186,24 @@ def _source_contexts_metadata(contexts: list[SourceContext]) -> tuple[tuple[str,
     return (("source_contexts", json.dumps(contexts, ensure_ascii=False, separators=(",", ":"))),)
 
 
-def evidence_entries(tx, evidence: Iterable[str]) -> list[EntryLabel]:
-    """The distinct entries behind ``evidence`` refs, ordered by id; none outside a shared store."""
-    if tx.context.binding.installation_kind != "shared":
-        return []
-    collected: list[EntryLabel] = []
-    for ref in evidence:
-        try:
-            source_ref, source_revision = parse_source_ref(ref)
-        except ContractError:
-            continue
-        source = tx.source(source_ref, source_revision)
-        label = tx.entry_label(source.entry_id) if source is not None else None
-        if label is None or label in collected:
-            continue
-        collected.append(label)
-        if len(collected) >= ENTRY_LABELS_MAX_ITEMS:
-            break
-    return sorted(collected, key=lambda label: label["id"])
-
-
 def _entries_metadata(labels: list[EntryLabel]) -> tuple[tuple[str, str], ...]:
     if not labels:
         return ()
     return (("entries", json.dumps(labels, ensure_ascii=False, separators=(",", ":"))),)
+
+
+def _evidence_metadata(tx, evidence: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
+    """Read shared evidence labels once per snapshot, keeping only immutable serialized metadata."""
+
+    def load():
+        contexts, entries = _evidence_labels(tx, evidence, include_entries=True)
+        return _source_contexts_metadata(contexts) + _entries_metadata(entries)
+
+    return tx.remembered(
+        ("evidence_metadata", evidence),
+        load,
+        size=lambda value: sum(len(text) for _, text in value),
+    )
 
 
 #: How far back a reply's turn is looked for.  A turn that ran longer than this
@@ -241,7 +270,7 @@ def _occurred_metadata(stamp: str | None) -> tuple[tuple[str, str], ...]:
 
 def replacements(obj: RetrievedObject) -> tuple[tuple[str, str, int], ...]:
     """What states the values that hold in place of every value a hydrated message states
-    (``RetrievalHydration._replaced_by``), as candidate keys (kind, ref, revision); none for anything else."""
+    (``RetrievalHydration.source_replacements``), as candidate keys (kind, ref, revision); none for anything else."""
     keys = json.loads(dict(obj.metadata).get("replaced_by") or "[]")
     return tuple((str(kind), str(ref), int(revision)) for kind, ref, revision in keys)
 
@@ -275,6 +304,8 @@ def _claim_content(version) -> str:
 
 
 def _claim_statement_content(version) -> str:
+    if is_conversation_summary(version):
+        return version.payload["value_text"]
     """What a reader is shown for a claim: its payload without the quoted spans.
 
     The spans are verbatim evidence, and a tool-derived claim quotes escaped
@@ -317,6 +348,27 @@ def _versioned_body(kind: str, obj) -> tuple[str, str, bool]:
 class RetrievalHydration:
     """The hydrating half of ``RetrievalStorage``: candidates in, packet objects out."""
 
+    def empty_episode(self, tx, candidate: CandidateRef) -> bool:
+        """Whether this visible episode version has no resume and can only render its state.
+
+        This is solely an admission rejection shortcut. Retained objects still
+        pass full hydration, and explicit references may inspect a bare state.
+        """
+        if not allowed(tx, "episode", candidate.ref):
+            return False
+        return tx.remembered(
+            ("empty_episode", candidate.ref, candidate.revision),
+            lambda: (
+                tx._check()
+                .execute(
+                    "SELECT 1 FROM episode_versions WHERE episode_id=? AND revision=? AND resume_json IS NULL",
+                    (candidate.ref, candidate.revision),
+                )
+                .fetchone()
+                is not None
+            ),
+        )
+
     def _evidence(self, tx, kind: str, ref: str, revision: int, context: SearchContext) -> tuple[str, ...] | None:
         """The object's evidence refs, or ``None`` when any of them is not deliverable in this mode."""
         return self._deliverable(tx, tuple(lineage.evidence(tx._check(), kind, ref, revision)), context)
@@ -329,10 +381,10 @@ class RetrievalHydration:
         _prefetch(tx, pairs)
         refs = []
         for source_ref, source_revision in pairs:
-            source = tx.source(source_ref, source_revision)
-            if source is None or (source.suppressed and context.mode == "auto"):
-                return None
-            if context.mode in LIVE_MODES and not _source_live(tx, source.ref, source.revision):
+            if not tx.remembered(
+                ("deliverable", source_ref, source_revision, context.mode),
+                lambda ref=source_ref, revision=source_revision: _deliverable_source(tx, ref, revision, context.mode),
+            ):
                 return None
             refs.append(f"{source_ref}@{source_revision}")
         return tuple(refs)
@@ -359,13 +411,17 @@ class RetrievalHydration:
             self._prefetch_replacements(tx, events, context)
 
     def _prefetch_replacements(self, tx, events, context: SearchContext) -> None:
-        """What ``_replaced_by`` reads for these messages, loaded together: the claim versions each is evidence for
+        """What ``source_replacements`` reads for these messages, loaded together: the supported claim versions
         and those claims' versions, what holds in place of the values they state (``_holding_instead``, kept for the
         recall's instant), then the evidence of every version holding instead and those sources.  A page of each,
         however many messages and replacements.  A claim's first judgement stays the page ``prefetch`` already read
         (``_judgements``); this does not widen who may see a source."""
         conn = tx._check()
         supported = lineage.supported_claims(conn, events)
+        other_uses = lineage.source_content_uses(conn, events)
+        for pair in events:
+            tx.remember(("supported_claims", *pair), supported.get(pair, ()))
+            tx.remember(("source_content_uses", *pair), other_uses.get(pair, ()))
         tx.claims.prefetch_versions(ref for found in supported.values() for ref, _revision in found)
         holding = {pair: self._holding_instead(tx, supported.get(pair, ()), context) for pair in events}
         for pair, found in holding.items():
@@ -376,15 +432,83 @@ class RetrievalHydration:
             tx.remember(("claim_evidence", *key), evidence.get(key, ()))
         _prefetch(tx, (cited for found in evidence.values() for cited in found))
 
+    def source_term_matches(self, tx, pairs, terms: tuple[str, ...]) -> dict[tuple, set[str]]:
+        """Match already hydrated original bodies through their existing lexical postings.
+
+        The digest binds each result to this exact rendering and source version.
+        Withheld placeholders have a deliberately smaller index; missing sources
+        or empty projections also fall back to full-text matching in the caller.
+        These matches only rank admitted objects and never establish permission.
+        """
+        wanted = [
+            (candidate.ref, candidate.revision, hashlib.sha256(obj.content.encode("utf-8")).hexdigest())
+            for candidate, obj in pairs
+            if obj.kind == "event" and not withheld_tool_output({"role": "tool", "content": obj.content})
+        ]
+        if not wanted or not terms:
+            return {}
+        rows = tx._check().execute(
+            "SELECT e.event_id,e.source_revision,t.term FROM json_each(?) w "
+            "JOIN source_events e ON e.event_id=json_extract(w.value,'$[0]') "
+            "AND e.source_revision=json_extract(w.value,'$[1]') "
+            "AND e.content_sha256=json_extract(w.value,'$[2]') "
+            "LEFT JOIN lexical_postings p ON p.source_id=e.source_id AND p.term_id IN "
+            "(SELECT term_id FROM lexical_terms WHERE term IN (SELECT value FROM json_each(?))) "
+            "LEFT JOIN lexical_terms t ON t.term_id=p.term_id "
+            "WHERE EXISTS(SELECT 1 FROM lexical_postings any_term WHERE any_term.source_id=e.source_id)",
+            (json.dumps(wanted), json.dumps(terms)),
+        )
+        matched: dict[tuple, set[str]] = {}
+        for ref, revision, term in rows:
+            found = matched.setdefault(("event", ref, revision), set())
+            if term is not None:
+                found.add(term)
+        return matched
+
     def hydrate(self, tx, candidate: CandidateRef, context: SearchContext) -> RetrievedObject | None:
+        """Reuse an immutable hydrated object only in this read snapshot and semantic context.
+
+        Hydration does not read the scheduling deadline. All other context
+        fields must compare equal; write transactions bypass memoization.
+        Candidate rank and channel do not change hydration.
+        """
+        _reader, retained, obj = tx.remembered(
+            ("hydrated", id(self), candidate.key),
+            lambda: (self, context, self._hydrate(tx, candidate, context)),
+            size=lambda value: (
+                0 if value[2] is None else len(value[2].content) + sum(len(v) for _, v in value[2].metadata)
+            ),
+        )
+        if context is retained or replace(context, deadline=retained.deadline) == retained:
+            return obj
+        return self._hydrate(tx, candidate, context)
+
+    def _hydrate(self, tx, candidate: CandidateRef, context: SearchContext) -> RetrievedObject | None:
+        """Apply the canonical visibility, evidence and publication gates to one object."""
         if not allowed(tx, candidate.kind, candidate.ref, automatic=context.mode == "auto"):
             return None
         load = {"event": self._hydrate_event, "claim": self._hydrate_claim}.get(candidate.kind, self._hydrate_versioned)
-        return load(tx, candidate, context)
+        obj = load(tx, candidate, context)
+        if obj is not None and candidate.kind == "claim":
+            # Every hydrated claim, including notices and optional host-memory
+            # comparisons, shares the final native publication gate.
+            try:
+                check_claim_release(
+                    tx, tx.claims.version(obj.ref, obj.revision), history=context.mode == "history", owner_review=False
+                )
+            except ContractError:
+                return None
+        return obj
 
     def _hydrate_event(self, tx, candidate: CandidateRef, context: SearchContext) -> RetrievedObject | None:
         source = tx.source(candidate.ref, candidate.revision)
         if source is None or (context.mode == "auto" and source.suppressed):
+            return None
+        obsolete, only_obsolete = lineage.source_evidence_status(
+            tx, source.ref, source.revision, context.now, include_history=context.mode in {"history", "as_of"}
+        )
+        if only_obsolete and context.mode in {"auto", "current"}:
+            tx.withheld_evidence.add((source.ref, source.revision))
             return None
         if context.mode in LIVE_MODES and not _source_live(tx, candidate.ref, candidate.revision):
             return None
@@ -405,7 +529,7 @@ class RetrievalHydration:
             )
         else:
             superseded = tx._check().execute(newer_sql, newer_params).fetchone() is not None
-        replaced = () if superseded else self._replaced_by(tx, source, context)
+        replaced = () if superseded else self.source_replacements(tx, source, context)
         event = source.event
         context_meta = bounded_source_context(event.get("source_context"))
         return RetrievedObject(
@@ -420,7 +544,14 @@ class RetrievalHydration:
             "direct_report" if event["origin"] == "human_direct" else "observed",
             True,
             ("event",),
+            content_secret_scan=source.content_secret_scan,
             metadata=(
+                *((("superseded_evidence", json.dumps(obsolete[:32])),) if obsolete else ()),
+                *(
+                    (("qualification_reason", "superseded_evidence"),)
+                    if obsolete and context.mode in {"history", "as_of"}
+                    else ()
+                ),
                 *_source_contexts_metadata([context_meta] if context_meta is not None else []),
                 *_entries_metadata([label] if (label := tx.entry_label(source.entry_id)) is not None else []),
                 *_occurred_metadata(tx.sources.witnessed_at(source)),
@@ -429,7 +560,7 @@ class RetrievalHydration:
             ),
         )
 
-    def _replaced_by(self, tx, source, context: SearchContext) -> tuple[tuple[str, str, int], ...]:
+    def source_replacements(self, tx, source, context: SearchContext) -> tuple[tuple[str, str, int], ...]:
         """What states the values that hold now in place of every value a message states, as candidate keys: for each
         claim version it is evidence for that states a value, the version holding instead (``_holding_instead``) and
         the sources it stands on, deliverable and said after it (``_later_evidence``).  None when it states no value,
@@ -463,6 +594,8 @@ class RetrievalHydration:
                 continue
             instead = holds_instead(versions, revision, context.now)
             if instead is None:
+                instead = lineage.resolve_replacement(tx, claim_ref, context.now)
+            if instead is None:
                 return None
             holding.append((stated, instead))
         return holding
@@ -482,6 +615,9 @@ class RetrievalHydration:
             or self._deliverable(tx, evidence, context) is None
         ):
             return ()
+        # An owner selection is recorded after both statements and resolves the conflict explicitly.
+        if instead.ref != stated.ref:
+            return evidence
         times = [said for pair in evidence if (cited := tx.source(*pair)) is not None and (said := _said(cited))]
         own = _said(source)
         starts = (canonical_time(instead.valid_from), canonical_time(stated.valid_from))
@@ -490,7 +626,15 @@ class RetrievalHydration:
     def _hydrate_claim(self, tx, candidate: CandidateRef, context: SearchContext) -> RetrievedObject | None:
         versions = tx.claims.versions(candidate.ref)
         version = next((item for item in versions if item.revision == candidate.revision), None)
-        if version is None or (context.mode == "auto" and version.suppressed):
+        if (
+            version is None
+            or (context.mode == "auto" and version.suppressed)
+            or not reflection_live(tx, version, query_scope=context.scope, excluded=context.current_source_refs)
+        ):
+            return None
+        if is_conversation_summary(version) and not summary_live(
+            tx, version.ref, version.revision, query_scope=context.scope, excluded=context.current_source_refs
+        ):
             return None
         instant = context.as_of or context.now
         effective = select_effective(versions, instant, as_of=context.mode == "as_of")
@@ -533,6 +677,10 @@ class RetrievalHydration:
                 origins.append(source.event["origin"])
                 witnessed.append(tx.sources.witnessed_at(source))
         origin = next((item for item in origins if item == "human_direct"), origins[0] if origins else "origin_unknown")
+        if is_conversation_summary(version):
+            origin = summary_origin(tx, version.ref, version.revision)
+        if payload.get("kind") == "observation":
+            origin = "inductive_observation"
         # A proposal its candidate's first judgement has not yet reached, as against one the evaluator ruled on,
         # one asleep or one blocked (``candidate_tables.awaits_first_judgement``).
         awaited = version.state == "proposed" and _awaits_judgement(tx, candidate.ref, candidate.revision)
@@ -544,9 +692,7 @@ class RetrievalHydration:
             # unasserted question or a missing condition.
             ("qualification_reason", version.reason),
             *((("judgement", "awaited"),) if awaited else ()),
-            *_source_contexts_metadata(evidence_source_contexts(tx, evidence)),
-            # Every entry any of its evidence came in through.
-            *_entries_metadata(evidence_entries(tx, evidence)),
+            *_evidence_metadata(tx, evidence),
             # A claim was last said when its newest evidence was.
             *_occurred_metadata(_newest(witnessed)),
         )
@@ -554,7 +700,9 @@ class RetrievalHydration:
             candidate.ref,
             candidate.revision,
             "procedure" if payload.get("kind") == "procedure" else "claim",
-            _claim_statement_content(version),
+            ("Inductive observation (not the owner's words): " + payload["value_text"])
+            if payload.get("kind") == "observation"
+            else _claim_statement_content(version),
             origin,
             _claim_status(version, current_effective),
             applicability(context, version.project_id, version.branch_id),
@@ -601,8 +749,7 @@ class RetrievalHydration:
         else:
             status = "current" if candidate.revision == head["current_revision"] else "historical"
         metadata = [("gaps", json.dumps(tuple(object_gaps), ensure_ascii=False))]
-        metadata.extend(_source_contexts_metadata(evidence_source_contexts(tx, evidence)))
-        metadata.extend(_entries_metadata(evidence_entries(tx, evidence)))
+        metadata.extend(_evidence_metadata(tx, evidence))
         if candidate.kind == "episode":
             metadata.extend(self._episode_source_metadata(tx, candidate.ref, obj))
         applies = applicability(context, obj.project_id, obj.branch_id)

@@ -341,3 +341,16 @@ def _scored(bench, world) -> dict:
             store.close()
     finally:
         shutil.rmtree(root, ignore_errors=True)
+
+
+@pytest.mark.parametrize("kind", ["event", "claim"])
+def test_overflow_refs_do_not_count_as_complete_answers(bench, kind):
+    item = dict(
+        kind=kind,
+        ref="event-gold",
+        basis="derived_summary",
+        qualification_reason="Other-session matches",
+        evidence_refs=["event-gold@1"],
+        content="Excerpt: Orchard staging database port is 6543.",
+    )
+    assert bench.credits(item, (GOLD,), {"event-gold": GOLD}, {}) == frozenset()

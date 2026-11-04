@@ -25,9 +25,12 @@ from mcp.types import ToolAnnotations
 from pydantic import Field, StrictInt, StrictStr
 from scope_recall.contracts import ContractError, Origin, SourceEvent, TrustedContext, validate_model_request
 from scope_recall.core import CoreConfig, MemoryCore
+from scope_recall.core.handoff import execute as execute_handoff
+from scope_recall.core.handoff import tool_schemas as handoff_schemas
 from scope_recall.core.read_views import DEFAULT_BUDGET_TOKENS, DEFAULT_MAX_ITEMS
 from scope_recall.core.trace import TRACE_GUIDANCE, fence_trace_epoch
 
+from ..host_profiles import HOSTS
 from ..runtime_wiring import FORGET_GUIDANCE, READ_VIEW_BUDGET_GUIDANCE, RECALL_CONTEXT_GUIDANCE, REVISE_GUIDANCE
 from ..tool_common import (
     FENCED_ENTITY,
@@ -48,6 +51,7 @@ from ..tool_common import (
 from .config import CodexInstallationConfig, SharedClientConfig
 from .identity import CodexRuntimeAudience, resolve_runtime_audience, trusted_context
 from .runtime_wiring import TrustedHostRuntime, attach_trusted_host_runtime
+from .tool_schema import host_schema
 
 OUTPUT_ORIGIN = "memory_reinjection"
 RECOMMENDED_EXPLICIT_BUDGET_TOKENS = 4096
@@ -61,7 +65,7 @@ _RECALL_BUDGET_GUIDANCE = (
 )
 _BUDGET_CAP_GAPS = ("budget_token_cap", "budget_packet_cap")
 #: The request metadata a client binds a tool call to its conversation with.
-_THREAD_META = {"codex": "threadId"}
+_THREAD_META = {host: profile.thread_meta for host, profile in HOSTS.items() if profile.thread_meta}
 #: The tools that change the store.  Core takes one only on the word of the person's latest message in the same
 #: conversation, so they are served only to a client that names its conversation on every call (``_THREAD_META``).
 _MUTATIONS = frozenset({"propose_memory", "revise", "forget"})
@@ -118,6 +122,18 @@ _TOOLS: tuple[tuple[str, str, ToolAnnotations], ...] = (
         ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=True, open_world_hint=False),
     ),
     ("status", "Read bounded Core status and adapter capability gaps. Protocol version 1.1.", _READ_ONLY),
+    *(
+        (
+            schema["name"],
+            schema["description"],
+            _READ_ONLY
+            if schema["name"] == "handoff_list"
+            else ToolAnnotations(
+                read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False
+            ),
+        )
+        for schema in handoff_schemas()
+    ),
 )
 
 
@@ -246,9 +262,11 @@ class CodexMCPServer:
             # identity, path, scope, and host-session fields, so tighten the
             # generated model and the advertised JSON Schema.
             tool = self.server._tool_manager.get_tool(name)
+            assert tool is not None
             tool.fn_metadata.arg_model.model_config["extra"] = "forbid"
             tool.fn_metadata.arg_model.model_rebuild(force=True)
             tool.parameters["additionalProperties"] = False
+            tool.parameters = host_schema(tool.parameters)
 
     # -- trusted binding -------------------------------------------------
 
@@ -331,6 +349,79 @@ class CodexMCPServer:
 
     # -- tools (method name == MCP tool name, see _TOOLS) ----------------
 
+    def _handoff(self, ctx, action, protocol_version, payload, request_id):
+        body, call_id = self._request(protocol_version=protocol_version, request_id=request_id)
+        del body
+        if action != "list" and isinstance(self.config, SharedClientConfig) and not self.audience.writable_scope_ids:
+            raise ContractError("ACCESS_DENIED", "writable_scope")
+        try:
+            thread_id = self._thread_id(ctx)
+        except ValueError:
+            # Direct SDK calls have no request context; only host metadata attests a conversation.
+            thread_id = None
+        context = trusted_context(
+            self.config,
+            self.audience,
+            session_id=thread_id or self.session_id,
+            actor_origin="assistant_visible",
+            mutation=action != "list",
+            project_root=str(self.workspace),
+        )
+        result = execute_handoff(self.core, context, action, payload, session_known=thread_id is not None)
+        return envelope(call_id, result, origin=OUTPUT_ORIGIN)
+
+    def handoff_write(
+        self,
+        ctx: Context,
+        protocol_version: Literal["1.1"],
+        report: Annotated[
+            dict[str, Any], Field(json_schema_extra=handoff_schemas()[0]["parameters"]["properties"]["report"])
+        ],
+        request_id: StrictStr | None = None,
+    ) -> dict[str, Any]:
+        """Write an agent report or confirm this entry's versioned draft."""
+        return self._handoff(ctx, "write", protocol_version, report, request_id)
+
+    def handoff_list(
+        self,
+        ctx: Context,
+        protocol_version: Literal["1.1"],
+        include_closed: bool = False,
+        limit: StrictInt = 30,
+        before: StrictInt | None = None,
+        request_id: StrictStr | None = None,
+    ) -> dict[str, Any]:
+        """List pending reports, with explicit safety and confirmation labels."""
+        return self._handoff(
+            ctx, "list", protocol_version, dict(include_closed=include_closed, limit=limit, before=before), request_id
+        )
+
+    def handoff_accept(
+        self,
+        ctx: Context,
+        protocol_version: Literal["1.1"],
+        ref: StrictStr,
+        expected_revision: StrictInt,
+        request_id: StrictStr | None = None,
+    ) -> dict[str, Any]:
+        """Claim one pending handoff for this authenticated entry."""
+        return self._handoff(
+            ctx, "accept", protocol_version, dict(ref=ref, expected_revision=expected_revision), request_id
+        )
+
+    def handoff_cancel(
+        self,
+        ctx: Context,
+        protocol_version: Literal["1.1"],
+        ref: StrictStr,
+        expected_revision: StrictInt,
+        request_id: StrictStr | None = None,
+    ) -> dict[str, Any]:
+        """Cancel one report written by this authenticated entry."""
+        return self._handoff(
+            ctx, "cancel", protocol_version, dict(ref=ref, expected_revision=expected_revision), request_id
+        )
+
     def recall(
         self,
         ctx: Context,
@@ -363,12 +454,14 @@ class CodexMCPServer:
         # mode is still clamped by the trusted CoreConfig budget.  A lookup
         # that finds nothing says so; its lookup intent remains explicit in auto mode.
         packet = self.core.recall_packet(context, body, deadline_seconds=5.0, background_without_evidence=False)
+        original_packet = packet
         packet = fence_epoch(
             packet,
             self.core.memory_epoch(context),
             FENCED_RECALL,
             retracted=lambda since: self.core.memory_retracted_since(context, since),
         )
+        packet = self.core.release_recall_packet(context, packet, original=original_packet)
         _budget_retry_hint(packet)
         return self._reply(ctx, call_id, packet)
 

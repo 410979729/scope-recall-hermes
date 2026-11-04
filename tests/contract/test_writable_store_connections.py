@@ -9,7 +9,7 @@ import pytest
 from scope_recall.core import truth_connection
 from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.core.storage import SQLiteStorage
-from scope_recall.maintenance import cli, install_purge, migration_activation
+from scope_recall.maintenance import install_purge, migration_activation
 from v11_support import context
 
 #: The connections a test opens itself, which the recording leaves out.
@@ -50,7 +50,7 @@ def test_every_writable_connection_on_the_store_holds_the_lease_and_deletes_secu
     with closing(CONNECT(storage.path)) as conn:
         conn.execute("PRAGMA user_version=10815")
         conn.commit()
-    assert cli._restamp_header(storage.path, SCHEMA_VERSION, timeout=1.0)
+    assert storage.initialize(repair_header=True).schema_version == SCHEMA_VERSION
     binding = ctx.binding
     assert (
         install_purge._expected_retained(

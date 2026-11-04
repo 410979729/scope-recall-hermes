@@ -55,7 +55,7 @@ def test_generated_plugin_metadata_uses_project_identity_and_describes_the_host(
     manifest = json.loads(files[manifest_path])
     assert manifest["name"] == plugin.name
     assert manifest["author"] == {"name": author}
-    assert manifest["version"] == __version__.replace("rc", "-rc.")
+    assert manifest["version"] == __version__.replace(".dev", "-dev.", 1).replace("rc", "-rc.", 1)
     assert manifest["description"].startswith(description)
     assert manifest["mcpServers"] == "./.mcp.json"
     if host == "codex":
@@ -237,7 +237,7 @@ def test_agent_setup_skill_discovery_ownership_and_uninstall(tmp_path, host):
     assert any(Path(item["path"]) == skill for item in receipt["files"])
     if host == "codex":
         manifest = json.loads((plugin / ".codex-plugin" / "plugin.json").read_text())
-        assert manifest["version"] == __version__.replace("rc", "-rc.")
+        assert manifest["version"] == __version__.replace(".dev", "-dev.", 1).replace("rc", "-rc.", 1)
     apply_install(plan_install(**options))
     apply_uninstall(plan_uninstall(instance_root=instance, target_plugin_dir=plugin))
     assert not skill.exists()
@@ -596,22 +596,62 @@ def released(monkeypatch):
     return version
 
 
-def test_a_candidate_declares_no_core_in_the_home_plugin_directory(tmp_path, monkeypatch):
-    """A requirement Hermes cannot resolve fails its whole build, so a candidate writes no ``pyproject.toml``."""
-    from scope_recall.maintenance import install_hermes
+@pytest.mark.parametrize("command", ["plan-install", "apply-install"])
+def test_development_install_replaces_old_home_declaration(tmp_path, capsys, command):
+    from scope_recall.maintenance import cli as maintenance_cli
 
-    project = install_hermes.wrapper_pyproject
-    monkeypatch.setattr(install_hermes, "wrapper_pyproject", lambda version="3.10.4rc1": project(version))
     instance_root, _outside, project_root = _install_paths(tmp_path, host="hermes")
     inside = instance_root / "plugins" / "scope-recall"
-    planned = install_hermes.planned_files(_hermes_plan(instance_root, inside, project_root))
-    assert inside / "plugin.yaml" in planned and inside / "pyproject.toml" not in planned
-    assert install_hermes.wrapper_pyproject("3.10.4rc1") is None
+    _hand_made_wrapper(inside)
+    (inside / "pyproject.toml").write_text(
+        '[project]\nname = "old"\nversion = "0.0.0"\ndependencies = ["hermes-scope-recall[lancedb]==3.16.0"]\n',
+        encoding="utf-8",
+    )
+    args = [
+        "--host",
+        "hermes",
+        "--target-plugin-dir",
+        str(inside),
+        "--instance-root",
+        str(instance_root),
+        "--project-root",
+        str(project_root),
+        "--agent-id",
+        "TEST-agent",
+        "--python",
+        sys.executable,
+        "--test-mode",
+    ]
+    assert maintenance_cli.main([command, *args]) == 0
+    result = json.loads(capsys.readouterr().out)
+    if command == "plan-install":
+        assert any(c["path"] == str(inside / "pyproject.toml") and c["action"] == "replace" for c in result["changes"])
+        notes = " ".join(c.get("detail", "") for c in result["changes"] if c["action"] == "restart")
+        assert all(part in notes for part in ("UV_FIND_LINKS", "hermes_cli.venv_sync", "hermes update", "disabled"))
+    else:
+        dependencies = tomllib.loads((inside / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
+        assert dependencies == [f"hermes-scope-recall[vectors]=={__version__}"]
+        assert "pip_dependencies" not in yaml.safe_load((inside / "plugin.yaml").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("version", ["4.0.0rc1", "4.0.0.dev1", "4.0.0+local"])
+def test_non_pypi_home_declarations_pin_exact_version(tmp_path, monkeypatch, version):
+    from scope_recall.maintenance import install_hermes
+
+    monkeypatch.setattr(install_hermes, "__version__", version)
+    instance_root, _outside, project_root = _install_paths(tmp_path, host="hermes")
+    inside = instance_root / "plugins" / "scope-recall"
+    plan = _hermes_plan(instance_root, inside, project_root)
+    assert any(change.action == "restart" and "UV_FIND_LINKS" in change.detail for change in plan.changes)
+    project = tomllib.loads(install_hermes.wrapper_pyproject(version))
+    assert project["project"]["dependencies"] == [f"hermes-scope-recall[vectors]=={version}"]
+    template = "name: scope-recall\n"
+    assert install_hermes.wrapper_manifest(template, version) == template
 
 
 def test_the_home_plugin_directory_declares_the_core_with_its_vector_extra(tmp_path, released):
     """Hermes's package manager builds the environment it runs plugins in from the declaration there, and a
-    ``pyproject.toml`` wins over ``plugin.yaml``: both declare the core with ``[lancedb]``, or recall has no vectors."""
+    ``pyproject.toml`` wins over ``plugin.yaml``: both declare the core with ``[vectors]`` to enable binary indexing."""
     import tomllib
 
     import yaml
@@ -619,7 +659,7 @@ def test_the_home_plugin_directory_declares_the_core_with_its_vector_extra(tmp_p
     instance_root, _outside, project_root = _install_paths(tmp_path, host="hermes")
     inside = instance_root / "plugins" / "scope-recall"
     apply_install(_hermes_plan(instance_root, inside, project_root))
-    wanted = f"hermes-scope-recall[lancedb]=={released}"
+    wanted = f"hermes-scope-recall[vectors]=={released}"
     assert tomllib.loads((inside / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"] == [wanted]
     assert yaml.safe_load((inside / "plugin.yaml").read_text(encoding="utf-8"))["pip_dependencies"] == [wanted]
     apply_uninstall(plan_uninstall(instance_root=instance_root))
@@ -645,7 +685,7 @@ def test_an_install_moves_its_wrapper_into_the_home_plugin_directory_over_a_hand
     ]
     result = apply_install(plan)
     dependencies = tomllib.loads((inside / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
-    assert dependencies == [f"hermes-scope-recall[lancedb]=={released}"]
+    assert dependencies == [f"hermes-scope-recall[vectors]=={released}"]
     assert any(Path(path).name == "pyproject.toml" for path in result.backups)
     receipt = json.loads((instance_root / ".scope-recall-install-receipt.json").read_text(encoding="utf-8"))
     assert Path(receipt["target_plugin_dir"]) == inside
@@ -1418,8 +1458,9 @@ def test_hermes_reuse_preserves_explicit_legacy_workspace_audience(tmp_path):
     apply_install(plan)
     assert manifest_path.read_bytes() == before
     import yaml
+    from scope_recall.maintenance.install_common import manifest_version
 
-    assert yaml.safe_load((plugin / "plugin.yaml").read_text())["version"] == __version__
+    assert yaml.safe_load((plugin / "plugin.yaml").read_text())["version"] == manifest_version(__version__)
 
 
 def test_codex_rejects_agent_workspace_and_keeps_empty_binding(tmp_path):
@@ -1865,7 +1906,7 @@ def test_package_health_record_bytes_and_declared_dependencies(tmp_path, monkeyp
         "project"
     ]
     specs = list(project["dependencies"])
-    for extra in ("lancedb", "codex"):
+    for extra in ("vectors", "lancedb", "codex"):
         for spec in project["optional-dependencies"][extra]:
             requirement, separator, marker = spec.partition(";")
             conditions = f"({marker}) and " if separator else ""
@@ -1880,6 +1921,8 @@ def test_package_health_record_bytes_and_declared_dependencies(tmp_path, monkeyp
         "jsonschema": "4.25.1",
         "packaging": "25.0",
         "tzdata": "2026.1",
+        "numpy": "2.5.4",
+        "sqlite-vec": "0.1.9",
         "lancedb": "0.37.1",
         "pyarrow": "24.0.0",
         "mcp": "2.0.0",
@@ -2100,8 +2143,28 @@ def test_a_released_wrapper_declares_its_core_and_a_candidate_declares_nothing()
     requirement = Requirement(spec)
     assert (requirement.name, requirement.extras, str(requirement.specifier)) == (
         "hermes-scope-recall",
-        {"lancedb"},
+        {"vectors"},
         "==3.3.0",
     )
     for build in ("3.3.0rc4", "3.3.0.dev1", "3.3.0+local"):
         assert wrapper_manifest(template, build) == template
+
+
+def test_remote_release_candidate_manifest_is_converted_once(tmp_path, monkeypatch):
+    """Remote plugin metadata accepts the shared SemVer spelling unchanged."""
+    from scope_recall.maintenance import install_remote
+
+    monkeypatch.setattr(install_remote, "manifest_version", lambda: "4.0.0-rc.1")
+    (tmp_path / "TEST-token").write_text("TEST-placeholder-token", encoding="utf-8")
+    plugin = tmp_path / "TEST-plugin"
+    files = install_remote.plugin_files(
+        {
+            "host": "codex",
+            "token_file": tmp_path / "TEST-token",
+            "url": "https://example.test",
+            "config": tmp_path / "TEST-client.json",
+        },
+        plugin,
+    )
+    metadata = json.loads(files[plugin / ".codex-plugin" / "plugin.json"])
+    assert metadata["version"] == "4.0.0-rc.1"

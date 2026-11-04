@@ -591,7 +591,11 @@ def test_remote_mixed_record_drops_private_lines_and_advances_cursor(tmp_path, m
         [20, transcript.said_to_wire(transcript.Said("TEST-2", "user", "TEST public", public))],
     ]
     cursor = Mock()
-    monkeypatch.setattr(remote_client, "_record_part", lambda *args: (dict(start=0, lines=lines), cursor))
+    monkeypatch.setattr(
+        remote_client,
+        "_record_part",
+        lambda *args: (dict(start=0, lines=lines), cursor, transcript.RecordPage(0, None)),
+    )
     monkeypatch.setattr(remote_client, "_now", lambda: public)
 
     def batch(_config, _body, times, _timeout):
@@ -613,7 +617,7 @@ def test_remote_mixed_record_drops_private_lines_and_advances_cursor(tmp_path, m
     assert "TEST private" not in json.dumps(sent)
     assert sent[0]["record"]["lines"][0] == [10, None]
     assert sent[0]["record"]["lines"][1][1]["text"] == "TEST public"
-    cursor.save.assert_called_once_with(20)
+    cursor.save.assert_called_once_with(20, directory=None)
 
 
 def test_junction_and_real_directory_share_the_rule_identity(installed):

@@ -108,20 +108,39 @@ def validate_owner_logins(values: object) -> tuple[str, ...]:
         raise InstallError(str(exc)) from exc
 
 
-def wrapper_pyproject(version: str = __version__) -> str | None:
+def _non_pypi_version(version: str) -> bool:
+    release = Version(version)
+    return release.is_prerelease or release.is_devrelease or release.local is not None
+
+
+def environment_notes(plan: InstallPlan, home_plugin: Path | None) -> tuple[str, ...]:
+    """Plan notes for the plugin environment Hermes builds from the home plugin's declaration.
+
+    Only a build that is not on PyPI needs one: the pinned version resolves only from a wheel source the operator
+    supplies, and every later rebuild needs that source again.
+    """
+    if home_plugin is None or normalized_path(plan.target_plugin_dir) != normalized_path(home_plugin):
+        return ()
+    if not _non_pypi_version(__version__):
+        return ()
+    return (
+        "Rebuild the Hermes plugin environment with hermes_cli.venv_sync and "
+        "UV_FIND_LINKS=<directory containing this wheel>; repeat after every hermes update, "
+        "or the rebuild will fail and the plugin will be disabled.",
+    )
+
+
+def wrapper_pyproject(version: str = __version__) -> str:
     """The ``pyproject.toml`` beside the wrapper in ``home_plugin_dir``: the same core, vector extra included.
 
     Hermes's package manager builds the environment it runs plugins in from each plugin's declaration, and a
-    ``pyproject.toml`` there wins over ``plugin.yaml``.  One written there by hand can pin the core without
-    ``[lancedb]``, and every recall of that installation then runs without vectors.  Written by the install, it
-    says what the manifest says; a release not on PyPI declares nothing (``wrapper_manifest``).
+    ``pyproject.toml`` there wins over ``plugin.yaml``. The vector extra stays in the declaration for installation
+    compatibility; NumPy retrieval is part of the base dependency set. Development, pre-release and local versions
+    are pinned too; Hermes must be given a wheel source when rebuilding their environment.
     """
-    release = Version(version)
-    if release.is_prerelease or release.is_devrelease or release.local is not None:
-        return None
     return (
         '[project]\nname = "hermes-scope-recall-plugin"\nversion = "0.0.0"\nrequires-python = ">=3.11"\n'
-        f'dependencies = ["hermes-scope-recall[lancedb]=={version}"]\n\n[tool.uv]\npackage = false\n'
+        f'dependencies = ["hermes-scope-recall[vectors]=={version}"]\n\n[tool.uv]\npackage = false\n'
     )
 
 
@@ -145,13 +164,12 @@ def wrapper_manifest(template: str, version: str = __version__) -> str:
     there by hand, and Hermes installs what a memory provider's manifest declares
     (``pip_dependencies``) when the provider is set up; it reads the manifest from ``home_plugin_dir`` once
     the core is gone.  The pin is exact, as the wrapper and the core are one release.  A
-    pre-release, development or local build is not on PyPI, and a requirement that cannot be resolved fails
-    Hermes' whole build, so such a build declares nothing and is installed by hand.
+    pre-release, development or local build declares no ``pip_dependencies`` here; its home plugin's
+    ``pyproject.toml`` pins the build and its wheel source must be supplied during environment sync.
     """
-    release = Version(version)
-    if release.is_prerelease or release.is_devrelease or release.local is not None:
+    if _non_pypi_version(version):
         return template
-    return template.rstrip("\n") + f'\npip_dependencies:\n  - "hermes-scope-recall[lancedb]=={version}"\n'
+    return template.rstrip("\n") + f'\npip_dependencies:\n  - "hermes-scope-recall[vectors]=={version}"\n'
 
 
 def planned_files(plan: InstallPlan) -> dict[Path, str | bytes]:
@@ -162,11 +180,8 @@ def planned_files(plan: InstallPlan) -> dict[Path, str | bytes]:
             raise InstallError(f"distribution template missing: {source}")
         text = source.read_text(encoding="utf-8")
         files[plan.target_plugin_dir / name] = wrapper_manifest(text) if name == "plugin.yaml" else text
-    project = wrapper_pyproject()
-    if project is not None and normalized_path(plan.target_plugin_dir) == normalized_path(
-        home_plugin_dir(plan.instance_root)
-    ):
-        files[plan.target_plugin_dir / "pyproject.toml"] = project
+    if normalized_path(plan.target_plugin_dir) == normalized_path(home_plugin_dir(plan.instance_root)):
+        files[plan.target_plugin_dir / "pyproject.toml"] = wrapper_pyproject()
     for name, source in SKILLS.items():
         files[plan.instance_root / "skills" / name / "SKILL.md"] = source.read_text(encoding="utf-8")
     return files

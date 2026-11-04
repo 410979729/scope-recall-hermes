@@ -20,7 +20,10 @@ from . import lineage
 from .claim_storage import parse_source_ref
 from .delete_storage import retraction_after
 from .management_query import MemoryFilter, source_metadata
+from .reflection_validity import reflection_live
+from .review_policy import REVIEW_REASONS
 from .source_records import StoredSource
+from .summary_validity import is_conversation_summary, summary_live
 
 #: Identities one source page loads before their rows are materialized.
 _SOURCE_PAGE = 200
@@ -58,7 +61,7 @@ def _month(stamp: str) -> str:
 class ClaimExport:
     """One selected claim and a single-use stream of its non-current revisions."""
 
-    current: dict
+    current: dict | None
     history: Iterator[dict]
 
 
@@ -278,8 +281,14 @@ class MemoryExport:
             "recorded_at": utc_iso(source.event["recorded_at"]),
         }
 
-    def _claim_sources(self, view, version) -> list[dict] | None:
+    def _claim_sources(self, view, version, *, history=False) -> list[dict] | None:
         """Resolve one revision's evidence without retaining the claim's history."""
+        from .reflection_validity import reflection_historical
+
+        if not (reflection_historical(view, version) if history else reflection_live(view, version)):
+            return None
+        if is_conversation_summary(version) and not summary_live(view, version.ref, version.revision):
+            return None
         pairs = lineage.evidence(view._check(), "claim", version.ref, version.revision)
         if not pairs:
             return None
@@ -305,7 +314,7 @@ class MemoryExport:
     def _claim_history(self, view, ref: str, current: int) -> Iterator[dict]:
         for version in self._claim_versions(view, ref):
             if version.revision != current:
-                sources = self._claim_sources(view, version)
+                sources = self._claim_sources(view, version, history=version.payload.get("kind") == "observation")
                 if sources is not None:
                     yield self._claim_record(version, "fact_history", sources)
 
@@ -313,6 +322,8 @@ class MemoryExport:
     def _claim_record(version, kind: str, sources: list[dict]) -> dict:
         payload = {key: value for key, value in version.payload.items() if key != "evidence_spans"}
         return {
+            "importance": version.base_importance,
+            "pinned": version.pinned,
             "kind": kind,
             "ref": version.ref,
             "revision": version.revision,
@@ -360,14 +371,31 @@ class MemoryExport:
                 if revision is None:
                     continue
                 head = view.claims.version(ref, revision)
-                if head is None or not all(
-                    self._claim_sources(view, version) is not None for version in self._claim_versions(view, ref)
-                ):
+                if head is None:
+                    continue
+                if head.reason in REVIEW_REASONS:
+                    # Held versions remain portable history, never current facts.
+                    yield ClaimExport(None, self._claim_history(view, ref, -1))
+                    continue
+                if head.state == "superseded" and head.reason == "health_superseded":
+                    # The shared resolver enforces the same scope and visibility as recall.
+                    lineage.resolve_replacement(view, head.ref, self.core.clock.utc_now())
+                    if head.payload["kind"] == "observation":
+                        if self._claim_sources(view, head, history=True) is not None:
+                            yield ClaimExport(None, self._claim_history(view, ref, -1))
+                        continue
+                # Summary history contains pending and invalidated generations,
+                # not portable truth. Export only its currently valid snapshot;
+                # ordinary facts still require their full history to be visible.
+                summary = is_conversation_summary(head) or head.payload["kind"] == "observation"
+                versions = (head,) if summary else self._claim_versions(view, ref)
+                if not all(self._claim_sources(view, version) is not None for version in versions):
                     continue
                 sources = self._claim_sources(view, head)
                 if sources is not None:
                     yield ClaimExport(
-                        self._claim_record(head, "fact", sources), self._claim_history(view, ref, revision)
+                        self._claim_record(head, "fact", sources),
+                        iter(()) if summary else self._claim_history(view, ref, revision),
                     )
             after = page[-1][0]
             if len(page) < _OBJECT_PAGE:

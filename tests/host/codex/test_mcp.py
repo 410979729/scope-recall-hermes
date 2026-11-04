@@ -396,6 +396,9 @@ def test_recall_epoch_race_scrubs_compiled_payload_surface(tmp_path: Path) -> No
         def memory_retracted_since(self, context, epoch):
             return real_core.memory_retracted_since(context, epoch)
 
+        def release_recall_packet(self, context, packet, *, original=None):
+            return real_core.release_recall_packet(context, packet, original=original)
+
     adapter = build_server(config, workspace=project, core=RaceCore())
     human_context = trusted_context(
         config,
@@ -635,7 +638,21 @@ def test_mcp_inspect_resolves_old_episode_by_explicit_ref(tmp_path: Path) -> Non
 #: Registration order in ``adapters/clients/mcp_server.py``; ``trace`` registers
 #: between ``profile`` and ``entity`` and is hardened with the rest at the
 #: ``extra="forbid"`` pass, so it belongs to the frozen public surface.
-_MCP_PUBLIC_TOOLS = ("recall", "inspect", "profile", "trace", "entity", "propose_memory", "revise", "forget", "status")
+_MCP_PUBLIC_TOOLS = (
+    "recall",
+    "inspect",
+    "profile",
+    "trace",
+    "entity",
+    "propose_memory",
+    "revise",
+    "forget",
+    "status",
+    "handoff_write",
+    "handoff_list",
+    "handoff_accept",
+    "handoff_cancel",
+)
 
 
 def _assert_candidate_mcp_server_import() -> None:
@@ -843,6 +860,9 @@ def test_mcp_recall_budget_default_tiny_clip_and_invalid_types(tmp_path: Path) -
 
         def memory_retracted_since(self, context, epoch):
             return core.memory_retracted_since(context, epoch)
+
+        def release_recall_packet(self, context, packet, *, original=None):
+            return core.release_recall_packet(context, packet, original=original)
 
     adapter = build_server(config, workspace=project, core=CaptureCore())
     tool = adapter.server._tool_manager.get_tool("recall")

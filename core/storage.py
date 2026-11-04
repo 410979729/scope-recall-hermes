@@ -6,24 +6,35 @@ import json
 import math
 import os
 import sqlite3
+import stat
+import sys
+import threading
 import time
+import uuid
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import NoReturn
 
 from ..contracts import (
     ContractError,
     InstanceBinding,
     TrustedContext,
 )
+from . import lexical_index
 from .deadline import remaining_seconds as request_remaining_seconds
 from .delete_storage import Deletions, watch_mirrored_tombstones
-from .failure_retry import failure_kind, retry_class
+from .failure_policy import failure_kind
+from .failure_retry import retry_class
+from .file_lock import advisory_file_lock
 from .registry_storage import Registry
 from .restore import restore_pending
 from .schema import (
     APPLICATION_ID,
+    PRIVATE_INTERVALS_STATEMENT,
+    PRIVATE_TARGET_INDEX,
     SCHEMA_VERSION,
     STATEMENTS,
     UPGRADE_CHAIN,
@@ -37,9 +48,32 @@ from .schema import (
     upgrade_1109,
     upgrade_1110,
     upgrade_1111,
+    upgrade_1112,
+    upgrade_1113,
+    upgrade_1114,
+    upgrade_1115,
+    upgrade_1116,
+    upgrade_1117,
+    upgrade_1118,
+    upgrade_1119,
+    upgrade_1120,
+    upgrade_1121,
+    upgrade_1122,
+    upgrade_1123,
+    upgrade_1124,
+    upgrade_1125,
+    upgrade_1126,
+    upgrade_1127,
+    upgrade_1128,
+    upgrade_1129,
+    upgrade_1130,
+    upgrade_1131,
+    upgrade_1132,
+    upgrade_1133,
 )
-from .source_records import SOURCE_COLUMNS, StoredSource, source_size, stored_source
+from .source_records import SOURCE_COLUMNS, StoredSource, clear_body_scan_receipts, source_size, stored_source
 from .source_storage import Sources
+from .store_upgrade import UPGRADE_LOCK, recover_upgrade_snapshot, upgrade_in_progress, upgrade_store
 from .truth_connection import TruthDatabaseMode, connect_truth_database
 from .visibility import allowed, allowed_refs
 from .work_storage import WorkItems
@@ -47,6 +81,66 @@ from .writer_lease import TruthWriterBusyError
 
 #: How often a writer looks again for another process's lease while it waits.
 _LEASE_POLL_SECONDS = 0.01
+
+# Bounded process-local structural results only. Identity, scopes and live
+# restore/privacy fences never use this cache. A fork gets different keys.
+_STRUCTURAL_STATE: dict[tuple, tuple[bool, bool]] = {}
+_STRUCTURAL_LOCK = threading.Lock()
+
+# A migration consumes its key's format and advances it to the next format.
+SCHEMA_MIGRATIONS = dict(
+    zip(
+        UPGRADE_CHAIN,
+        (
+            upgrade_1105,
+            upgrade_1106,
+            upgrade_1107,
+            upgrade_1108,
+            upgrade_1109,
+            upgrade_1110,
+            upgrade_1111,
+            upgrade_1112,
+            upgrade_1113,
+            upgrade_1114,
+            upgrade_1115,
+            upgrade_1116,
+            upgrade_1117,
+            upgrade_1118,
+            upgrade_1119,
+            upgrade_1120,
+            upgrade_1121,
+            upgrade_1122,
+            upgrade_1123,
+            upgrade_1124,
+            upgrade_1125,
+            upgrade_1126,
+            upgrade_1127,
+            upgrade_1128,
+            upgrade_1129,
+            upgrade_1130,
+            upgrade_1131,
+            upgrade_1132,
+            upgrade_1133,
+        ),
+        strict=True,
+    )
+)
+
+
+def _privacy_read_authorizer(action: int, table: str | None, *_rest: object) -> int:
+    """Restrict a privacy snapshot to interval metadata without exposing source rows."""
+    return sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_READ and table != "private_intervals" else sqlite3.SQLITE_OK
+
+
+def _check_privacy_contract(conn: sqlite3.Connection) -> None:
+    """Require the canonical privacy schema, including case-sensitive stored literal values."""
+    for name, expected in (
+        ("private_intervals", PRIVATE_INTERVALS_STATEMENT),
+        ("private_target", PRIVATE_TARGET_INDEX),
+    ):
+        row = conn.execute("SELECT sql FROM sqlite_master WHERE name=?", (name,)).fetchone()
+        if row is None or " ".join(row[0].split()) != " ".join(expected.split()):
+            raise ContractError("SCHEMA_UNSUPPORTED", "privacy_contract")
 
 
 def _directory(path: Path) -> str:
@@ -76,7 +170,7 @@ class StoreStatus:
     failed_work: int = 0
     leased_work: int = 0
     oldest_pending_at: str | None = None
-    #: Why the failed rows failed, one count per failure kind (``failure_retry.failure_kind``).
+    #: Why the failed rows failed, one count per failure kind (``failure_policy.failure_kind``).
     work_error_counts: tuple[tuple[str, int], ...] = ()
     source_only_sources: int | None = None
     deferred_sources: int | None = None
@@ -112,6 +206,10 @@ class Transaction:
         self.__memo: dict | None = None if writable else {}
         self.__memo_bytes = 0
         self.__parent: Transaction | None = None
+        self.__authorized_sources: dict = {}
+        # Release diagnostics are semantic state, independent of the bounded
+        # read memo: disabling or filling that cache must not erase omissions.
+        self.withheld_evidence: set[tuple[str, int]] = set()
 
     def with_context(self, context: TrustedContext, *, writable: bool = False) -> Transaction:
         """Borrow this transaction for an authorized partition, without widening its scopes or lifetime."""
@@ -243,6 +341,18 @@ class Transaction:
         """Read the authority fence in this transaction without queue diagnostics."""
         return int(self._check().execute("SELECT memory_epoch FROM instance_meta WHERE singleton=1").fetchone()[0])
 
+    def database_identity(self) -> tuple[str, str | None]:
+        """Return this database's immutable identity and known creation time from its verified transaction."""
+        row = (
+            self._check()
+            .execute("SELECT database_id,database_created_at FROM instance_meta WHERE singleton=1")
+            .fetchone()
+        )
+        identity = row[0]
+        if type(identity) is not str or len(identity) != 32 or any(c not in "0123456789abcdef" for c in identity):
+            raise ContractError("IDENTITY_UNBOUND", "database_id")
+        return identity, row[1]
+
     def status(
         self, *, include_all_projects: bool = False, include_admission: bool = False, include_queue_age: bool = True
     ) -> StoreStatus:
@@ -310,7 +420,7 @@ class Transaction:
             params,
         ).fetchall()
         # A code carries its retry history (``auto_retry:1|derivation_invalid``) and its writer's case; each kind is
-        # counted once, as ``failure_retry.failure_kind`` reads it, and a failure is terminal as ``retry_class`` and so
+        # counted once, as ``failure_policy.failure_kind`` reads it, and a failure is terminal as ``retry_class`` and so
         # ``retry-failures`` read it.
         kinds: dict[str, dict[str, int]] = {"failed": {}, "pending": {}}
         terminal = 0
@@ -336,11 +446,31 @@ class Transaction:
             pending_error_counts=_most_frequent(kinds["pending"]),
         )
 
+    @contextmanager
+    def _reuse_source(self, source):
+        """Reuse an authorized immutable source during one admission operation only.
+
+        The caller must already have read this version in this transaction.
+        The narrow lifetime excludes later visibility-changing mutations.
+        """
+        self._check(write=True)
+        key = (source.ref, source.revision)
+        previous = self.__authorized_sources.get(key)
+        self.__authorized_sources[key] = source
+        try:
+            yield source
+        finally:
+            if previous is None:
+                self.__authorized_sources.pop(key, None)
+            else:
+                self.__authorized_sources[key] = previous
+
     def source(self, ref: str, revision: int) -> StoredSource | None:
         conn = self._check()
         if type(ref) is not str or not ref or len(ref) > 240 or type(revision) is not int or revision < 1:
             raise ContractError("INPUT_INVALID", "source_ref")
-
+        if (ref, revision) in self.__authorized_sources:
+            return self.__authorized_sources[(ref, revision)]
         if not allowed(self, "event", ref):
             return None
         loaded = self.remembered(
@@ -463,11 +593,32 @@ HEAVY_UPGRADE_SECONDS = 60.0
 
 def upgrade_fits(store_bytes: int, remaining_seconds: float | None) -> bool:
     """Whether an open with this budget may bring a store of this size forward."""
-    return remaining_seconds is None or remaining_seconds >= HEAVY_UPGRADE_SECONDS or store_bytes < HEAVY_UPGRADE_BYTES
+    return store_bytes < HEAVY_UPGRADE_BYTES or (
+        remaining_seconds is not None and remaining_seconds >= HEAVY_UPGRADE_SECONDS
+    )
 
 
 def _store_bytes(conn: sqlite3.Connection) -> int:
     return conn.execute("PRAGMA page_count").fetchone()[0] * conn.execute("PRAGMA page_size").fetchone()[0]
+
+
+def _initialization_left(deadline: float | None) -> float | None:
+    """Return the unspent part of the single initialization deadline."""
+    return None if deadline is None else max(0.0, deadline - time.monotonic())
+
+
+def _finish_claim_index(conn: sqlite3.Connection, deadline: float | None) -> None:
+    """Commit bounded index pages under initialization admission; an interrupted page is repeatable."""
+    while lexical_index.claim_backfill_pending(conn):
+        if deadline is not None and time.monotonic() >= deadline:
+            raise ContractError("SCHEMA_UNSUPPORTED", "upgrade_deadline_exceeded")
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            lexical_index.backfill_claim_page(conn)
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
 
 
 #: Requested memory-map size.  Operations open separate connections, so they do not share SQLite's page cache.
@@ -524,6 +675,17 @@ class SQLiteStorage:
         #: the store and the recalls and worker passes over it keep one time.
         self.monotonic = clock if clock is not None else time.monotonic
         self.__pending_close: list[sqlite3.Connection] = []
+        #: Optional runtime-owned scheduling edge; core never imports a worker launcher.
+        self.on_upgrade_pending: Callable[[], object] | None = None
+        #: Late-bound vector read port owned by the composition root.
+        self.entity_vectors: Callable[[], object] | None = None
+
+    def _defer_upgrade(self) -> NoReturn:
+        """Notify the scheduling owner without replacing the authoritative schema gap."""
+        if self.on_upgrade_pending is not None:
+            with suppress(Exception):
+                self.on_upgrade_pending()
+        raise ContractError("SCHEMA_UNSUPPORTED", "upgrade_pending")
 
     @property
     def binding(self) -> InstanceBinding:
@@ -536,7 +698,14 @@ class SQLiteStorage:
     def _path_check(self) -> None:
         # Reject any symlink/junction ancestor, including read-only opens.
         for path in (self.path, *self.path.parents):
-            if path.is_symlink() or getattr(path, "is_junction", lambda: False)():
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                continue
+            # Both flags come from one native record. Re-read it on every open:
+            # path safety is live, even when the stored schema is unchanged.
+            junction = getattr(info, "st_reparse_tag", None) == getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", -1)
+            if stat.S_ISLNK(info.st_mode) or junction:
                 raise ContractError("IDENTITY_UNBOUND", "data_directory")
         if _directory(self.binding.data_directory.resolve()) != _directory(self.binding.data_directory):
             raise ContractError("IDENTITY_UNBOUND", "data_directory")
@@ -567,7 +736,12 @@ class SQLiteStorage:
         )
 
     def _open(
-        self, mode: TruthDatabaseMode, remaining_seconds: float | None = None, *, restoring: bool = False
+        self,
+        mode: TruthDatabaseMode,
+        remaining_seconds: float | None = None,
+        *,
+        restoring: bool = False,
+        coordinating: bool = False,
     ) -> sqlite3.Connection:
         # Commit, rollback and connection/lease cleanup finish outside this entry check.
         timeout = self._timeout(remaining_seconds)
@@ -581,6 +755,8 @@ class SQLiteStorage:
                 raise ContractError("STORAGE_UNAVAILABLE", "connection_cleanup") from exc
             self.__pending_close.pop()
         self._path_check()
+        if not restoring and not coordinating and upgrade_in_progress(self.binding.data_directory):
+            raise ContractError("SCHEMA_UNSUPPORTED", "upgrade_in_progress")
         if not restoring and restore_pending(self.binding.data_directory):
             raise ContractError("RESTORE_UNVERIFIED")
         # The writer lease is taken without blocking and held for one
@@ -618,10 +794,14 @@ class SQLiteStorage:
                 raise
             return conn
 
-    def verify(self, conn: sqlite3.Connection, *, expected_schema: int = SCHEMA_VERSION) -> None:
+    def verify(self, conn: sqlite3.Connection, *, expected_schema: int | None = None) -> sqlite3.Row:
         """Refuse the database ``conn`` reads unless it is this binding's store at ``expected_schema``: its header,
         its recorded schema, its kind, its identity and its scopes.  Its file need not be the store's own: a
-        snapshot of the store is checked the same way before it is copied over it (``maintenance/restore.py``)."""
+        snapshot of the store is checked the same way before it is copied over it (``maintenance/restore.py``).
+
+        Return the freshly verified metadata row, never a reusable authorization verdict.
+        """
+        expected_schema = SCHEMA_VERSION if expected_schema is None else expected_schema
         if (
             conn.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID
             or conn.execute("PRAGMA user_version").fetchone()[0] != expected_schema
@@ -654,7 +834,7 @@ class SQLiteStorage:
                 raise ContractError("IDENTITY_UNBOUND")
             if stored != held or held != len(self.binding.scope_ids):
                 raise ContractError("IDENTITY_UNBOUND", "scope_binding")
-            return
+            return row
         # A shared store is its fixed id, not its directory: a copied store opens
         # nowhere until ``adopt`` records the new place.  Entries each bind a
         # subset of its scopes; the store grows as they attach.
@@ -668,6 +848,7 @@ class SQLiteStorage:
             raise ContractError("IDENTITY_UNBOUND", "store_moved:run_adopt")
         if held != len(self.binding.scope_ids):
             raise ContractError("IDENTITY_UNBOUND", "scope_binding")
+        return row
 
     def _close(self, conn: sqlite3.Connection, original: BaseException | None) -> None:
         try:
@@ -680,39 +861,93 @@ class SQLiteStorage:
 
     def _upgrade_schema(self, conn: sqlite3.Connection) -> None:
         """Apply each supported migration in order after checking its input identity."""
-        migrations = (
-            upgrade_1105,
-            upgrade_1106,
-            upgrade_1107,
-            upgrade_1108,
-            upgrade_1109,
-            upgrade_1110,
-            upgrade_1111,
-        )
-        for version, migrate in zip(UPGRADE_CHAIN, migrations, strict=True):
+        for version, migrate in SCHEMA_MIGRATIONS.items():
             if conn.execute("PRAGMA user_version").fetchone()[0] == version:
                 self.verify(conn, expected_schema=version)
                 migrate(conn)
 
-    def initialize(self, *, remaining_seconds: float | None = None) -> StoreStatus:
+    def initialize(
+        self,
+        *,
+        remaining_seconds: float | None = None,
+        backup_dir: Path | None = None,
+        repair_header: bool = False,
+        receipt: dict | None = None,
+        unbounded_upgrade: bool = False,
+        created_at: str | None = None,
+    ) -> StoreStatus:
         """Create or upgrade this store and return its verified status within the caller's lock-wait budget."""
-        started = self.monotonic() if remaining_seconds is not None else 0.0
-        conn = self._open("rwc", remaining_seconds)
+        self._timeout(remaining_seconds)
+        budget = min((v for v in (remaining_seconds, request_remaining_seconds()) if v is not None), default=None)
+        deadline = None if budget is None else time.monotonic() + budget
+        conn = self._open("rwc", _initialization_left(deadline), coordinating=True)
         original = None
         try:
-            version = conn.execute("PRAGMA user_version").fetchone()[0]
-            if version in UPGRADE_CHAIN:
-                # Verified as this store's own before anything is written, and
-                # switched to WAL first, so readers keep reading through a
-                # long upgrade instead of waiting on the rollback journal.
-                self.verify(conn, expected_schema=version)
-                _ensure_wal(conn)
+            with advisory_file_lock(
+                self.binding.data_directory / UPGRADE_LOCK,
+                timeout_seconds=self._timeout(_initialization_left(deadline)),
+            ):
+                return self._initialize(
+                    conn,
+                    deadline=deadline,
+                    backup_dir=backup_dir,
+                    repair_header=repair_header,
+                    receipt=receipt,
+                    unbounded_upgrade=unbounded_upgrade,
+                    created_at=created_at or datetime.now(UTC).isoformat(),
+                )
+        except BaseException as exc:
+            original = exc
+            raise
+        finally:
+            self._close(conn, original)
+
+    def _initialize(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        deadline: float | None,
+        backup_dir: Path | None,
+        repair_header: bool,
+        receipt: dict | None,
+        unbounded_upgrade: bool,
+        created_at: str,
+    ) -> StoreStatus:
+        status: StoreStatus | None = None
+
+        def migrate(conn):
+            nonlocal status
+            self._migrate_store(conn)
+            status = self._initial_status(conn)
+
+        try:
+            conn.execute(f"PRAGMA busy_timeout={int(self._timeout(_initialization_left(deadline)) * 1000)}")
             conn.execute("BEGIN IMMEDIATE")
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            recorded = stale_header_schema(conn) if repair_header else None
             exists = conn.execute("SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1").fetchone()
             if exists:
-                self._upgrade_schema(conn)
-                self.verify(conn)
-                ensure_source_session_index(conn)
+                if version in UPGRADE_CHAIN or recorded is not None:
+                    if not unbounded_upgrade and not upgrade_fits(_store_bytes(conn), _initialization_left(deadline)):
+                        self._defer_upgrade()
+                    outcome = upgrade_store(
+                        conn,
+                        self.path,
+                        target=SCHEMA_VERSION,
+                        verify=self.verify,
+                        migrate=migrate,
+                        backup_dir=backup_dir,
+                        recorded_schema=recorded,
+                        deadline=deadline,
+                    )
+                    if receipt is not None:
+                        receipt.update(outcome)
+                    if recorded is not None and receipt is not None:
+                        receipt["header_restamped"] = {"from": version, "to": recorded}
+                else:
+                    self.verify(conn)
+                    recover_upgrade_snapshot(self.binding.data_directory, current_schema=version)
+                    ensure_source_session_index(conn)
             else:
                 if (
                     conn.execute("PRAGMA user_version").fetchone()[0] != 0
@@ -722,7 +957,8 @@ class SQLiteStorage:
                 for statement in STATEMENTS:
                     conn.execute(statement)
                 conn.execute(
-                    "INSERT INTO instance_meta(singleton,agent_id,installation_id,data_directory,schema_version,test_mode,installation_kind) VALUES (1,?,?,?,?,?,?)",
+                    "INSERT INTO instance_meta(singleton,agent_id,installation_id,data_directory,schema_version,"
+                    "test_mode,installation_kind,database_id,database_created_at) VALUES (1,?,?,?,?,?,?,?,?)",
                     (
                         self.binding.agent_id,
                         self.binding.installation_id,
@@ -730,6 +966,8 @@ class SQLiteStorage:
                         SCHEMA_VERSION,
                         int(self.binding.test_mode),
                         self.binding.installation_kind,
+                        uuid.uuid4().hex,
+                        created_at,
                     ),
                 )
                 conn.executemany(
@@ -737,21 +975,35 @@ class SQLiteStorage:
                 )
                 conn.execute(f"PRAGMA application_id={APPLICATION_ID}")
                 conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+            if status is None:
+                status = self._initial_status(conn)
             conn.commit()
-            _ensure_wal(conn)
+            _finish_claim_index(conn, deadline)
+            with suppress(sqlite3.Error):
+                conn.execute("PRAGMA busy_timeout=0")
+                _ensure_wal(conn)
         except BaseException as exc:
-            original = exc
             try:
                 if conn.in_transaction:
                     conn.rollback()
             except BaseException as cleanup:
                 _cleanup_error(exc, cleanup, "rollback")
             raise
-        finally:
-            self._close(conn, original)
+        return status
+
+    def _initial_status(self, conn: sqlite3.Connection) -> StoreStatus:
+        """Read the verified result inside its owning transaction before commit."""
         context = TrustedContext(self.binding, "initialization", self.binding.scope_ids, "host_generated")
-        with self.read(context, remaining_seconds=self._remaining_budget(remaining_seconds, started)) as tx:
+        tx = Transaction(conn, context, writable=False)
+        try:
             return tx.status()
+        finally:
+            tx._finish()
+
+    def _migrate_store(self, conn: sqlite3.Connection) -> None:
+        """Apply the ordered format changes and their required lookup index."""
+        self._upgrade_schema(conn)
+        ensure_source_session_index(conn)
 
     def adopt(self) -> str:
         """Record this binding's directory as where a copied shared store now lives.
@@ -789,6 +1041,7 @@ class SQLiteStorage:
             ):
                 raise ContractError("IDENTITY_UNBOUND", "scope_binding")
             previous = row["data_directory"]
+            clear_body_scan_receipts(conn)
             conn.execute(
                 "UPDATE instance_meta SET data_directory=? WHERE singleton=1",
                 (_directory(self.binding.data_directory),),
@@ -806,53 +1059,111 @@ class SQLiteStorage:
         finally:
             self._close(conn, original)
 
+    def _file_stamp(self):
+        """Observe file identity without opening a descriptor that could disturb POSIX locks."""
+        try:
+            info = self.path.stat()
+        except FileNotFoundError:
+            return None
+        return (
+            info.st_dev,
+            info.st_ino,
+            getattr(info, "st_birthtime_ns", 0),
+            info.st_ctime_ns,
+            info.st_mtime_ns,
+            info.st_size,
+        )
+
+    def _structural_state(self, conn, row, opened_stamp):
+        """Reuse index readiness only for an unchanged file, schema and metadata snapshot."""
+        stamp = self._file_stamp()
+        if stamp is None or opened_stamp is None or stamp[:3] != opened_stamp[:3]:
+            raise ContractError("IDENTITY_UNBOUND", "store_replaced_during_open")
+        key = (
+            _directory(self.path),
+            os.getpid(),
+            stamp,
+            conn.execute("PRAGMA schema_version").fetchone()[0],
+            tuple(row),
+        )
+        with _STRUCTURAL_LOCK:
+            cached = _STRUCTURAL_STATE.get(key)
+        if cached is not None:
+            return cached
+        state = (self._claim_index_pending(conn, False, SCHEMA_VERSION), source_session_index_present(conn))
+        # Pending work and missing indexes must be retried under their current
+        # budget. Only complete structural validation is reusable.
+        if state == (False, True):
+            with _STRUCTURAL_LOCK:
+                if len(_STRUCTURAL_STATE) >= 128:
+                    _STRUCTURAL_STATE.clear()
+                _STRUCTURAL_STATE[key] = state
+        return state
+
+    def _begin_transaction(self, context, writable, remaining_seconds, restoring):
+        """Open and verify a fresh authority snapshot, initializing only outside it."""
+        started = self.monotonic() if remaining_seconds is not None else 0.0
+        opened_stamp = self._file_stamp()
+        conn = self._open("rw" if writable else "ro", remaining_seconds, restoring=restoring)
+        try:
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            upgrade = self.upgrade_on_open and not restoring and version in UPGRADE_CHAIN
+            budget = self._remaining_budget(remaining_seconds, started)
+            fits = upgrade_fits(_store_bytes(conn), budget) if upgrade else True
+            if upgrade and not fits:
+                # Refusing a migration reads no truth rows. Keep that budget
+                # refusal ahead of opening an authority snapshot.
+                self._defer_upgrade()
+            if writable and version == SCHEMA_VERSION:
+                _ensure_wal(conn)
+            conn.execute("BEGIN IMMEDIATE" if writable else "BEGIN")
+            row = self.verify(
+                conn,
+                expected_schema=version
+                if self.upgrade_on_open and not restoring and version in UPGRADE_CHAIN
+                else None,
+            )
+            if version == SCHEMA_VERSION and not restoring:
+                pending, indexed = self._structural_state(conn, row, opened_stamp)
+                fits = upgrade_fits(_store_bytes(conn), budget) if pending else fits
+                upgrade = (
+                    upgrade
+                    or pending
+                    or (writable and self.upgrade_on_open and not indexed and upgrade_fits(_store_bytes(conn), budget))
+                )
+            if upgrade:
+                conn.rollback()
+                self._close(conn, None)
+                conn = None
+                if not fits:
+                    self._defer_upgrade()
+                self.initialize(remaining_seconds=self._remaining_budget(remaining_seconds, started))
+                conn = self._open(
+                    "rw" if writable else "ro", self._remaining_budget(remaining_seconds, started), restoring=restoring
+                )
+                conn.execute("BEGIN IMMEDIATE" if writable else "BEGIN")
+                self.verify(conn)
+            return conn
+        except BaseException as exc:
+            if conn is not None:
+                try:
+                    if conn.in_transaction:
+                        conn.rollback()
+                except BaseException as cleanup:  # noqa: BLE001 - preserve the original failure while reporting cleanup
+                    _cleanup_error(exc, cleanup, "rollback")
+                self._close(conn, exc)
+            raise
+
     @contextmanager
     def _transaction(
         self, context: TrustedContext, *, writable: bool, remaining_seconds: float | None, restoring: bool = False
     ) -> Iterator[Transaction]:
         self._context_check(context)
-        started = self.monotonic() if remaining_seconds is not None else 0.0
-        conn = self._open("rw" if writable else "ro", remaining_seconds, restoring=restoring)
-        try:
-            # Lock waits and upgrade work use the same request deadline, but
-            # the lock timeout does not limit a worker's upgrade budget.
-            upgrade_budget = self._remaining_budget(remaining_seconds, started)
-            version = conn.execute("PRAGMA user_version").fetchone()[0]
-            upgrade = self.upgrade_on_open and not restoring and version in UPGRADE_CHAIN
-            if upgrade:
-                fits = upgrade_fits(_store_bytes(conn), upgrade_budget)
-            elif writable and version == SCHEMA_VERSION:
-                _ensure_wal(conn)
-                # An optional index shares the schema upgrade's budget gate, but
-                # a caller unable to build it can still use the current schema.
-                if self.upgrade_on_open and not restoring:
-                    upgrade = not source_session_index_present(conn) and upgrade_fits(
-                        _store_bytes(conn), upgrade_budget
-                    )
-                    fits = True
-        except BaseException as exc:
-            # Nothing below closes this connection yet.  Left open, a writable one kept the writer lease until the
-            # process ended, and every other process's writes failed.  A busy store can answer
-            # the first statement here with "database is locked".
-            self._close(conn, exc)
-            raise
-        if upgrade:
-            self._close(conn, None)
-            if not fits:
-                # A hook's few seconds cannot carry a rebuild that takes a
-                # minute on a large store; the worker's pass or the installer
-                # brings it forward, and the doctor names the pending step.
-                raise ContractError("SCHEMA_UNSUPPORTED", "upgrade_pending")
-            self.initialize(remaining_seconds=self._remaining_budget(remaining_seconds, started))
-            conn = self._open(
-                "rw" if writable else "ro", self._remaining_budget(remaining_seconds, started), restoring=restoring
-            )
+        conn = self._begin_transaction(context, writable, remaining_seconds, restoring)
         tx = Transaction(conn, context, writable=writable)
         original = None
         mirror = False
         try:
-            conn.execute("BEGIN IMMEDIATE" if writable else "BEGIN")
-            self.verify(conn)
             # A restore can establish its fence while this connection waits
             # for the writer lease. Recheck after acquiring the transaction.
             if not restoring and restore_pending(self.binding.data_directory):
@@ -879,6 +1190,13 @@ class SQLiteStorage:
         if mirror:
             self._after_commit_deletions()
 
+    def _claim_index_pending(self, conn, restoring: bool, version: int) -> bool:
+        """Keep partially backfilled stores behind initialization admission, including after interruption."""
+        pending = not restoring and version == SCHEMA_VERSION and lexical_index.claim_backfill_pending(conn)
+        if pending and not self.upgrade_on_open:
+            self._defer_upgrade()
+        return pending
+
     def _after_commit_deletions(self) -> None:
         """Try bounded mirroring after lease cleanup; I/O errors leave durable catch-up."""
         try:
@@ -890,6 +1208,50 @@ class SQLiteStorage:
 
     def write(self, context: TrustedContext, *, remaining_seconds: float | None = None):
         return self._transaction(context, writable=True, remaining_seconds=remaining_seconds)
+
+    @contextmanager
+    def capture_privacy(self, context: TrustedContext, *, remaining_seconds: float = 1.0):
+        """Read only the recognized privacy contract while ordinary storage is refusing an upgrade.
+
+        The header and recorded schema must agree, as must identity, location, scopes and installation kind. An
+        exact privacy table and index contract are required; an unknown format never authorizes a local copy.
+        Restore fences remain active. No general source read or write is exposed by this transaction.
+        """
+        deadline = time.monotonic() + remaining_seconds
+        with ExitStack() as opened:
+            try:
+                ordinary = opened.enter_context(self.read(context, remaining_seconds=remaining_seconds))
+            except ContractError as exc:
+                if exc.code != "SCHEMA_UNSUPPORTED":
+                    raise
+            else:
+                _check_privacy_contract(ordinary._check())
+                ordinary._check().set_authorizer(_privacy_read_authorizer)
+                yield ordinary
+                return
+        remaining_seconds = deadline - time.monotonic()
+        if remaining_seconds <= 0:
+            raise ContractError("DEADLINE_EXCEEDED")
+        self._context_check(context)
+        conn = self._open("ro", remaining_seconds, coordinating=True)
+        tx = Transaction(conn, context, writable=False)
+        try:
+            conn.execute("BEGIN")
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            self.verify(conn, expected_schema=version)
+            _check_privacy_contract(conn)
+            if restore_pending(self.binding.data_directory):
+                raise ContractError("RESTORE_UNVERIFIED")
+            conn.set_authorizer(_privacy_read_authorizer)
+            yield tx
+        finally:
+            original = sys.exception()
+            tx._finish()
+            try:
+                if conn.in_transaction:
+                    conn.rollback()
+            finally:
+                self._close(conn, original)
 
     def read(self, context: TrustedContext, *, remaining_seconds: float | None = None):
         return self._transaction(context, writable=False, remaining_seconds=remaining_seconds)

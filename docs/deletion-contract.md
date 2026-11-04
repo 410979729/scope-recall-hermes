@@ -103,7 +103,7 @@ epochs, preventing cache ABA. Failed replay or commit leaves admission closed an
 permits retry.
 
 The operator's backup and restore are the `backup` and `restore` commands
-([install.md](install.md), section 9). `restore` exports the ledger from the store
+([management and rollback](manage.md#migration-and-rollback)). `restore` exports the ledger from the store
 it replaces and backs that store up. `begin_restore` then writes the ledger beside
 the store (`restore-ledger.json`) and the marker after it, each through a file of
 its own that is synced and moved into place, so a crash leaves either whole or not

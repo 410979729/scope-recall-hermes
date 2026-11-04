@@ -16,6 +16,23 @@ let lastBackup = null;
 let lastPrivate = null;
 let browseItems = [];
 let lastScan = null;
+let quarantineBefore = null;
+let recallBefore = null;
+let recallFilters = {};
+let recallRows = [];
+let recallIdentity = 0;
+let reviewsCursor = null;
+let reviewActionsBefore = null;
+let reviewRows = [];
+let reviewActionRows = [];
+let reviewPolicyState = null;
+
+let handoffBefore = null;
+let handoffRows = [];
+let healthCursor = null;
+let healthActionsBefore = null;
+let healthPages = [];
+let healthActionItems = [];
 const t = (key) => window.UI_STRINGS[language][key] || key;
 
 // Stored values enter only text nodes. No memory field is interpreted as markup.
@@ -92,9 +109,162 @@ async function loadPage(page) {
     else button.removeAttribute("aria-current");
   }
   if (page === "overview") overview(await request("overview"));
+  if (page === "reviews") await loadReviews(false);
+  if (page === "entries") await loadEntries();
   if (page === "browse") await browse(false);
+  if (page === "handoffs") await loadHandoffs(false);
+  if (page === "health") await loadHealth(false);
+  if (page === "recalls") await loadRecalls(false);
+  if (page === "quarantine") await loadQuarantine(false);
   if (page === "private") privateState(await request("private"));
   if (page === "backup") backup(await request("backup"));
+}
+async function loadEntries() {
+  const data = await request("entries");
+  $("entry-items").replaceChildren();
+  for (const entry of data.entries) {
+    const detail = await request("entry", {entry_id: entry.id});
+    const row = node("article", undefined, $("entry-items"));
+    node("h3", entry.name + " · " + entry.id, row);
+    node("p", t("entry_" + entry.state), row);
+    for (const [label, value] of [["entryReadScopes", entry.read_scopes], ["entryWriteScopes", entry.write_scopes], ["entryActivity", detail.last_activity], ["entryVersion", detail.version_recorded], ["entryWrites", detail.recent_writes], ["entryReads", detail.recent_reads]]) {
+      node("h4", t(label), row);
+      node("pre", value == null ? t("notRecorded") : JSON.stringify(value, null, 2), row);
+    }
+    node("h4", t("entryHistory"), row);
+    for (const change of detail.history) {
+      node("p", change.changed_at + " \u00b7 " + t("entry_" + change.from_state) + " \u2192 " + t("entry_" + change.to_state), row);
+      node("p", t("entryActor") + ": " + change.actor, row);
+      node("p", t("entryAccount") + ": " + (change.account_id || t("notRecorded")), row);
+    }
+    for (const state of ["normal", "read-only", "paused"]) {
+      const button = node("button", t(state === "normal" ? "entry_restore" : "entry_" + state), row);
+      button.disabled = state === entry.state;
+      button.addEventListener("click", () => run(() => preview({action: "entry-state", entry_id: entry.id, state})));
+    }
+  }
+}
+async function loadHealth(more) {
+  const data = await request("health", more && healthCursor ? {cursor: healthCursor} : {});
+  if (!more) {
+    healthPages = [];
+    await loadHealthActions(false);
+  }
+  healthPages.push(data);
+  healthCursor = data.next_cursor;
+  $("health-next").disabled = !healthCursor;
+  renderHealth();
+}
+function renderHealth() {
+  $("health-items").replaceChildren();
+  for (const data of healthPages) {
+    for (const [label, categories] of [["health_duplicateGroup", ["entities", "duplicates"]], ["health_contradictions", ["contradictions"]], ["health_unused", ["unused"]]]) {
+      const group = node("section", undefined, $("health-items"));
+      node("h3", t(label), group);
+      for (const category of categories) {
+        if (categories.length > 1) node("h4", t("health_" + category), group);
+        for (const issue of data[category]) {
+          const row = node("article", undefined, group);
+          if (issue.name) node("div", issue.name, row);
+          node("pre", JSON.stringify(issue.facts, null, 2), row);
+          if (category === "unused") continue;
+          const [first, second] = issue.facts;
+          const action = category === "entities" ? "health-entity" : category === "duplicates" ? "health-merge" : "health-choose";
+          const apply = node("button", t(action), row);
+          apply.addEventListener("click", () => run(() => preview({action, first_ref: first.ref, first_revision: first.revision, second_ref: second.ref, second_revision: second.revision, ...(issue.name ? {name: issue.name} : {})})));
+          if (category === "contradictions") {
+            const reverse = node("button", t("health-choose") + " " + second.ref, row);
+            reverse.addEventListener("click", () => run(() => preview({action, first_ref: second.ref, first_revision: second.revision, second_ref: first.ref, second_revision: first.revision})));
+          }
+        }
+      }
+    }
+  }
+  const data = healthPages[healthPages.length - 1];
+  if (!data) return;
+  $("health-period").textContent = t("observationPeriod") + ": " + (data.observation_start || "—") + " – " + data.observation_end + " · " + data.observation_days + " " + t("days") + (data.records_incomplete ? " · " + t("recordsIncomplete") : "");
+  if (data.unused_complete === false) node("span", " · " + t("unusedIncomplete"), $("health-period"));
+  if (!data.complete) node("span", t("healthPartial"), $("health-period"));
+}
+async function loadHealthActions(more) {
+  if (!more) { healthActionItems = []; healthActionsBefore = null; }
+  const actions = await request("health-actions", more && healthActionsBefore ? {before: healthActionsBefore} : {});
+  healthActionItems.push(...actions.items);
+  healthActionsBefore = actions.next_before;
+  $("health-actions-next").disabled = !healthActionsBefore;
+  renderHealthActions();
+}
+function renderHealthActions() {
+  $("health-actions").replaceChildren();
+  for (const entry of healthActionItems) {
+    const action = {health_entity_merge: "health-entity", health_fact_merge: "health-merge", health_fact_choose: "health-choose"}[entry.action];
+    const label = t("healthUndo") + " · " + entry.recorded_at + " · " + t(action) + " · " + Object.keys(entry.versions).join(", ");
+    const undo = node("button", label, $("health-actions"));
+    undo.addEventListener("click", () => run(() => preview({action: "health-undo", action_id: entry.action_id, versions: entry.versions})));
+  }
+}
+async function loadRecalls(more) {
+  if (!more) { recallFilters = formValues("recall-filters"); recallBefore = null; recallRows = []; recallIdentity += 1; }
+  const identity = recallIdentity;
+  const data = await request("recalls", {...recallFilters, ...(more && recallBefore ? {before: recallBefore} : {})});
+  if (identity !== recallIdentity) return;
+  recallRows.push(...data.items);
+  recallBefore = data.next_before;
+  renderRecalls();
+}
+function renderRecalls() {
+  $("recall-items").replaceChildren();
+  for (const record of recallRows) {
+    const row = node("article", undefined, $("recall-items"));
+    node("h3", record.timestamp + " · " + record.request_id, row);
+    node("p", record.entry_id + " · " + record.session_id + " · " + t(record.scope_bound ? "scopeBound" : "scopeUnbound"), row);
+    node("p", record.reasons.map(reason => t("reason_" + reason)).join(" · ") || t("injected"), row);
+    node("p", t("pending") + ": " + (record.background.pending ?? "—") + " · " + t("captureState") + ": " + t(record.capture.state), row);
+    if (record.injection) {
+      const usage = record.injection;
+      for (const [label, field] of [["injectionTokens", "injection_tokens"], ["sessionTokens", "session_tokens"], ["injectionTokenCap", "injection_token_cap"], ["sessionTokenCap", "session_token_cap"]]) {
+        const value = usage[field] === null && field === "session_token_cap" ? t("unlimited") : (usage[field] ?? "—");
+        node("p", t(label) + ": " + value, row);
+      }
+    }
+    for (const item of record.items) {
+      const entry = node("div", undefined, row);
+      node("p", (item.rank ? "#" + item.rank + " · " : "") + t("reason_" + item.reason), entry);
+      if (item.readable) {
+        if (["session_summary", "task_summary", "adopted_decision", "observation"].includes(item.source_type)) node("p", t("source_" + item.source_type), entry);
+        const open = node("button", t("show") + " " + item.ref + "@" + item.revision, entry);
+        open.addEventListener("click", () => run(async () => { await loadPage("browse"); await detail(item.ref); }));
+        const scores = node("details", undefined, entry);
+        node("summary", t("ranking"), scores);
+        node("pre", JSON.stringify({fusion_score: item.fusion_score, channels: item.channels}, null, 2), scores);
+      } else node("p", item.historical && item.ref ? item.ref + "@" + item.revision + " · " + t("historicalReference") : t("unavailableReference"), entry);
+    }
+  }
+  if (!recallRows.length) node("p", t("empty"), $("recall-items"));
+  $("recall-next").disabled = recallBefore === null;
+}
+async function loadQuarantine(more) {
+  const data = await request("quarantine", more && quarantineBefore ? {before: quarantineBefore} : {});
+  if (!more) $("quarantine-items").replaceChildren();
+  for (const item of data.items) {
+    const row = node("article", undefined, $("quarantine-items"));
+    node("p", item.ref + " · " + item.revision + " · " + (item.category === "adoption" ? t("adoptionReview") : item.category === "observation" ? t("observationReview") : item.state), row);
+    node("pre", item.content, row);
+    node("pre", JSON.stringify(item.rules, null, 2), row);
+    if (item.category === "observation") {
+      const confirm = node("button", t("confirmObservation"), row);
+      confirm.addEventListener("click", () => run(() => preview({action: "revise", ref: item.ref, expected_revision: item.revision, value: item.content})));
+      const inspect = node("button", t("claim"), row);
+      inspect.addEventListener("click", () => run(() => detail(item.ref)));
+    } else if (item.category !== "adoption") {
+      const release = node("button", t("releaseQuarantine"), row);
+      release.addEventListener("click", () => run(() => preview({action: "release-quarantine", ref: item.ref, expected_revision: item.revision})));
+    }
+    const remove = node("button", t("forget"), row);
+    remove.addEventListener("click", () => run(() => preview({action: "forget", ref: item.ref, expected_revision: item.revision})));
+  }
+  quarantineBefore = data.next_before;
+  $("quarantine-next").disabled = quarantineBefore === null;
 }
 async function browse(more) {
   if (more && (browsePending || !continuation)) return;
@@ -173,6 +343,11 @@ async function detail(ref, revision) {
   display("detail-data", selected);
   $("detail").hidden = false;
   $("correction").hidden = selected.kind !== "claim";
+  $("importance").hidden = selected.kind !== "claim";
+  if (selected.kind === "claim") {
+    $("importance").elements.importance.value = selected.value.base_importance;
+    $("importance").elements.pinned.checked = selected.value.pinned;
+  }
   if (selected.kind === "claim") {
     $("correction").elements.value.value = selected.value.payload.value_text || "";
     $("correction").elements.retract.checked = false;
@@ -186,6 +361,7 @@ async function preview(values) {
   const data = await request("preview", values, true);
   reviewId = data.id;
   display("preview-data", data.preview);
+  $("review-hint").hidden = values.action === "entry-state" || values.action.startsWith("review-");
   $("review").hidden = false;
   $("receipt").hidden = true;
   $("confirm").disabled = false;
@@ -210,11 +386,27 @@ function translate() {
   if (lastBackup) backup(lastBackup);
   if (lastPrivate) privateState(lastPrivate);
   if (lastScan) renderBrowse();
+  if (recallRows.length) renderRecalls();
+  if (reviewRows.length) renderReviews();
+  if (reviewActionRows.length) renderReviewActions();
+  if (reviewPolicyState) renderReviewPolicy();
+
+  if (handoffRows.length) renderHandoffs();
+  if (healthPages.length) renderHealth();
+  if (healthActionItems.length) renderHealthActions();
   if (selected) { $("sources").replaceChildren(); sourceLinks(selected, $("sources")); }
 }
-$("language").addEventListener("change", () => { language = $("language").value; translate(); });
+$("language").addEventListener("change", () => {
+  language = $("language").value;
+  translate();
+  if (currentPage === "entries") run(() => loadEntries());
+});
 for (const button of document.querySelectorAll("[data-page]")) button.addEventListener("click", () => run(() => loadPage(button.dataset.page)));
 $("refresh-overview").addEventListener("click", () => run(() => loadPage("overview")));
+$("health-next").addEventListener("click", () => run(() => loadHealth(true)));
+$("health-actions-next").addEventListener("click", () => run(() => loadHealthActions(true)));
+$("refresh-quarantine").addEventListener("click", () => run(() => loadQuarantine(false)));
+$("quarantine-next").addEventListener("click", () => run(() => loadQuarantine(true)));
 $("refresh-backup").addEventListener("click", () => run(() => loadPage("backup")));
 $("filters").addEventListener("submit", (event) => { event.preventDefault(); run(() => browse(false)); });
 $("next").addEventListener("click", () => run(() => browse(true)));
@@ -225,7 +417,20 @@ $("correction").addEventListener("submit", (event) => {
   event.preventDefault();
   run(() => preview({action: "revise", ref: selected.ref, expected_revision: selected.revision, value: $("correction").elements.value.value, retract: $("correction").elements.retract.checked}));
 });
+$("importance").addEventListener("submit", (event) => {
+  event.preventDefault();
+  run(() => preview({action: "importance", ref: selected.ref, expected_revision: selected.revision, importance: Number($("importance").elements.importance.value), pinned: $("importance").elements.pinned.checked}));
+});
 $("private-form").addEventListener("submit", (event) => { event.preventDefault(); run(() => preview(privateArguments("private-on"))); });
+$("instruction-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const form = $("instruction-form");
+  run(() => preview({action: "instruction-set", scope: form.elements.scope.value, instruction: form.elements.instruction.value}));
+});
+$("instruction-read").addEventListener("click", () => run(async () => {
+  const scope = $("instruction-form").elements.scope.value;
+  display("instruction-history", await request("instruction", {scope}));
+}));
 $("private-off").addEventListener("click", () => run(() => preview(privateArguments("private-off"))));
 $("private-inspect").addEventListener("click", () => run(async () => {
   const {session, project} = privateArguments("private-off");
@@ -243,10 +448,110 @@ $("confirm").addEventListener("click", () => run(async () => {
   $("review").hidden = true;
   display("receipt-data", data);
   $("receipt").hidden = false;
+  if (["health-entity", "health-merge", "health-choose"].includes(data.action)) {
+    if (currentPage === "health") await loadHealth(false);
+  }
+  if (data.action === "health-undo" && currentPage === "health") await loadHealth(false);
   if (["forget", "forget-session"].includes(data.action)) $("detail").hidden = true;
   if (["revise", "mute", "unmute"].includes(data.action) && selected) await detail(selected.ref);
+  if (currentPage === "handoffs") await loadHandoffs(false);
+  if (currentPage === "entries") await loadEntries();
+  if (currentPage === "reviews") await loadReviews(false);
+  if (currentPage === "quarantine") await loadQuarantine(false);
   if (currentPage === "private") privateState(await request("private"));
   $("receipt").scrollIntoView({block: "start"});
 }));
+$("recall-filters").addEventListener("submit", (event) => { event.preventDefault(); run(() => loadRecalls(false)); });
+$("recall-next").addEventListener("click", () => run(() => loadRecalls(true)));
 translate();
 run(() => loadPage("overview"));
+
+async function loadReviews(more) {
+  const filters = formValues("review-filters");
+  if (more && reviewsCursor) filters.cursor = reviewsCursor;
+  const data = await request("reviews", filters);
+  reviewRows = more ? [...reviewRows, ...data.items] : data.items;
+  reviewsCursor = data.next_cursor;
+  $("reviews-next").disabled = !reviewsCursor;
+  renderReviews();
+  if (!more) await loadReviewActions(false);
+  if (reviewPolicyState) {
+    reviewPolicyState = await request("review-policy", {scope: reviewPolicyState.scope_id});
+    renderReviewPolicy();
+  }
+}
+function renderReviews() {
+  $("review-items").replaceChildren();
+  for (const item of reviewRows) {
+    const row = node("article", undefined, $("review-items"));
+    node("h3", t("review_" + item.source), row);
+    node("pre", typeof item.content === "string" ? item.content : JSON.stringify(item.content), row);
+    node("h4", t("reviewEvidence"), row);
+    node("pre", JSON.stringify(item.evidence, null, 2), row);
+    node("span", t("reviewTime") + ": " + item.time, row);
+    const chosen = [];
+    for (const fragment of item.fragments || []) {
+      const label = node("label", undefined, row);
+      const checkbox = node("input", undefined, label); checkbox.type = "checkbox";
+      checkbox.addEventListener("change", () => { if (checkbox.checked) chosen.push(fragment.id); else chosen.splice(chosen.indexOf(fragment.id), 1); });
+      node("span", fragment.text, label);
+    }
+    let keep = null;
+    if (item.category === "contradictions") {
+      const label = node("label", t("reviewKeep"), row);
+      keep = node("select", undefined, label);
+      for (const [ref] of item.key[2]) { const option = node("option", ref, keep); option.value = ref; }
+    }
+    for (const decision of ["approve", "reject"]) {
+      const button = node("button", t(decision === "approve" ? "reviewApprove" : "reviewReject"), row);
+      button.addEventListener("click", () => run(() => preview({action: "review-decide", key: item.key, decision, expected_version: item.version, selection: item.source === "adoption" ? {fragment_ids: [...chosen]} : keep ? {keep: keep.value} : null})));
+    }
+  }
+}
+async function loadReviewActions(more) {
+  const data = await request("review-actions", more && reviewActionsBefore ? {before: reviewActionsBefore} : {});
+  reviewActionRows = more ? [...reviewActionRows, ...data.items] : data.items;
+  reviewActionsBefore = data.next_before;
+  $("review-actions-next").disabled = !reviewActionsBefore;
+  renderReviewActions();
+}
+function renderReviewActions() {
+  $("review-actions").replaceChildren();
+  for (const action of reviewActionRows) {
+    const button = node("button", t("reviewUndo") + " · " + t("review_" + action.source) + " · " + t(action.decision === "approve" ? "reviewApprove" : "reviewReject") + " · " + action.time, $("review-actions"));
+    button.addEventListener("click", () => run(() => preview({action: "review-undo", action_id: action.action_id, expected_version: action.version})));
+  }
+}
+function renderReviewPolicy() {
+  $("review-policy-data").replaceChildren();
+  node("span", reviewPolicyState.scope_id + " · " + t("reviewPolicy") + ": " + t(reviewPolicyState.enabled ? "reviewEnabled" : "reviewDisabled"), $("review-policy-data"));
+  const button = node("button", t(reviewPolicyState.enabled ? "reviewDisabled" : "reviewEnabled"), $("review-policy-data"));
+  button.addEventListener("click", () => run(() => preview({action: "review-policy-set", scope: reviewPolicyState.scope_id, enabled: !reviewPolicyState.enabled, expected_version: reviewPolicyState.version})));
+}
+$("review-filters").addEventListener("submit", (event) => { event.preventDefault(); run(() => loadReviews(false)); });
+$("review-policy-form").addEventListener("submit", (event) => { event.preventDefault(); run(async () => { reviewPolicyState = await request("review-policy", formValues("review-policy-form")); renderReviewPolicy(); }); });
+$("reviews-next").addEventListener("click", () => run(() => loadReviews(true)));
+$("review-actions-next").addEventListener("click", () => run(() => loadReviewActions(true)));
+
+async function loadHandoffs(more) {
+  const data = await request("handoffs", more && handoffBefore ? {before: handoffBefore} : {});
+  handoffRows = more ? [...handoffRows, ...data.items] : data.items;
+  handoffBefore = data.next_before;
+  $("handoff-next").disabled = !handoffBefore;
+  renderHandoffs();
+}
+function renderHandoffs() {
+  $("handoff-items").replaceChildren();
+  for (const item of handoffRows) {
+    const row = node("article", undefined, $("handoff-items"));
+    node("h3", item.ref, row);
+    node("span", t(item.state) + " | " + t(item.safety_state), row);
+    node("pre", JSON.stringify(item, null, 2), row);
+    if (item.state === "pending") {
+      const cancel = node("button", t("cancel"), row);
+      cancel.addEventListener("click", () => run(() => preview({action: "handoff-cancel", ref: item.ref, expected_revision: item.revision})));
+    }
+  }
+}
+$("refresh-handoffs").addEventListener("click", () => run(() => loadHandoffs(false)));
+$("handoff-next").addEventListener("click", () => run(() => loadHandoffs(true)));

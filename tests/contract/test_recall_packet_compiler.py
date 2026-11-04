@@ -11,6 +11,7 @@ import pytest
 from scope_recall.contracts import ContractError, TrustedContext, validate_payload
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.background_context import mark_background
+from scope_recall.core.deadline import RequestDeadline, current_request_deadline, using_request_deadline
 from scope_recall.core.events import lexical_terms
 from scope_recall.core.recall_budget import estimate_tokens
 from scope_recall.core.recall_diagnostics import RecallDiagnostics
@@ -43,6 +44,42 @@ class FixedClock:
 
     def monotonic(self) -> float:
         return self._mono
+
+
+@pytest.mark.parametrize("phase", ["collect", "hydrate", "relation"])
+def test_retrieval_cutoff_preserves_verified_results(app, monkeypatch, phase):
+    core, ctx = app
+    target = capture(core, ctx, "TEST deadline palette is amber.", key="TEST-deadline")
+
+    method = {"collect": "_collect", "hydrate": "_hydrate_all", "relation": "_expand"}[phase]
+    original = getattr(core.recall_pipeline, method)
+
+    def slow_phase(tx, *args, **kwargs):
+        result = original(tx, *args, **kwargs)
+        core.clock._mono = current_request_deadline().deadline_monotonic
+        if phase in {"collect", "relation"}:
+            args[1 if phase == "collect" else 2].append(f"deadline_exceeded_{phase}")
+        return result
+
+    monkeypatch.setattr(core.recall_pipeline, method, slow_phase)
+    from types import SimpleNamespace
+
+    from scope_recall.core import deadline as deadline_module
+
+    monkeypatch.setattr(deadline_module, "time", SimpleNamespace(monotonic=core.clock.monotonic))
+    search = SearchContext.from_request(
+        recall_request(query="TEST deadline palette"), ctx, now=core.clock.utc_now(), deadline=101.0
+    )
+    with using_request_deadline(RequestDeadline.from_budget(1, now=core.clock.monotonic())):
+        result = core.recall_pipeline.search(search)
+        packet = core.recall_packet_compiler.compile(search, result, core.storage)
+    assert [item["ref"] for item in packet["items"]] == [target.ref]
+    assert any(gap.startswith("deadline_exceeded") for gap in packet["gaps"])
+    assert packet["status"] == "partial"
+    assert core.clock.monotonic() < 101.0
+    stages = core.recall_diagnostics.get(packet["diagnostic_ref"]).to_public()["stage_elapsed_ms"]
+    assert {"collect", "hydrate", "relation", "verify", "fence", "compile", "retrieval"} <= stages.keys()
+    assert all(float(value) >= 0 for value in stages.values())
 
 
 class BrokenReadStorage:
@@ -388,7 +425,7 @@ def test_vector_timeout_leaves_time_for_all_fresh_release_checks(app):
     packet = _packet(core, ctx, query="H100", mode="history", max_items=1)
     assert vector.calls == 1
     assert reader.checks >= 3
-    assert [item["ref"] for item in packet["items"]] == [source.ref]
+    assert [item["ref"] for item in packet["items"]] == [source.ref], (reader.checks, core.clock._mono, packet["gaps"])
     assert "vector_error:TimeoutError" in packet["gaps"]
     assert core.clock.monotonic() - began < 5.0
 
@@ -794,9 +831,8 @@ def test_p09_diagnostics_channel_is_sanitized_and_bounded(app):
 
 
 def test_p09_a_packet_s_diagnostic_ref_can_be_inspected_by_the_session_that_recalled(app):
-    """The ref a packet hands out names a record this process keeps, never a stored object, so inspect must not answer
-    it SOURCE_MISSING every time.  The recalling session reads its counts and gap codes;
-    another session, or a ref this process no longer holds, reads nothing."""
+    """A packet names a persisted diagnostic rather than a truth object. The recalling session reads its metrics;
+    another session or an expired reference reads nothing."""
     core, ctx = app
     capture(core, ctx, "P09 diagnostics inspected by their own session.", key="TEST-p09/diag-inspect")
     packet = _packet(core, ctx, query="diagnostics inspected", request_id="TEST-p09-diag-inspect")
@@ -1014,8 +1050,8 @@ def test_p09_deadline_without_safe_item_is_unavailable_not_no_match(app):
     assert any(gap.startswith("deadline_exceeded") for gap in packet["gaps"])
 
 
-def test_diagnostics_keep_only_the_newest_records_readable():
-    diagnostics = RecallDiagnostics()
+def test_diagnostics_keep_records_beyond_process_local_window(tmp_path):
+    diagnostics = RecallDiagnostics(tmp_path / "recall.sqlite3")
     refs: list[str] = []
     for index in range(70):
         refs.append(
@@ -1035,8 +1071,8 @@ def test_diagnostics_keep_only_the_newest_records_readable():
                 deadline_remaining_ms=1000,
             )
         )
-    # The 64 newest are still readable by their ref; the 6 oldest left the lookup with their records.
-    assert [ref for ref in refs if diagnostics.get(ref) is not None] == refs[6:]
+    diagnostics.flush()
+    assert [ref for ref in refs if diagnostics.get(ref) is not None] == refs
 
 
 def test_p09_renderer_state_is_bounded_across_requests():
@@ -1256,7 +1292,11 @@ def test_p09_resume_correction_selects_complete_json_under_auto_budget(app):
     assert selected["decisions"][0]["text"] == correction
     assert selected["decisions"][0]["evidence_refs"] == ["event-correction@1"]
     assert packet["items"][0]["content"] != original
-    prepared = core.prepare_recall_render(ctx, packet)
+    from scope_recall.core.recall_packet import render_recall_packet_context
+
+    prepared = render_recall_packet_context(
+        packet, installation_id=ctx.binding.installation_id, session_id=ctx.session_id
+    )
     assert prepared.canonical_text is not None
     assert estimate_tokens(prepared.canonical_text) <= 1200
 
@@ -1365,7 +1405,11 @@ def test_p09_resume_compact_uses_source_sequence_and_keeps_cross_field_evidence(
         "event-progress@1",
         "event-next@1",
     }
-    prepared = core.prepare_recall_render(ctx, packet)
+    from scope_recall.core.recall_packet import render_recall_packet_context
+
+    prepared = render_recall_packet_context(
+        packet, installation_id=ctx.binding.installation_id, session_id=ctx.session_id
+    )
     assert prepared.canonical_text is not None
     assert estimate_tokens(prepared.canonical_text) <= 1200
 
@@ -2152,3 +2196,149 @@ def test_cjk_budget_uses_character_classes_and_reports_exact_units(app):
             }
         )
     )
+
+
+@pytest.mark.parametrize("outer_origin", [100.0, 1000.0])
+def test_outer_deadline_is_shared_with_release_completion(app, monkeypatch, outer_origin):
+    from types import SimpleNamespace
+
+    from scope_recall.core import deadline as deadline_module
+
+    core, ctx = app
+    capture(core, ctx, "TEST outer deadline palette amber.", key="TEST-outer-release")
+    monkeypatch.setattr(
+        deadline_module, "time", SimpleNamespace(monotonic=lambda: outer_origin + core.clock.monotonic() - 100.0)
+    )
+    monkeypatch.setattr(core, "_recall_private_state", lambda *args, **kwargs: (None, None))
+    monkeypatch.setattr(core.recall_pipeline, "_hydrate_related", lambda *args, **kwargs: None)
+
+    class SlowReads(RetrievalStorage):
+        checks = 0
+
+        def hydrate(self, tx, candidate, context):
+            fresh = super().hydrate(tx, candidate, context)
+            core.clock._mono += (0.3, 0.4, 0.4)[self.checks]
+            self.checks += 1
+            return fresh
+
+    reader = SlowReads(clock=core.clock)
+    core.recall_pipeline.storage_reader = reader
+    with using_request_deadline(RequestDeadline.from_budget(1, now=outer_origin)):
+        packet = core.recall_packet(
+            ctx, recall_request(query="TEST outer deadline palette", mode="current", max_items=1), deadline_seconds=5
+        )
+    assert reader.checks == 3
+    assert core.clock.monotonic() == pytest.approx(101.1)
+    assert packet["items"] == []
+    assert "deadline_exceeded_release_fence" in packet["gaps"]
+
+
+@pytest.mark.parametrize("seconds,slots", [(0.2, 6), (0.03, 6), (0.3, 30), (1.0, 30)])
+def test_recomputed_reserve_leaves_relation_time_with_zero_cost(app, monkeypatch, seconds, slots):
+    core, ctx = app
+    capture(core, ctx, "TEST small budget palette amber.", key="TEST-small-budget")
+    pipeline = core.recall_pipeline
+    original = pipeline.storage_reader.related
+    remaining = []
+
+    def related(tx, candidate, *, limit):
+        remaining.append(seconds - (core.clock.monotonic() - 100.0))
+        return original(tx, candidate, limit=limit)
+
+    monkeypatch.setattr(pipeline.storage_reader, "related", related)
+    packet = core.recall_packet(
+        ctx,
+        recall_request(query="TEST small budget palette", mode="current", max_items=slots),
+        deadline_seconds=seconds,
+    )
+    assert remaining, packet["gaps"]
+    assert min(remaining) > 0
+    assert packet["items"]
+    assert not any(gap.startswith("deadline_exceeded") for gap in packet["gaps"])
+
+
+def test_ready_candidates_are_hydrated_before_optional_overrun(app):
+    core, ctx = app
+    source = capture(core, ctx, "TEST ready deadline palette amber.", key="TEST-ready-before-wait")
+
+    class CountedReads(RetrievalStorage):
+        checks = 0
+        deadlines = []
+
+        def hydrate(self, tx, candidate, context):
+            self.checks += 1
+            self.deadlines.append(context.deadline)
+            return super().hydrate(tx, candidate, context)
+
+    checks_before_wait = []
+
+    class OptionalOverrun:
+        def search(self, context, *, limit, remaining_seconds):
+            checks_before_wait.append(reader.checks)
+            core.clock._mono += 0.4
+            raise TimeoutError("TEST optional channel exceeded its allowance")
+
+    reader = CountedReads(clock=core.clock)
+    core.recall_pipeline.storage_reader = reader
+    core.recall_pipeline.vector_port = OptionalOverrun()
+    packet = core.recall_packet(ctx, recall_request(query="TEST ready deadline palette"), deadline_seconds=0.6)
+    assert core.clock.monotonic() == pytest.approx(100.4)
+    assert [item["ref"] for item in packet["items"]] == [source.ref]
+    assert checks_before_wait[0] >= 1
+    assert reader.checks >= 3
+    assert sum(deadline == pytest.approx(100.6) for deadline in reader.deadlines) == 2
+    assert "vector_error:TimeoutError" in packet["gaps"]
+    assert any(gap.startswith("deadline_exceeded") for gap in packet["gaps"])
+
+
+def test_outer_deadline_is_checked_after_packet_finalization(app, monkeypatch):
+    from types import SimpleNamespace
+
+    from scope_recall.core import deadline as deadline_module
+
+    core, ctx = app
+    capture(core, ctx, "TEST finalization palette amber.", key="TEST-finalization-deadline")
+    monkeypatch.setattr(deadline_module, "time", SimpleNamespace(monotonic=core.clock.monotonic))
+    monkeypatch.setattr(core, "_recall_private_state", lambda *args, **kwargs: (None, None))
+    original = core.recall_diagnostics.record
+    calls = []
+
+    def slow_record(**kwargs):
+        ref = original(**kwargs)
+        if not calls:
+            core.clock._mono += 0.21
+        calls.append(ref)
+        return ref
+
+    monkeypatch.setattr(core.recall_diagnostics, "record", slow_record)
+    with using_request_deadline(RequestDeadline.from_budget(0.2, now=100.0)):
+        packet = core.recall_packet(ctx, recall_request(query="TEST finalization palette"), deadline_seconds=5)
+    assert packet["items"] == []
+    assert "deadline_exceeded_compile" in packet["gaps"]
+    assert core.recall_diagnostics.get(packet["diagnostic_ref"]).items_delivered == 0
+
+
+def test_recomputed_reserve_caps_half_of_time_left_after_hydration(app, monkeypatch):
+    core, ctx = app
+    capture(core, ctx, "TEST measured reserve palette amber.", key="TEST-measured-reserve")
+    pipeline = core.recall_pipeline
+    original = pipeline._hydrate_all
+    remaining = []
+
+    def slow_hydrate(tx, hydrated, candidates, context, gaps, **kwargs):
+        result = original(tx, hydrated, candidates, context, gaps, **kwargs)
+        if candidates:
+            core.clock._mono += 0.08
+        return result
+
+    monkeypatch.setattr(pipeline, "_hydrate_all", slow_hydrate)
+    monkeypatch.setattr(
+        pipeline,
+        "_hydrate_related",
+        lambda tx, context, *args, **kwargs: remaining.append(context.deadline - core.clock.monotonic()),
+    )
+    packet = core.recall_packet(
+        ctx, recall_request(query="TEST measured reserve palette", mode="current"), deadline_seconds=0.2
+    )
+    assert remaining == [pytest.approx(0.06)]
+    assert packet["items"]

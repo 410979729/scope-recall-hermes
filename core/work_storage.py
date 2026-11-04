@@ -7,11 +7,17 @@ import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 from ..contracts import ContractError
 from .delete_storage import purge_work_parts
-from .failure_retry import (
+from .failure_policy import (
     AUTO_RECOVERABLE_ERRORS,
+    CAPACITY_REFUSALS,
+    WORK_RETRY,
+    capacity_backoff_seconds,
+)
+from .failure_retry import (
     DERIVATION_RETRY_MARKER,
     RETRY_GENERATION,
     RETRY_MARKER,
@@ -24,7 +30,7 @@ from .failure_retry import (
 from .inbox_rules import deferred_path
 from .schema import SCHEMA_VERSION
 
-MAX_RECOVERABLE_ATTEMPTS = 3
+MAX_RECOVERABLE_ATTEMPTS = WORK_RETRY.attempts or 0
 MAX_OPERATOR_RETRIES = 2
 #: Work items one explicit operator retry may name.
 MAX_OPERATOR_PAGE = 8
@@ -60,23 +66,10 @@ _BUDGET_MARK = re.compile(
     rf"|operator_retry:[A-Za-z0-9][A-Za-z0-9_.-]{{0,63}})(?=\||$)"
 )
 
-#: Failures that are never about the work item.  A provider declining to serve
-#: anyone says nothing about this payload -- unlike a timeout, which a large
-#: item can genuinely cause -- so the lease never got an attempt at all and the
-#: attempt is refunded.  Without the refund one four-hour provider outage pushes
-#: hundreds of items into ``failed`` at ``attempt=3`` apiece, each needing an operator.  529 is a provider saying
-#: it is overloaded (MiniMax, Anthropic): without it here one such answer fails a candidate evaluation for good.
-CAPACITY_REFUSALS = frozenset({"http_429", "rate_limited", "http_502", "http_503", "http_504", "http_529"})
-
 #: Token recording how many times in a row a provider refused for capacity.
 #: Kept in the error code beside ``auto_retry:`` rather than a new column, so
 #: no migration is needed and an operator reading the row sees the history.
 _CAPACITY_TOKEN = re.compile(r"(?:^|\|)capacity:([0-9]+)(?=\||$)")
-
-#: First wait after a provider refuses for capacity, and the longest one.  Repeated refusals increase the wait
-#: within these bounds.  There is no retry-count limit: an item is delayed rather than abandoned.
-CAPACITY_BACKOFF_FLOOR_SECONDS = 1800.0
-CAPACITY_BACKOFF_CEILING_SECONDS = 4 * 3600.0
 
 #: Purge rows are claimed before anything else: a delete must land before
 #: derived work can rebuild what it removes.  Candidate evaluation is claimed
@@ -84,6 +77,14 @@ CAPACITY_BACKOFF_CEILING_SECONDS = 4 * 3600.0
 #: embedding are what make a new conversation recallable at all, so a busy
 #: candidate queue must never hold captured conversation back.
 _CLAIM_ORDER = "CASE work_type WHEN 'purge' THEN 0 WHEN 'evaluate_candidate' THEN 2 ELSE 1 END"
+#: How long a ready evaluation waits at the back before it joins the FIFO.  Projection work does not run dry on a
+#: store upgraded with tens of thousands of claims (an entity backfill page, retries and recoveries every pass), so
+#: strict last place would never reach an evaluation.  Fresh conversation keeps its own lane (``_fresh_first``)
+#: whatever the backlog holds, and fifteen minutes lets the consolidation an evaluation depends on run first.
+EVALUATION_AGING_SECONDS = 900
+_AGED_CLAIM_ORDER = (
+    "CASE WHEN work_type='purge' THEN 0 WHEN work_type='evaluate_candidate' AND available_at>? THEN 2 ELSE 1 END"
+)
 _LEASED_ROW = "work_id=? AND state='leased' AND lease_token=? AND lease_owner=?"
 
 # --- the fresh conversation lane ---------------------------------------------
@@ -208,13 +209,6 @@ def _capacity_count(error: object) -> int:
     return max((int(value) for value in _CAPACITY_TOKEN.findall(str(error or ""))), default=0)
 
 
-def _capacity_backoff_seconds(refusals: int) -> float:
-    """Wait before asking a provider that just refused for capacity again."""
-    if type(refusals) is not int or refusals <= 1:
-        return CAPACITY_BACKOFF_FLOOR_SECONDS
-    return min(CAPACITY_BACKOFF_CEILING_SECONDS, CAPACITY_BACKOFF_FLOOR_SECONDS * (2.0 ** min(refusals - 1, 16)))
-
-
 def _operator_retry_ids(value: str) -> tuple[str, ...]:
     return tuple(_OPERATOR_TOKEN.findall(value))
 
@@ -232,10 +226,6 @@ def _format_time(value: datetime) -> str:
 
 def _after(now: str, seconds: float) -> str:
     return _format_time(_parse_time(now) + timedelta(seconds=seconds))
-
-
-def _backoff_seconds(attempt: int) -> float:
-    return min(60.0, 2.0 ** max(0, attempt))
 
 
 @dataclass(frozen=True)
@@ -551,7 +541,8 @@ class WorkItems:
         allowed_work_types: frozenset[str] = ALLOWED_WORK_TYPES,
         fresh_lane: bool = False,
     ) -> tuple[LeasedWork, ...]:
-        """Lease ready work: purge first, candidate evaluation last, FIFO by availability within each.
+        """Lease ready work: purge first, candidate evaluation last until it has waited
+        ``EVALUATION_AGING_SECONDS``, FIFO by availability within each.
 
         ``fresh_lane`` places ready fresh conversation work (see
         ``FRESH_LANE_ORIGINS``) after purge and before the rest of the FIFO
@@ -578,8 +569,8 @@ class WorkItems:
         rows = conn.execute(
             f"""SELECT work_id,work_type FROM work_items
                 WHERE state='pending' AND available_at<=? AND {visible} AND work_type IN ({_marks(kinds)})
-                ORDER BY {_CLAIM_ORDER}, available_at, work_id LIMIT ?""",
-            (now, *params, *kinds, limit),
+                ORDER BY {_AGED_CLAIM_ORDER}, available_at, work_id LIMIT ?""",
+            (now, *params, *kinds, _after(now, -EVALUATION_AGING_SECONDS), limit),
         ).fetchall()
         if fresh_lane:
             rows = self._fresh_first(rows, now=now, limit=limit, kinds=allowed_work_types)
@@ -898,12 +889,15 @@ class WorkItems:
             "declined": 0,
             "declined_work_items": [],
             "retried_work_ids": [],
+            "reconciled_evaluations": 0,
         }
+        # Reconciliation and a retry grant can change the same work item; both share one page slot.
+        handled: set[int] = set()
         for row in self._failed_rows(conn):
-            if report["retried"] >= limit:
+            if len(handled) >= limit:
                 break
             report["examined"] += 1
-            code = row["last_error_code"]
+            code = self._reconcile_retry_row(row, report, now=now, dry_run=dry_run, handled=handled)
             if not wanted(code, include_terminal=include_terminal):
                 continue
             if already_retried(code, generation=RETRY_GENERATION):
@@ -920,6 +914,7 @@ class WorkItems:
             report["by_kind"][kind] = report["by_kind"].get(kind, 0) + 1
             report["retried"] += 1
             report["retried_work_ids"].append(int(row["work_id"]))
+            handled.add(row["work_id"])
         # The automatic recovery read every embed's subject as a source, so a claim embed a provider failed was made
         # obsolete instead of reopened (``_embed_retry_reason``).  A readable head it left without a vector is worked
         # on again, with the attempts of new work, and one an earlier conversion never queued is queued.
@@ -974,11 +969,20 @@ class WorkItems:
             )
         return report
 
+    def _reconcile_retry_row(self, row, report, *, now, dry_run, handled: set[int]):
+        """Make stopped question bookkeeping inspectable even when its release grant was already spent."""
+        if row["work_type"] == "evaluate_candidate":
+            reconciled = self._tx.candidates.reconcile_failed_evaluation(row["work_id"], now=now, dry_run=dry_run)
+            report["reconciled_evaluations"] += reconciled
+            if reconciled:
+                handled.add(row["work_id"])
+        return row["last_error_code"]
+
     def _decline_candidate_retry(self, row, report: dict) -> bool:
         """Report a candidate's read-only retry refusal with bounded detail; other work stays eligible."""
         if row["work_type"] != "evaluate_candidate":
             return False
-        rejection = self._tx.candidates.evaluation_retry_rejection(row["work_id"])
+        rejection = self._tx.candidates.evaluation_retry_rejection(row["work_id"], include_unfinished=True)
         if rejection is None:
             return False
         report["declined"] += 1
@@ -1132,6 +1136,26 @@ class WorkItems:
         )
         return self.embed_queue()["pending"]
 
+    def respace_authorization(self, space_id: str) -> str | None:
+        """Read the durable identity of an explicitly authorized re-embedding operation for this space."""
+        row = (
+            self._tx._check()
+            .execute(
+                "SELECT position_ref FROM candidate_scan_cursors WHERE cursor_name=?",
+                ("embedding-authorization:" + space_id,),
+            )
+            .fetchone()
+        )
+        return None if row is None else str(row[0])
+
+    def _authorize_respace(self, space_id: str, now: str) -> None:
+        """Record authorization independently of queue progress so companion recovery survives interruption."""
+        self._tx._check(write=True).execute(
+            "INSERT INTO candidate_scan_cursors(cursor_name,position_ref,completed,updated_at) VALUES(?,?,1,?) "
+            "ON CONFLICT(cursor_name) DO UPDATE SET position_ref=excluded.position_ref,updated_at=excluded.updated_at",
+            ("embedding-authorization:" + space_id, uuid4().hex, now),
+        )
+
     def start_respace(self, space_id: str, *, now: str, restart: bool = False) -> dict:
         """Start a run into ``space_id`` over every embedding done so far, from the newest down (``respace_refusal``
         says when it may).  Work queued after the start is embedded into the new space as it comes and lies above the
@@ -1152,6 +1176,7 @@ class WorkItems:
                    updated_at=excluded.updated_at""",
             (RESPACE_CURSOR, space_id, top, int(top == 0), now),
         )
+        self._authorize_respace(space_id, now)
         return self.respace_run()
 
     def cancel_respace(self) -> bool:
@@ -1179,6 +1204,8 @@ class WorkItems:
             return {"outcome": "none"}
         if run["embedding_space"] != space_id:
             return {"outcome": "space_mismatch", "embedding_space": run["embedding_space"]}
+        if self.respace_authorization(space_id) is None:
+            self._authorize_respace(space_id, now)
         top = run["next_work_id"]
         if room <= 0:
             return {"outcome": "held", "reopened": 0, "next_work_id": top}
@@ -1500,7 +1527,7 @@ class WorkItems:
             conn.execute(
                 f"""UPDATE work_items SET state='pending',lease_owner=NULL,lease_until=NULL,
                    last_error_code=?,available_at=?,attempt=MAX(attempt-1,0) WHERE {_LEASED_ROW}""",
-                (retry_error, _after(now, _capacity_backoff_seconds(refusals)), work_id, lease_token, owner),
+                (retry_error, _after(now, capacity_backoff_seconds(refusals)), work_id, lease_token, owner),
             )
             return WorkMutation(work_id, "retry", "pending", lease_token)
         history = _within(f"{prior}|{error_code}") if _preserve_retry_history(prior) else error_code
@@ -1508,7 +1535,7 @@ class WorkItems:
             conn.execute(
                 f"""UPDATE work_items SET state='pending',lease_owner=NULL,lease_until=NULL,last_error_code=?,available_at=?
                    WHERE {_LEASED_ROW}""",
-                (history, _after(now, _backoff_seconds(attempt)), work_id, lease_token, owner),
+                (history, _after(now, WORK_RETRY.delay(attempt)), work_id, lease_token, owner),
             )
             return WorkMutation(work_id, "retry", "pending", lease_token)
         conn.execute(

@@ -4,11 +4,15 @@ as it is read."""
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import MISSING, dataclass, fields
+from dataclasses import MISSING, dataclass, fields, is_dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 from ..contracts import ContractError, InstanceBinding, Origin, TrustedContext
+from ..core.injection_format import FORMATS
+from ..core.recall_budget import DEFAULT_INJECTION_TOKEN_CAP
+from ..core.recall_log_storage import DEFAULT_LOG_POLICY, LOG_POLICY_BOUNDS
 from ..core.recall_policy import EMBEDDING_SPACE, RecallPolicy, embedding_space_id
 from .auxiliary import AuxiliaryRuntimeConfig
 from .validation import (
@@ -28,7 +32,7 @@ _RUNTIME_ORIGINS: frozenset[Origin] = frozenset({"human_direct", "tool_observati
 _HOST_ADAPTERS = frozenset({"hermes", "codex", "claude-code", "workbuddy", "dsh"})
 
 
-_VECTOR_BACKENDS = frozenset({"lancedb", "sqlite-bruteforce"})
+_VECTOR_BACKENDS = frozenset({"sqlite", "sqlite-vec", "lancedb", "sqlite-bruteforce"})
 
 
 @dataclass(frozen=True)
@@ -57,10 +61,10 @@ class VectorRuntimeConfig:
         strict_int("vector_tool_output_retention_days", self.tool_output_retention_days, minimum=0, maximum=36500)
 
     @classmethod
-    def from_mapping(cls, raw: object) -> "VectorRuntimeConfig":
+    def from_mapping(cls, raw: object) -> VectorRuntimeConfig:
         raw = mapping("vector_mapping_required", raw)
         return cls(
-            backend=raw.get("backend", "lancedb"),
+            backend=raw.get("backend", "sqlite"),
             storage_dir=absolute_path("vector_storage_dir", raw.get("storage_dir")),
             table_name=raw.get("table_name"),
             dimensions=raw.get("dimensions"),
@@ -92,6 +96,9 @@ _COUNT_BOUNDS = {
     "max_auto_recoveries": (0, 4),
     "supervisor_max_drains": (1, 1024),
     "storage_budget_bytes": (0, 1 << 50),
+    "recall_log_days": LOG_POLICY_BOUNDS["retention_days"],
+    "recall_log_bytes": LOG_POLICY_BOUNDS["max_bytes"],
+    "recall_log_queue": LOG_POLICY_BOUNDS["queue_size"],
 }
 
 
@@ -126,6 +133,11 @@ class RuntimeInstanceConfig:
     drain_seconds: float = 120.0
     auto_recall_seconds: float = 5.0
     hook_processing_seconds: float = 6.0
+    session_brief_enabled: bool = True
+    session_brief_tokens: int = 1024
+    injection_format: str = "json"
+    injection_token_cap: int = DEFAULT_INJECTION_TOKEN_CAP
+    session_token_cap: int | None = None
     max_items: int = 32
     lease_seconds: float = 60.0
     auxiliary: AuxiliaryRuntimeConfig | None = None
@@ -150,6 +162,9 @@ class RuntimeInstanceConfig:
     #: Bytes the store and its vectors may occupy before the doctor reports
     #: ``storage_budget_exceeded``; 0 sets no budget.  Nothing is deleted for it.
     storage_budget_bytes: int = 0
+    recall_log_days: int = DEFAULT_LOG_POLICY.retention_days
+    recall_log_bytes: int = DEFAULT_LOG_POLICY.max_bytes
+    recall_log_queue: int = DEFAULT_LOG_POLICY.queue_size
     #: Minutes the resident prompt recall server of a client attached to a shared store stays up without a recall
     #: (``adapters/clients/resident_entry``); 0 keeps none.  Unset, the client's default applies
     #: (``adapters/clients/local_endpoint.RESIDENT_DEFAULT_MINUTES``).
@@ -176,6 +191,12 @@ class RuntimeInstanceConfig:
         for name, (low, high) in _COUNT_BOUNDS.items():
             strict_int(name, getattr(self, name), minimum=low, maximum=high)
         strict_bool("supervisor_enabled", self.supervisor_enabled)
+        strict_bool("session_brief_enabled", self.session_brief_enabled)
+        strict_int("session_brief_tokens", self.session_brief_tokens, minimum=1, maximum=8192)
+        member("injection_format", self.injection_format, FORMATS)
+        strict_int("injection_token_cap", self.injection_token_cap, minimum=0, maximum=2**63 - 1)
+        if self.session_token_cap is not None:
+            strict_int("session_token_cap", self.session_token_cap, minimum=0, maximum=2**63 - 1)
         if self.resident_recall_minutes is not None:
             low, high = RESIDENT_RECALL_MINUTES_BOUNDS
             strict_int("resident_recall_minutes", self.resident_recall_minutes, minimum=low, maximum=high)
@@ -242,7 +263,7 @@ class RuntimeInstanceConfig:
         )
 
     @classmethod
-    def from_mapping(cls, raw: Mapping[str, Any]) -> "RuntimeInstanceConfig":
+    def from_mapping(cls, raw: Mapping[str, Any]) -> RuntimeInstanceConfig:
         raw = mapping("runtime_config_mapping_required", raw)
         binding_raw = mapping("binding_mapping_required", raw.get("binding"))
         binding = InstanceBinding(
@@ -281,3 +302,25 @@ class RuntimeInstanceConfig:
             project_id=self.project_id,
             branch_id=self.branch_id,
         )
+
+
+def configuration_value(value: Any) -> Any:
+    """Encode validated runtime definitions in the JSON shapes their readers accept."""
+    if is_dataclass(value) and not isinstance(value, type):
+        out = {item.name: configuration_value(getattr(value, item.name)) for item in fields(value)}
+        # The ledger stores cap sides as tuples; its input contract names both
+        # sides explicitly, including null for an uncapped side.
+        if "model_token_caps" in out:
+            out["model_token_caps"] = {
+                model: dict(input=sides[0], output=sides[1]) for model, sides in out["model_token_caps"].items()
+            }
+        return out
+    if isinstance(value, Mapping):
+        return {key: configuration_value(member) for key, member in value.items()}
+    if isinstance(value, (frozenset, set)):
+        return [configuration_value(member) for member in sorted(value)]
+    if isinstance(value, (tuple, list)):
+        return [configuration_value(member) for member in value]
+    if isinstance(value, (Path, Decimal)):
+        return str(value)
+    return value

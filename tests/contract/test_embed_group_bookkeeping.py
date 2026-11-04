@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from scope_recall.core.recall_policy import claim_embedding_text, encode_embedding_text
-from scope_recall.runtime.lance_port import LanceEmbedPort
+from scope_recall.runtime.vector_port import VectorEmbedPort
 from test_claims import accept, app, capture, draft, revise_request  # noqa: F401  (fixtures)
 
 
@@ -307,9 +307,9 @@ def test_a_claim_group_is_encoded_exactly_as_one_claim_is():
     claims = [Claim(index) for index in range(3)]
     grouped, single = Embedding(), Embedding()
     kwargs = dict(agent_id="TEST-agent", installation_id="TEST-installation", embedding_space="TEST-space")
-    LanceEmbedPort(object(), grouped, **kwargs).prepare_claims(claims, remaining_seconds=5)
+    VectorEmbedPort(object(), grouped, **kwargs).prepare_claims(claims, remaining_seconds=5)
     for claim in claims:
-        LanceEmbedPort(object(), single, **kwargs).prepare_claim(claim, remaining_seconds=5)
+        VectorEmbedPort(object(), single, **kwargs).prepare_claim(claim, remaining_seconds=5)
     assert grouped.texts == single.texts
     assert grouped.texts[0] == encode_embedding_text(claim_embedding_text(claims[0].payload), kind="document")
 

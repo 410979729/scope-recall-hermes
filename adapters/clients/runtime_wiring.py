@@ -22,7 +22,7 @@ from scope_recall.runtime.worker_launch import launch_worker
 
 
 class CodexHostRuntime(TrustedHostRuntime):
-    """A trusted runtime plus one owned, bounded Codex helper process."""
+    """A trusted runtime plus one owned, bounded background worker."""
 
     def maybe_launch_bounded_worker(
         self,

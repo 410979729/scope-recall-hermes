@@ -6,7 +6,7 @@ import re
 
 from ..contracts import ContractError, validate_model_request
 from .source_qualification import AUTHORITY_QUESTION, CONDITIONAL
-from .visibility import allowed
+from .visibility import deletion_allows
 
 _DELETE = re.compile(r"删除|删掉|忘掉|忘记|清除|\b(?:delete|erase|forget)\b", re.I)
 _SUPPRESS = re.compile(r"不要主动提|别再主动|不再主动提|\b(?:suppress|do not mention|don't mention)\b", re.I)
@@ -54,7 +54,8 @@ def authorize_forget(tx, request, targets):
     if len(targets) > 1 and not all(t.ref in raw for t in targets):
         raise ContractError("ACCESS_DENIED", "explicit_batch_required")
     for target in targets:
-        if not allowed(tx, target.kind, target.ref):
+        # An explicitly named held object can be removed without releasing its body.
+        if not deletion_allows(tx, target.kind, target.ref):
             raise ContractError("ACCESS_DENIED", "target_unavailable")
         if target.ref not in raw:
             if target.kind == "claim":
@@ -74,6 +75,10 @@ def authorize_forget(tx, request, targets):
 def forget(storage, clock, context, value, *, remaining_seconds=1.0):
     request = validate_model_request("forget_request", value, context)
     with storage.write(context, remaining_seconds=remaining_seconds) as tx:
+        from .entry_control import capture_refusal
+
+        if reason := capture_refusal(tx, context):
+            raise ContractError("ACCESS_DENIED", reason)
         op, _ = tx.deletions.request_key(request)
         prior = tx.deletions.receipt(op)
         if prior is not None:

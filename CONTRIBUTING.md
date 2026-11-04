@@ -101,9 +101,10 @@ tier in `scripts/check.py` selects.
 
 `tests/recall_bench/` measures recall on a synthetic shared store: three owners,
 five entries and six scopes, four weeks of sessions in English and Chinese, and
-questions with known answers in nine tasks (single facts, preferences, time,
+questions with known answers in eleven tasks (single facts, preferences, time,
 knowledge updates, lists said across sessions, abstention, cross-scope
-isolation, automatic relevance floors and session prompts needing no memory),
+isolation, automatic relevance floors, session prompts needing no memory,
+multi-hop joins with aliases and assistant-word recall),
 each beside hard negatives. Every question is asked as the
 automatic packet and as an explicit lookup. An item answers when it is the
 answer's message, or a claim from it that states the same value. The report
@@ -129,6 +130,9 @@ or the generator, which makes another world. Judge a change on the held-out
 split too: its templates were written apart from the dev ones. The vector
 channel there hashes words, not meaning, so a paraphrased question measures
 what the store finds without a model.
+
+Public-data runners, cached evaluation, compatibility fixtures and platform
+commands are described in [Memory benchmarks](docs/benchmarks.md).
 
 ## Releases
 

@@ -7,14 +7,18 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from scope_recall.contracts import ContractError, RecallRequest
 from scope_recall.core.private import notice_for_mode
 from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS, using_current_prompt
 from scope_recall.core.secret_patterns import contains_secret_like_text
+from scope_recall.core.session_brief import observed_session_start
 from scope_recall.core.vector_failure import using_vector_trace, vector_trace_fields
 
+from ..host_memory import read_host_memory
 from ..runtime_wiring import render_host_recall_context
 from .boundary import (
     TURN_FIELD,
@@ -25,6 +29,7 @@ from .boundary import (
     is_workbuddy_agent_run,
     is_workbuddy_notice,
     turn_id_from_payload,
+    visible_recall_payload,
     workbuddy_person_text,
 )
 from .config import SharedClientConfig
@@ -83,19 +88,30 @@ class PromptRecall:
         own (``server_own_vector_fault``) and this hook has a vector search: the hook then recalls as well (a server
         that lost its key would recall every prompt by words alone).  The server writes nothing: the prompt was stored
         here, so an answer that comes after the hook is done costs the turn nothing but its warm vectors."""
+        session_id = self._hook.session_of(payload)
         read_mode = getattr(self._hook.core, "private_mode", None)
+        if context.compaction_seq is not None:
+            return self.own(
+                context, prompt, request_id, current_refs, deadline, gaps, since=since, session_id=session_id
+            )
         if (read_mode(context) if callable(read_mode) else None) == "full":
             # No recall, no query embedding, no server round trip: the notice is the whole answer.
-            return self.own(context, prompt, request_id, current_refs, deadline, gaps, since=since)
+            return self.own(
+                context, prompt, request_id, current_refs, deadline, gaps, since=since, session_id=session_id
+            )
         remaining = self._hook.remaining(deadline)
         if remaining < _RESIDENT_MIN_S:
-            return self.own(context, prompt, request_id, current_refs, deadline, gaps, since=since)
+            return self.own(
+                context, prompt, request_id, current_refs, deadline, gaps, since=since, session_id=session_id
+            )
         answers: list[Any] = []
         answered = threading.Event()
 
         def ask() -> None:
             try:
-                answers.append(self._hook.resident_recall(payload, current_refs, gaps, remaining))
+                answers.append(
+                    self._hook.resident_recall(visible_recall_payload(payload), current_refs, gaps, remaining)
+                )
             except Exception:  # noqa: BLE001 - the hook's own recall is always there to fall back on
                 answers.append(None)
             finally:
@@ -112,7 +128,7 @@ class PromptRecall:
         ):
             return self._used(server)
         reason = self._hook.diagnostics.last_reason
-        own = self.own(context, prompt, request_id, current_refs, deadline, gaps, since=since)
+        own = self.own(context, prompt, request_id, current_refs, deadline, gaps, since=since, session_id=session_id)
         own_vectors = self._hook.diagnostics.recall_vectors is True
         if not read and not own_vectors:
             # The hook's own went without its vector search: the server's, warm, is worth what time is left.
@@ -174,7 +190,7 @@ class PromptRecall:
             return {}
         self._hook.bind_project_root(payload, audience)
         turn_id, _gaps = turn_id_from_payload(payload, required=True, field=TURN_FIELD[self._hook.host])
-        prompt = payload.get("prompt")
+        prompt = visible_recall_payload(payload).get("prompt")
         if self._hook.host == "workbuddy":
             if type(prompt) is not str or is_workbuddy_agent_run(payload):
                 return {}
@@ -203,12 +219,67 @@ class PromptRecall:
         self._hook.ensure_runtime(audience, deadline=deadline)
         context = self._hook.context(audience, session_id, "human_direct")
         return self.own(
-            context, prompt, f"{self._hook.host}-auto:{session_id}:{turn_id}", current_refs, deadline, gaps, since=since
+            context,
+            prompt,
+            f"{self._hook.host}-auto:{session_id}:{turn_id}",
+            current_refs,
+            deadline,
+            gaps,
+            since=since,
+            session_id=session_id,
         )
+
+    def _host_entries(self, context, session_id: str | None, remaining: float) -> frozenset[str]:
+        """Read only the local host's old snapshot; remote requests cannot name server files."""
+        host = self._hook.host
+        if (
+            host not in {"claude-code", "codex"}
+            or not session_id
+            or self._hook.remote_paths
+            or not self._hook.call.local_record
+            or (host == "claude-code" and not self._hook._host_working_dir)
+        ):
+            return frozenset()
+        config = self._hook.config
+        home = config.home if isinstance(config, SharedClientConfig) else config.config_path.parent
+        project = Path(self._hook._host_working_dir or self._hook._project_root or home)
+        try:
+            return read_host_memory(
+                host,
+                home,
+                project=project,
+                session_started=None,
+                start_reader=lambda: observed_session_start(self._hook.core.storage, context, remaining_seconds=0.05),
+                deadline=time.monotonic() + min(0.2, max(0.0, remaining)),
+            )
+        except Exception:  # noqa: BLE001 - optional host reading must not prevent recall
+            return frozenset()
 
     @staticmethod
     def _notice(text: str) -> dict[str, Any]:
         return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": text}}
+
+    def _entry_available(self, context) -> bool:
+        """Refuse optional host reads when the entry is paused or its state cannot be checked."""
+        try:
+            if self._hook.core.entry_state(context)[0] == "paused":
+                self._hook.note("entry_state:paused")
+                return False
+            return True
+        except (ContractError, sqlite3.Error, OSError, ValueError, RuntimeError):
+            return False
+
+    def _packet(self, context, request, options: dict[str, Any], deadline: float):
+        """Retry a stale packet with the same host snapshot and the remaining budget."""
+        core = self._hook.core
+        packet = core.recall_packet(context, request, **options)
+        preparation = core.prepare_recall_render(context, packet)
+        current = getattr(core, "recall_packet_current", None)
+        if packet.get("items") and callable(current) and not current(context, packet):
+            options["deadline_seconds"] = self._hook.remaining(deadline)
+            packet = core.recall_packet(context, request, **options)
+            preparation = core.prepare_recall_render(context, packet)
+        return packet, preparation
 
     def own(
         self,
@@ -220,6 +291,7 @@ class PromptRecall:
         gaps: tuple[str, ...],
         *,
         since: str | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         """Render this turn's automatic recall context, or nothing once the budget is gone.  ``since``: since when the
         asking model still holds this session's own turns, whose items the recall leaves out (``SearchContext``).
@@ -227,6 +299,8 @@ class PromptRecall:
         A full private interval returns the one notice before any recall work; a
         read-only one recalls as usual and appends the notice to the context.
         """
+        if not self._entry_available(context):
+            return {}
         read_mode = getattr(self._hook.core, "private_mode", None)
         mode = read_mode(context) if callable(read_mode) else None
         notice = notice_for_mode(mode) or ""
@@ -245,24 +319,21 @@ class PromptRecall:
             "max_items": 6,
             "budget_tokens": AUTOMATIC_PACKET_BUDGET_UNITS,
         }
+        entries = self._host_entries(context, session_id, remaining)
+        remaining = self._hook.remaining(deadline)
+        if remaining <= 0:
+            self._hook.note("deadline_exceeded")
+            return self._notice(notice) if notice else {}
+        options: dict[str, Any] = {"current_source_refs": current_refs, "deadline_seconds": remaining}
+        if entries:
+            options["host_memory_entries"] = entries
+        if since is not None:
+            options["in_context_since"] = since
         trace: dict = {}
         self._hook.diagnostics.recall_trace = trace
         try:
             with using_vector_trace(trace), using_current_prompt(prompt):
-                if since is None:
-                    packet = self._hook.core.recall_packet(
-                        context, request, current_source_refs=current_refs, deadline_seconds=remaining
-                    )
-                else:
-                    # Named only for a Claude Code prompt: every other host's recall is asked without it.
-                    packet = self._hook.core.recall_packet(
-                        context,
-                        request,
-                        current_source_refs=current_refs,
-                        deadline_seconds=remaining,
-                        in_context_since=since,
-                    )
-                preparation = self._hook.core.prepare_recall_render(context, packet)
+                packet, preparation = self._packet(context, request, options, deadline)
         except (ContractError, OSError, RuntimeError, sqlite3.Error) as exc:
             code = getattr(exc, "code", None)
             self._hook.diagnostics.recall_error_detail = error_detail(
@@ -270,6 +341,11 @@ class PromptRecall:
             )
             self._hook.note("recall_exception", gaps=gaps)
             return self._notice(notice) if notice else {}
+        return self._render_packet(context, packet, preparation, (trace, deadline, notice, gaps))
+
+    def _render_packet(self, context, packet, preparation, state) -> dict[str, Any]:
+        """Account for a fitted packet and render only a still-current result."""
+        trace, deadline, notice, gaps = state
         skipped = next((gap for gap in packet.get("gaps", ()) if gap.startswith("auto_recall_skipped:")), None)
         if skipped is not None:
             self._hook.note(skipped, gaps=gaps)
@@ -303,4 +379,7 @@ class PromptRecall:
             text = f"{text}\n\n{notice}" if text else notice
         if not text:
             return {}
+        current = getattr(self._hook.core, "recall_packet_current", None)
+        if packet.get("items") and callable(current) and not current(context, packet):
+            return self._notice(notice) if notice else {}
         return self._notice(text)

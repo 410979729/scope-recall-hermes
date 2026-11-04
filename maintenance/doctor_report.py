@@ -39,6 +39,16 @@ class DoctorReport:
     recent_work_errors: list[dict[str, Any]] = field(default_factory=list)
     #: Model answers cut off at the output limit in the last hour.
     recent_output_truncations: int = 0
+    memory_import: dict[str, Any] = field(default_factory=dict)
+    host_memory: dict[str, Any] = field(default_factory=dict)
+    recall_log: dict[str, Any] = field(default_factory=dict)
+    recall_attempt: dict[str, Any] = field(default_factory=dict)
+    injection_usage: dict[str, Any] = field(default_factory=dict)
+    entries: list[dict[str, Any]] = field(default_factory=list)
+
+    private_rules: list[dict[str, Any]] = field(default_factory=list)
+    summaries: dict[str, Any] = field(default_factory=dict)
+    reflections: dict[str, Any] = field(default_factory=dict)
     capture_inbox: int = 0
     capture_inbox_blocked: int = 0
     #: Of those, rows a replay gave up after its tries (``retry-failures --apply`` returns them to it).
@@ -46,6 +56,9 @@ class DoctorReport:
     extraction_outcomes: dict[str, int] = field(default_factory=dict)
     autostart_status: str = "not_registered"
     worker_status: dict[str, Any] = field(default_factory=dict)
+    injection_quarantined: int = 0
+    injection_pending_review: int = 0
+    injection_scan_deadlines: int = 0
     sources: int | None = None
     #: Bytes of memory.sqlite3 with its journal, and of everything under vectors/.
     store_bytes: int | None = None
@@ -89,6 +102,8 @@ class DoctorReport:
     #: For a home attached to a shared store: the store's root, and this home's
     #: entry.  Everything else in the report is then the shared store's.
     shared_store: dict[str, str] = field(default_factory=dict)
+    model_workload_per_100_turns: list[dict[str, Any]] = field(default_factory=list)
+    project_copy_suggestions: list[dict[str, str]] = field(default_factory=list)
     capability_gaps: list[str] = field(default_factory=list)
     checks: list[dict[str, str]] = field(default_factory=list)
 

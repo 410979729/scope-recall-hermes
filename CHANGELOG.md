@@ -2,6 +2,11 @@
 
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``).
 
+## [4.0.0.dev2] - unreleased
+
+Source-backed summaries, reviewed facts, entity links and task handoffs improve shared memory across five hosts, with local review, private mode and recall history.
+Upgrade with all store users stopped and keep the pre-upgrade snapshot: older releases cannot open the upgraded store.
+
 ## [3.17.0] - 2026-10-31
 
 Capture masks a detected credential instead of refusing the whole message. The value after a credential label, and a key-shaped token, becomes `[REDACTED_SECRET]`; the label and the text outside the value are kept. An unquoted value is masked to the end of its line or its item in a structure; a quoted one to its closing quote, or to the end of the line when anything after the quote could extend it; a three-quote literal to its closing quotes. Capture still refuses a credential in an identity or reference field, a message that would be left as the marker alone, a private-key block and a value that may continue on the next line. Receipts, hook diagnostics and the remote server's hook log report how many values were masked (`masked_secret_count`). What counts as a credential is unchanged, and recall, model requests and corrections keep their checks.

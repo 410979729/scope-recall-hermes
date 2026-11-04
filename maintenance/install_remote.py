@@ -111,7 +111,7 @@ def plugin_files(config: dict[str, Any], plugin_dir: Path) -> dict[Path, str]:
         plugin_dir / ".codex-plugin" / "plugin.json": dump(
             {
                 "name": plugin_dir.name,
-                "version": manifest_version().replace("rc", "-rc."),
+                "version": manifest_version(),
                 "author": {"name": author},
                 "mcpServers": "./.mcp.json",
                 "description": description,
