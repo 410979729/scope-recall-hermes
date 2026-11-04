@@ -77,6 +77,14 @@ _CAPACITY_TOKEN = re.compile(r"(?:^|\|)capacity:([0-9]+)(?=\||$)")
 #: embedding are what make a new conversation recallable at all, so a busy
 #: candidate queue must never hold captured conversation back.
 _CLAIM_ORDER = "CASE work_type WHEN 'purge' THEN 0 WHEN 'evaluate_candidate' THEN 2 ELSE 1 END"
+#: How long a ready evaluation waits at the back before it joins the FIFO.  Projection work does not run dry on a
+#: store upgraded with tens of thousands of claims (an entity backfill page, retries and recoveries every pass), so
+#: strict last place would never reach an evaluation.  Fresh conversation keeps its own lane (``_fresh_first``)
+#: whatever the backlog holds, and fifteen minutes lets the consolidation an evaluation depends on run first.
+EVALUATION_AGING_SECONDS = 900
+_AGED_CLAIM_ORDER = (
+    "CASE WHEN work_type='purge' THEN 0 WHEN work_type='evaluate_candidate' AND available_at>? THEN 2 ELSE 1 END"
+)
 _LEASED_ROW = "work_id=? AND state='leased' AND lease_token=? AND lease_owner=?"
 
 # --- the fresh conversation lane ---------------------------------------------
@@ -533,7 +541,8 @@ class WorkItems:
         allowed_work_types: frozenset[str] = ALLOWED_WORK_TYPES,
         fresh_lane: bool = False,
     ) -> tuple[LeasedWork, ...]:
-        """Lease ready work: purge first, candidate evaluation last, FIFO by availability within each.
+        """Lease ready work: purge first, candidate evaluation last until it has waited
+        ``EVALUATION_AGING_SECONDS``, FIFO by availability within each.
 
         ``fresh_lane`` places ready fresh conversation work (see
         ``FRESH_LANE_ORIGINS``) after purge and before the rest of the FIFO
@@ -560,8 +569,8 @@ class WorkItems:
         rows = conn.execute(
             f"""SELECT work_id,work_type FROM work_items
                 WHERE state='pending' AND available_at<=? AND {visible} AND work_type IN ({_marks(kinds)})
-                ORDER BY {_CLAIM_ORDER}, available_at, work_id LIMIT ?""",
-            (now, *params, *kinds, limit),
+                ORDER BY {_AGED_CLAIM_ORDER}, available_at, work_id LIMIT ?""",
+            (now, *params, *kinds, _after(now, -EVALUATION_AGING_SECONDS), limit),
         ).fetchall()
         if fresh_lane:
             rows = self._fresh_first(rows, now=now, limit=limit, kinds=allowed_work_types)
