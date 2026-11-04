@@ -225,14 +225,20 @@ def _alias_proposal(source, target, name) -> ClaimProposal:
     )
 
 
-def queue_entity_backfill(tx, *, now: str, limit: int = 8) -> int:
+def queue_entity_backfill(tx, *, now: str, limit: int = 8, yield_to: frozenset[str] = frozenset()) -> int:
     """Queue a bounded page through the existing projection work lifecycle.
 
     The progress bit is additive and defaults to unresolved. Existing projection
-    jobs are reused; no second queue or retry policy is introduced.
+    jobs are reused; no second queue or retry policy is introduced. Nothing is
+    queued while work of a ``yield_to`` type is ready: claims take projection
+    work before candidate evaluation, so a page every pass would hold new facts
+    back until every old claim was resolved (days on a store upgraded with tens
+    of thousands of claims).
     """
     if type(limit) is not int or not 1 <= limit <= 64:
         raise ContractError("INPUT_INVALID", "entity_backfill_limit")
+    if yield_to and tx.work.other_work_ready(now=now, kinds=frozenset(yield_to)):
+        return 0
     scopes = sorted(tx.context.allowed_scope_ids)
     if not scopes:
         return 0

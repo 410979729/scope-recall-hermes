@@ -162,6 +162,25 @@ def test_same_name_different_people_and_spelling_only_never_auto_merge(app):
         assert tx._check().execute("SELECT count(*) FROM entity_alias_proofs").fetchone()[0] == 0
 
 
+def test_backfill_waits_while_a_candidate_evaluation_is_ready(app):
+    core, ctx = app
+    item = fact(core, ctx, "TEST-Person-waiting", "workplace", "TEST-School")
+    ready = frozenset({"evaluate_candidate"})
+    now = core.clock.utc_now()
+    with core.storage.write(ctx) as tx:
+        conn = tx._check(write=True)
+        conn.execute("UPDATE work_items SET state='done'")
+        conn.execute(
+            "INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,project_id,branch_id,available_at) "
+            "SELECT 'evaluate_candidate','TEST-candidate',1,scope_id,project_id,branch_id,? "
+            "FROM claims WHERE claim_id=?",
+            (now, item.ref),
+        )
+        assert queue_entity_backfill(tx, now=now, yield_to=ready) == 0
+        conn.execute("UPDATE work_items SET state='done' WHERE work_type='evaluate_candidate'")
+        assert queue_entity_backfill(tx, now=now, yield_to=ready) == 1
+
+
 def test_backfill_is_bounded_and_literal_reads_work_without_a_model(app):
     core, ctx = app
     for n in range(5):
