@@ -371,7 +371,12 @@ def _recover_failed_work(
         if "consolidate" in allowed:
             if callable(getattr(entity_model, "judge", None)):
                 queue_summaries(tx, now=clock.utc_now(), limit=128, enabled=config.summary_capable)
-                queue_entity_backfill(tx, now=clock.utc_now(), limit=min(8, config.max_items))
+                queue_entity_backfill(
+                    tx,
+                    now=clock.utc_now(),
+                    limit=min(8, config.max_items),
+                    yield_to=allowed & {"evaluate_candidate"},
+                )
             recovered += tx.work.recover_oversized_consolidations(
                 now=clock.utc_now(), formatter=consolidation_messages, limit=min(8, config.max_items)
             )
