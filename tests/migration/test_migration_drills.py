@@ -1504,7 +1504,7 @@ lease.release()
         stderr=subprocess.PIPE,
         text=True,
     )
-    actual_close, closed = storage._close, []
+    actual_close, closed, contended = storage._close, [], []
 
     def close_and_contend(conn, original):
         actual_close(conn, original)
@@ -1514,6 +1514,7 @@ lease.release()
             child.stdin.write("acquire\n")
             child.stdin.flush()
             assert child.stdout.readline().strip() == "held"
+            contended.append(time.monotonic())
 
     monkeypatch.setattr(storage, "_close", close_and_contend)
     try:
@@ -1522,7 +1523,10 @@ lease.release()
         with pytest.raises((TruthWriterBusyError, ContractError)) as refused:
             with storage.write(ctx, remaining_seconds=0.05):
                 pytest.fail("the index open waited for the other writer's full lease")
-        elapsed = time.monotonic() - started
+        # Timed from the moment the other process holds the lease: the handshake that gets it there runs a child
+        # interpreter and took a quarter of a second on a slow Windows runner, which is not the open's wait.  A
+        # budget spent before that moment refuses without contention, timed from the start.
+        elapsed = time.monotonic() - (contended[0] if contended else started)
         if isinstance(refused.value, ContractError):
             assert refused.value.code == "DEADLINE_EXCEEDED"
         # Allow scheduler overhead, while remaining below the holder's 200 ms.
