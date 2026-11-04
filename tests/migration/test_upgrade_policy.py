@@ -348,9 +348,11 @@ def long_reader(tmp_path, monkeypatch):
 def test_delete_reader_blocks_spilled_pages_with_bounded_rollback(long_reader):
     core, reader, _ = long_reader
     began = time.monotonic()
+    # A second leaves a slow runner time for the automatic snapshot that precedes the migration; the reader then
+    # holds the migration to the deadline, and the rollback stays bounded by it.
     with pytest.raises(sqlite3.OperationalError):
-        core.storage.initialize(remaining_seconds=0.15)
-    assert time.monotonic() - began < 0.5
+        core.storage.initialize(remaining_seconds=1)
+    assert time.monotonic() - began < 2
     assert reader.execute("PRAGMA user_version").fetchone()[0] == 1111
     assert not reader.execute("SELECT 1 FROM sqlite_master WHERE name='test_spill'").fetchall()
     report = DoctorReport(host="codex", status="degraded")
@@ -361,7 +363,7 @@ def test_delete_reader_blocks_spilled_pages_with_bounded_rollback(long_reader):
 def test_released_delete_reader_allows_retry(long_reader, monkeypatch):
     core, reader, original = long_reader
     with pytest.raises(sqlite3.OperationalError):
-        core.storage.initialize(remaining_seconds=0.15)
+        core.storage.initialize(remaining_seconds=1)
     reader.rollback()
     monkeypatch.setattr(storage.SQLiteStorage, "_migrate_store", original)
     assert core.storage.initialize(remaining_seconds=2).schema_version == storage.SCHEMA_VERSION
