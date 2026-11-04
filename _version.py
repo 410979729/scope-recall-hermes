@@ -8,7 +8,7 @@ them drifts.  Change it here and nowhere else.
 
 import re
 
-__version__ = "4.0.0.dev2"
+__version__ = "4.0.0"
 
 
 def manifest_version(version: str) -> str:

@@ -540,6 +540,11 @@ def test_missing_core_is_installed_into_a_new_hermes_venv(fake_user, monkeypatch
 
     if shutil.which("uv") is None:
         pytest.skip("the existing uv helper is required for a pip-less host venv")
+    from scope_recall.maintenance import setup_packages
+
+    # Installed from this checkout: a release's own version reaches PyPI only once it ships, and what is under test
+    # is the install into a pip-less venv, not where a release resolves from.
+    monkeypatch.setattr(setup_packages, "_source", lambda: str(Path(setup_packages.__file__).resolve().parents[1]))
     home = fake_user / ".hermes"
     environment = home / "venv"
     venv.EnvBuilder(with_pip=False).create(environment)

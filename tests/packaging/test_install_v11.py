@@ -596,8 +596,24 @@ def released(monkeypatch):
     return version
 
 
+@pytest.fixture
+def candidate(monkeypatch):
+    """The install as a build not on PyPI makes it, whatever this tree's version: its declaration resolves only from a
+    wheel source the operator supplies."""
+    from scope_recall.maintenance import install_hermes
+
+    version = "4.0.0.dev1"
+    manifest, project = install_hermes.wrapper_manifest, install_hermes.wrapper_pyproject
+    monkeypatch.setattr(install_hermes, "__version__", version)
+    monkeypatch.setattr(
+        install_hermes, "wrapper_manifest", lambda template, version=version: manifest(template, version)
+    )
+    monkeypatch.setattr(install_hermes, "wrapper_pyproject", lambda version=version: project(version))
+    return version
+
+
 @pytest.mark.parametrize("command", ["plan-install", "apply-install"])
-def test_development_install_replaces_old_home_declaration(tmp_path, capsys, command):
+def test_development_install_replaces_old_home_declaration(tmp_path, capsys, command, candidate):
     from scope_recall.maintenance import cli as maintenance_cli
 
     instance_root, _outside, project_root = _install_paths(tmp_path, host="hermes")
@@ -630,7 +646,7 @@ def test_development_install_replaces_old_home_declaration(tmp_path, capsys, com
         assert all(part in notes for part in ("UV_FIND_LINKS", "hermes_cli.venv_sync", "hermes update", "disabled"))
     else:
         dependencies = tomllib.loads((inside / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
-        assert dependencies == [f"hermes-scope-recall[vectors]=={__version__}"]
+        assert dependencies == [f"hermes-scope-recall[vectors]=={candidate}"]
         assert "pip_dependencies" not in yaml.safe_load((inside / "plugin.yaml").read_text(encoding="utf-8"))
 
 

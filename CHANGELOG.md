@@ -2,10 +2,13 @@
 
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``).
 
-## [4.0.0.dev2] - unreleased
+## [4.0.0] - 2026-11-04
 
-Source-backed summaries, reviewed facts, entity links and task handoffs improve shared memory across five hosts, with local review, private mode and recall history.
-Upgrade with all store users stopped and keep the pre-upgrade snapshot: older releases cannot open the upgraded store.
+Source-backed summaries, reviewed facts, entity links and task handoffs improve shared memory across five hosts, with local review, private mode and recall history. The store structure moves from 1112 to 1134 and upgrades itself on first open after taking a snapshot. Upgrade with all store users stopped and keep the pre-upgrade snapshot: older releases cannot open the upgraded store. Remote 3.16 clients keep working against a 4.0 server.
+
+A new session starts with the tasks in progress, recent decisions and preferences, and work left half done in one host reaches the next session of another host in the same project. After the owner corrects or withdraws a fact, current and automatic reads stop returning the old value and the sources that only supported it, and a session that already received it gets one short correction notice. Recall history records what each turn injected and why; an optional review list holds memories before storage, one entry can be paused without the others, and `scope-recall pause` / `resume` work inside a conversation. The same person or thing under different names resolves to one entity, "go with option two" resolves to that option, and facts spread over several sessions are summarised, with original words ranked ahead of restatements. Text that tries to instruct the agent is held back. Injection has a per-turn token cap, an optional session total and `json`, `compact` and `outline` renderings. Memory files of Claude Code, Codex and Hermes, ChatGPT and Claude exports, and mem0 and claude-mem data import after a preview. Vectors move into SQLite: the per-session LanceDB helper is gone and existing vectors import in the background. `scope-recall replay-sessions` recovers host sessions an entry missed while its hooks were off.
+
+On LongMemEval-S, with one answering model for every method, the sealed split scores 0.553 against 3.16.1's 0.557 (paired p = 1.0) with median recall time 188 ms against 1,269 ms; naive RAG scores 0.657 on the same split, a gap in recall coverage. Retrieval p95 is 0.3-0.8 s on stores of 350,000 and 1,000,000 records, and the prompt hook takes about 100 ms more than in 3.16.1. A signed-in real-host run for Claude Code, promotion time with real models, Linux hosts and the Docker install were not verified for this release.
 
 ## [3.17.0] - 2026-10-31
 
