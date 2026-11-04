@@ -107,14 +107,14 @@ CHINESE_ORDINARY = [
     "每次调用都要带密钥。Tailscale 两边都要登录。",
     "密钥（私钥、API Key、Token 等）不得写进普通文档。",
     "| **密钥** | SSH 私钥、API Key |",
-    "现在密钥是存在北斗里的。",
+    "现在密钥是存在保险库里的。",
     "建议每人一个账号密码，别共用。",
     "原因已经确认：我漏读了文档中的私钥说明。",
     "里面有测试令牌，这些都是本次任务生成的。",
     "要查有没有人在试密码。",
     "这是检查脚本里的前缀字符串，不是密钥。",
-    "密码：见北斗 vault。",
-    "密码 (见北斗) 不要外传。",
+    "密码：见保险库 vault。",
+    "密码 (见保险库) 不要外传。",
     "令牌/会话：都在 vault 里。",
     "授权码登录失败了，需要重新申请。",
     "设置密码 8 位以上。",
@@ -246,7 +246,7 @@ def test_redaction_counts_merged_whole_value_spans_without_reformatting(text, ex
 
 
 @pytest.mark.parametrize("label", ["密码", "口令", "密钥", "私钥", "令牌", "授权码"])
-@pytest.mark.parametrize("value", ["abc", "123", ",abcd", ";abcd", "!abcd", "存在北斗里的", "空山Xk9mP2qa"])
+@pytest.mark.parametrize("value", ["abc", "123", ",abcd", ";abcd", "!abcd", "存在保险库里的", "空山Xk9mP2qa"])
 def test_short_chinese_values_and_prose_are_not_credentials(label, value):
     for separator in ("", ":", "是", " "):
         text = label + separator + value
@@ -275,7 +275,7 @@ def test_structured_formatted_labels_share_the_text_assignment_policy(label, val
 
 
 def test_chinese_numeric_and_prose_values_share_the_structured_assignment_policy():
-    for value, secret in ((4471, True), ("存在北斗里的", False)):
+    for value, secret in ((4471, True), ("存在保险库里的", False)):
         assert structure_contains_secret_like_text({"密码": value}) is secret
         assert bool(stored_item_pattern_names(dict(predicate="密码", value_text=value))) is secret
 
