@@ -7,6 +7,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import sysconfig
 from pathlib import Path
 
 import pytest
@@ -151,7 +152,8 @@ def test_cold_cli_dry_run_leaves_the_user_tree_untouched(fake_user):
     env = dict(os.environ)
     env.pop("PYTHONDONTWRITEBYTECODE", None)
     env["PYTHONPATH"] = str(source.parent)
-    command = Path(sys.executable).parent / ("scope-recall.exe" if os.name == "nt" else "scope-recall")
+    # Console scripts sit beside a venv interpreter but in Scripts/ (or bin/) of a base installation.
+    command = Path(sysconfig.get_path("scripts")) / ("scope-recall.exe" if os.name == "nt" else "scope-recall")
     before = snapshot(fake_user)
     child = subprocess.run(
         [str(command), "setup", "--dry-run", "--test-mode"],

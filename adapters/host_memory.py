@@ -96,6 +96,16 @@ def _project_root(project: Path) -> Path | None:
         return None
 
 
+def _claude_policy_directory(env) -> Path | None:
+    """The administrator settings directory Claude Code reads on this platform; None when it cannot be named."""
+    if os.name == "nt":
+        program_files = env.get("ProgramFiles") or env.get("PROGRAMFILES")
+        return Path(program_files) / "ClaudeCode" if program_files else None
+    if sys.platform == "darwin":
+        return Path("/Library/Application Support/ClaudeCode")
+    return Path("/etc/claude-code")
+
+
 def _claude_paths(home: Path, project: Path, env) -> tuple[Path, ...] | None:
     """Known settings in precedence order; an unreadable policy directory is unknown."""
     try:
@@ -122,13 +132,7 @@ def _claude_paths(home: Path, project: Path, env) -> tuple[Path, ...] | None:
                 paths.append(root / ".claude" / "settings.local.json")
     except (OSError, ValueError):
         return None
-    if os.name == "nt":
-        program_files = env.get("ProgramFiles") or env.get("PROGRAMFILES")
-        policy = Path(program_files) / "ClaudeCode" if program_files else None
-    elif sys.platform == "darwin":
-        policy = Path("/Library/Application Support/ClaudeCode")
-    else:
-        policy = Path("/etc/claude-code")
+    policy = _claude_policy_directory(env)
     if policy is not None:
         paths.append(policy / "managed-settings.json")
         try:
