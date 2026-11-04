@@ -859,6 +859,40 @@ def test_fair_claim_orders_by_available_at(worker_app):
     assert claimed.subject_ref == one.ref
 
 
+def test_an_evaluation_waiting_past_the_aging_window_joins_the_fifo(worker_app):
+    core, ctx, clock = worker_app
+    now = clock.utc_now()
+    item = capture(core, ctx, "TEST 投影和评估。", key="TEST-aging/1")
+
+    def queue(work_type, ref, available_at):
+        conn.execute(
+            "INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,project_id,branch_id,available_at) "
+            "SELECT ?,?,1,scope_id,project_id,branch_id,? FROM source_events WHERE event_id=?",
+            (work_type, ref, available_at, item.ref),
+        )
+
+    def first():
+        with core.storage.write(ctx) as tx:
+            claimed = tx.work.claim_next("aging-worker", now, lease_seconds=60, limit=1)[0]
+            tx._check(write=True).execute("UPDATE work_items SET state='pending' WHERE work_id=?", (claimed.work_id,))
+        return claimed.subject_ref
+
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE work_items SET state='done'")
+        queue("rebuild_projection", "TEST-projection", now)
+        queue("evaluate_candidate", "TEST-fresh-evaluation", _iso(now, -60))
+        conn.commit()
+    assert first() == "TEST-projection"
+    with sqlite3.connect(core.storage.path) as conn:
+        queue("evaluate_candidate", "TEST-aged-evaluation", _iso(now, -2 * 3600))
+        conn.commit()
+    assert first() == "TEST-aged-evaluation"
+    with sqlite3.connect(core.storage.path) as conn:
+        queue("purge", "TEST-purge", now)
+        conn.commit()
+    assert first() == "TEST-purge"
+
+
 def _iso(value: str, seconds: float) -> str:
     from datetime import datetime, timedelta
 
