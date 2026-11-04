@@ -568,8 +568,16 @@ def test_the_integration_budget_is_its_own_not_the_release_budget() -> None:
     assert check.INTEGRATION_WATCHDOG_SECONDS > check.RELEASE_WATCHDOG_SECONDS
 
 
-def test_no_count_of_files_waits_longer_than_the_release_budget() -> None:
-    assert check.pytest_watchdog_seconds("contract", 10_000) == check.RELEASE_WATCHDOG_SECONDS
+def test_no_count_of_files_waits_longer_than_the_integration_budget() -> None:
+    assert check.pytest_watchdog_seconds("contract", 10_000) == check.INTEGRATION_WATCHDOG_SECONDS
+
+
+def test_the_real_contract_selection_keeps_twenty_seconds_a_file() -> None:
+    """The contract tier is the largest per-file tier; the cap must not cut its files' allowance."""
+    selected, _details = check.select_tests("contract", changed=[])
+    heavy = sum(check.HEAVY_FILE_SECONDS.get(str(path).replace("\\", "/"), 0) for path in selected)
+    budget = check.pytest_watchdog_seconds("contract", len(selected), selected)
+    assert budget == check.DEFAULT_WATCHDOG_SECONDS + check.WATCHDOG_SECONDS_PER_FILE * len(selected) + heavy
 
 
 def test_a_nonsense_count_falls_back_to_the_floor() -> None:

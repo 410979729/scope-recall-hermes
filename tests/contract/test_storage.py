@@ -194,8 +194,9 @@ def test_path_guard_reads_each_reparse_record_once(store, monkeypatch):
         return original(path, *args, **kwargs)
 
     # Windows junction checks call a native query that bypasses os.lstat.
-    # Count that edge as well as Python-level stat calls.
-    junction = Path.is_junction
+    # Count that edge as well as Python-level stat calls; Path.is_junction
+    # exists from Python 3.12, and 3.11 has no such query to count.
+    junction = getattr(Path, "is_junction", None)
 
     def counted_junction(path):
         if os.fspath(path) in counts:
@@ -210,7 +211,8 @@ def test_path_guard_reads_each_reparse_record_once(store, monkeypatch):
         return record(path)
 
     monkeypatch.setattr(Path, "lstat", counted_record)
-    monkeypatch.setattr(Path, "is_junction", counted_junction)
+    if junction is not None:
+        monkeypatch.setattr(Path, "is_junction", counted_junction)
     monkeypatch.setattr(os, "lstat", counted)
     storage._path_check()
     assert set(counts.values()) == {1}
