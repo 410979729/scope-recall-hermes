@@ -61,6 +61,11 @@ HEAVY_FILE_SECONDS = {
     "tests/contract/test_memory_export.py": 300,
     "tests/host/codex/test_shared_client.py": 300,
     "tests/host/codex/test_dsh_remote.py": 300,
+    # Nearly every case builds, upgrades and reopens a store written by an earlier release.  The migration tier
+    # (386 tests in 14 files) took 165 s on a local SSD and ran past its 460 s cap on a GitHub Windows runner with
+    # nothing hung; these two files hold most of its cases.
+    "tests/migration/test_migration_drills.py": 600,
+    "tests/migration/test_upgrade_coordinator.py": 300,
 }
 
 
