@@ -14,6 +14,7 @@ from scenario_scale import scale
 from scenario_store import HOSTS, contains, host_text, rendered_contains, request_context
 from scope_recall._version import __version__
 from scope_recall.core.recall_budget import estimate_tokens
+from scope_recall.core.schema import SCHEMA_VERSION
 
 
 def p95(values):
@@ -47,7 +48,7 @@ def upgrade(s, r, args):
     name = "compat-3.16.1" if __version__ == "3.16.1" else "compat-4.0"
     path = args.scratch / name / "matrix.json"
     matrix = json.loads(path.read_text(encoding="utf-8"))
-    target = 1132 if __version__ != "3.16.1" else None
+    target = SCHEMA_VERSION if __version__ != "3.16.1" else None
     truth = all(
         "upgrade" in row
         and all(row["upgrade"]["truth_checks"].values())
