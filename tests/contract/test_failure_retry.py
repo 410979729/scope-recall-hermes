@@ -1043,11 +1043,12 @@ def test_consecutive_refusals_space_the_retries_out(app):
 def test_the_two_rate_limit_sets_cannot_drift_apart():
     """Two hand-kept sets said the same thing about 429 and 503 while disagreeing about 502 and 504, which is how a
     pair always ends up.  The pass stands a work type down for every capacity refusal, taken from that set and not
-    copied from it, and for an interrupted answer, which was billed and is no refusal."""
+    copied from it, for an interrupted answer, and for an empty upstream envelope; the latter two do not prove an
+    unbilled refusal."""
     from scope_recall.core.failure_policy import CAPACITY_REFUSALS, RATE_LIMITED_ERRORS
 
     assert CAPACITY_REFUSALS <= RATE_LIMITED_ERRORS
-    assert RATE_LIMITED_ERRORS - CAPACITY_REFUSALS == {"model_output_interrupted"}
+    assert RATE_LIMITED_ERRORS - CAPACITY_REFUSALS == {"model_output_interrupted", "upstream_empty_response"}
 
 
 @pytest.mark.parametrize("legacy", [False, True])

@@ -332,6 +332,14 @@ def _notice_kind(message: dict[str, Any]) -> bool:
     return not (kind == "hidden" and message.get(_COMPRESSED_SUMMARY) is True)
 
 
+#: Gateway's model-facing timestamp is presentation, not provenance. Only a typed, stamped host row may have
+#: one such prefix removed for exact comparison with the hook's clean input.
+_NOTICE_TIMESTAMP = re.compile(
+    r"^\[(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"
+    r"(?: [A-Za-z0-9_+\-/:]+)?\]\s+"
+)
+
+
 def host_notice(history: object, user_message: object) -> bool:
     """Whether the turn ``pre_llm_call`` opens is one Hermes opened itself, not the person.
 
@@ -365,7 +373,55 @@ def host_notice(history: object, user_message: object) -> bool:
             continue
         words = _own_text(message)
         if words:
-            return words == text and _notice_kind(message) and (trailing or message.get(_COMPRESSED_SUMMARY) is True)
+            notice = _notice_kind(message)
+            # Rendered history and the hook's clean input differ by this prefix.
+            # A display kind and a valid host timestamp must attest the row first;
+            # human text and steers are never normalized into host authority.
+            if words != text and notice and _message_time(message) is not None:
+                prefix = _NOTICE_TIMESTAMP.match(words)
+                if prefix is not None:
+                    words = words[prefix.end() :]
+            return words == text and notice and (trailing or message.get(_COMPRESSED_SUMMARY) is True)
+    return False
+
+
+def sync_host_notice(messages: object, user_message: object) -> bool:
+    """Classify a completed turn's opener, keeping later steers separate from its identity.
+
+    Only host-marked steers are transparent. Equal-text steers need the native tool-batch boundary, with
+    no completed reply before the opener; otherwise they may be a new request borrowing an old notice.
+    Ordinary user rows always bound the search. The classifier still owns kind, time and exact-text checks.
+    """
+    if not isinstance(messages, list):
+        return False
+    text = extract_user_text(user_message).strip()
+    end = len(messages)
+    matching_steer = False
+    while end:
+        message = messages[end - 1]
+        if not isinstance(message, dict):
+            return False
+        role = message.get("role")
+        if role in ("assistant", "tool"):
+            if matching_steer and role == "assistant" and not message.get("tool_calls"):
+                return False
+            end -= 1
+            continue
+        if role == "user" and message.get("display_kind") == STEER_KIND:
+            words = _own_text(message)
+            if not words:
+                return False
+            pieces = _steer_pieces(words)
+            if words == text or any(piece == text for _origin, piece in pieces):
+                # Hermes emits native steers after tool results, never after a completed turn's answer.
+                before = messages[end - 2] if end > 1 else None
+                if not pieces or not isinstance(before, dict) or before.get("role") != "tool":
+                    return False
+                matching_steer = True
+            end -= 1
+            continue
+        # The located row owns this identity; the classifier must not search behind an empty user boundary.
+        return role == "user" and host_notice([message], user_message)
     return False
 
 
@@ -454,7 +510,14 @@ def person_steers(messages: object, *, platform: str, user_id: str, local_surfac
                 theirs = local_surface
             else:
                 theirs = _sent_by(origin, user_id) and (local_surface or str(origin.get("platform") or "") == platform)
-            if not theirs or not words or words.startswith(_STEER_NOTICE_HEADS):
+            notice = words.startswith(_STEER_NOTICE_HEADS)
+            if words.startswith("[Background process "):
+                # Reserve the native heartbeat frame, not a person's sentence sharing its opening words.
+                notice = (
+                    re.match(r"\[Background process \S+ heartbeat #(?:\d+|\?) — still running(?:[\s.\]]|$)", words)
+                    is not None
+                )
+            if not theirs or not words or notice:
                 break
             message_id = str((origin or {}).get("message_id") or "").strip()
             if origin is not None and message_id:

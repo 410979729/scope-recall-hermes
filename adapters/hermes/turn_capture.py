@@ -29,6 +29,7 @@ from .boundary import (
     steer_source_event,
     steer_source_key,
     sync_assistant_key,
+    sync_host_notice,
     sync_turn_source_events,
     tool_call_source_event,
     unanswered_messages,
@@ -394,14 +395,18 @@ class TurnCapture:
             effective_session = adapter._effective_session_id(session_id)
             active_turn = adapter._active_turn_id
             turn_id = active_turn or str(adapter._turn_counter or "turn")
+            user_captured = turn_id in adapter._user_captured_turns
             if not identity.runtime_audience.allowed_scope_ids:
                 adapter._diagnostics.capability_gaps = identity.runtime_audience.capability_gaps
                 return
         context = identity.trusted_context(session_id=effective_session, mutation=True)
         shown = identity.trusted_context(session_id=effective_session, actor_origin="assistant_visible", mutation=True)
+        notice = self.opened_by_host(turn_id, user_content)
+        if not notice and not user_captured:
+            notice = sync_host_notice(messages, user_content)
         opened = (
             identity.trusted_context(session_id=effective_session, actor_origin="host_generated", mutation=True)
-            if self.opened_by_host(turn_id, user_content)
+            if notice
             else context
         )
         with adapter._said_lock:

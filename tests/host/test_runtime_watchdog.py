@@ -437,6 +437,20 @@ def _linked_interpreter(tmp_path: Path) -> Path:
     return link
 
 
+def test_linked_interpreter_is_executable_as_given(tmp_path: Path):
+    """An alias must launch before autostart can prove it preserves that path."""
+    link = _linked_interpreter(tmp_path)
+    probe = subprocess.run(
+        [str(link), "-I", "-B", "-c", "import json,sys; print(json.dumps(sys.executable))"],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=15,
+    )
+    assert Path(json.loads(probe.stdout)).resolve() == Path(sys.executable).resolve()
+
+
 def test_main_hands_run_the_interpreter_path_as_given(tmp_path: Path, monkeypatch):
     """A venv's bin/python is a symlink to the base interpreter.  Resolving it
     started the child outside the venv, where this package is not importable,

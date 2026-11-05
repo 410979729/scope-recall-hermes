@@ -447,6 +447,10 @@ def _load_json_object(raw: bytes) -> dict[str, Any]:
         text = raw.decode("utf-8")
     except UnicodeError as exc:
         raise AuxiliaryModelError("unicode_error", detail=type(exc).__name__) from exc
+    if not text.strip():
+        # An empty envelope gives neither an answer nor proof of an unbilled
+        # refusal; keep its reservation and recover under the ordinary budget.
+        raise AuxiliaryModelError("upstream_empty_response")
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:

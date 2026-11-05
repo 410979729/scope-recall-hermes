@@ -84,32 +84,32 @@ def probe_symlink_privilege(directory: Path) -> bool:
 def linked_interpreter(directory: Path) -> Path | None:
     """A path to this interpreter that ``Path.resolve`` changes, or None.
 
-    A venv's ``bin/python`` on POSIX is a symlink to the base interpreter; the
-    tests that pass an interpreter path as given need such a path.  With symlink privilege it is a symlink to
-    ``sys.executable``; a Windows account without it gets a directory junction
-    to the interpreter's folder, which needs no privilege and which
-    ``resolve`` follows the same way.
+    A venv's ``bin/python`` on POSIX is a symlink to the base interpreter. Windows
+    redirectors also need their ``pyvenv.cfg`` parent, so keep the whole interpreter
+    root reachable through a junction rather than aliasing an isolated executable.
     """
 
     import sys
 
     real = Path(sys.executable)
     directory = Path(directory)
-    if probe_symlink_privilege(directory):
-        link = directory / "venv-python"
-        link.symlink_to(real)
-        return link
     if os.name == "nt":
         try:
             import _winapi
 
-            junction = directory / "venv-bin"
-            _winapi.CreateJunction(str(real.parent), str(junction))
+            prefix = Path(sys.prefix)
+            junction = directory / "venv-root"
+            _winapi.CreateJunction(str(prefix), str(junction))
         except (ImportError, OSError, AttributeError):
             return None
-        link = junction / real.name
+        link = junction / real.relative_to(prefix)
         if link.is_file() and link.resolve() != link:
             return link
+        return None
+    if probe_symlink_privilege(directory):
+        link = directory / "venv-python"
+        link.symlink_to(real)
+        return link
     return None
 
 

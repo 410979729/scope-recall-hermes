@@ -2,6 +2,11 @@
 
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``).
 
+## [4.0.1.dev1] - 2026-11-04
+
+Development source; no package release. Empty or whitespace-only HTTP 200 responses use bounded upstream recovery while preserving uncertain billing reservations and duplicate-execution fences.
+Hermes notices retain their trusted host origin across display timestamps and later human steers; human messages keep their own origin and are captured once. No schema or configuration change is required.
+
 ## [4.0.0] - 2026-11-04
 
 Source-backed summaries, reviewed facts, entity links and task handoffs improve shared memory across five hosts, with local review, private mode and recall history. The store structure moves from 1112 to 1134 and upgrades itself on first open after taking a snapshot. Upgrade with all store users stopped and keep the pre-upgrade snapshot: older releases cannot open the upgraded store. Remote 3.16 clients keep working against a 4.0 server.

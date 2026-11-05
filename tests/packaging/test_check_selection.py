@@ -145,6 +145,8 @@ def test_hermes_identity_change_selects_direct_identity_contract() -> None:
     assert "tests/host/hermes/test_identity.py" in selected
     assert "tests/host/hermes/test_audience_isolation.py" in selected
     assert "tests/host/hermes/test_dedupe.py" in selected
+    assert "tests/host/hermes/test_notice_timestamp.py" in selected
+    assert "tests/host/hermes/test_notice_sync.py" in selected
     assert "host" in details["required_tiers"]
 
 
@@ -162,6 +164,13 @@ def test_integration_and_release_include_new_runtime_and_core_contracts() -> Non
     assert set(check.SCRIPT_GATE_TESTS) <= set(release)
     assert "tests/contract/test_vector_timeout_fallback.py" in integration
     assert "tests/contract/test_vector_timeout_fallback.py" in release
+    for path in (
+        "tests/contract/test_upstream_empty_response.py",
+        "tests/host/hermes/test_notice_timestamp.py",
+        "tests/host/hermes/test_notice_sync.py",
+    ):
+        assert path in integration
+        assert path in release
 
 
 def test_retrieval_selector_keeps_vector_timeout_fallback() -> None:

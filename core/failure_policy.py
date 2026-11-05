@@ -29,8 +29,9 @@ CAPACITY_REFUSALS = frozenset({"http_429", "rate_limited", "http_502", "http_503
 #: decides whether the rest of the pass should even ask.  Every capacity refusal is one, taken from
 #: ``CAPACITY_REFUSALS`` rather than copied.  So is a generation the provider interrupted, for lack of capacity or at
 #: its own end: the next item meets it too.  That one was a billed answer, so unlike a refusal it is not refunded; it
-#: costs its item an attempt.
-RATE_LIMITED_ERRORS = CAPACITY_REFUSALS | {"model_output_interrupted"}
+#: costs its item an attempt. An empty upstream envelope also ends the pass: it gives no usable answer, but proves
+#: neither a capacity refusal nor that the call was unbilled. Its attempts and candidate fence stay intact.
+RATE_LIMITED_ERRORS = CAPACITY_REFUSALS | {"model_output_interrupted", "upstream_empty_response"}
 #: By-design outcomes, as ``failure_kind`` reads them.  Re-running them asserts that something upstream changed.
 #: ``sensitive_request`` is the request guard refusing to send secret-like text to a model; the payload is what it is,
 #: so a retry can only refuse again.  ``model_refused`` is the provider's policy refusing or stopping the answer (a
@@ -59,6 +60,8 @@ _REFUSALS = frozenset({"model_refused", "sensitive_request", "access_denied", "a
 # route's generation failing at the provider; neither says anything about the payload either.  An answer the route
 # cannot use (a vector of another width, say) is not here: it comes back until someone changes the model or the
 # configuration, and a recovery gated by time alone cannot tell when they have, so ``retry-failures`` re-opens it.
+# An empty upstream envelope likewise says nothing about the payload. It remains attempt-charged and keeps an
+# uncertain candidate's at-most-once fence; only ordinary work gets bounded automatic recovery.
 # Recovery queries compare stored codes exactly, independently of case-insensitive history display.
 AUTO_RECOVERABLE_ERRORS = CAPACITY_REFUSALS | frozenset(
     {
@@ -66,6 +69,7 @@ AUTO_RECOVERABLE_ERRORS = CAPACITY_REFUSALS | frozenset(
         "model_timeout",
         "model_output_interrupted",
         "response_status_failed",
+        "upstream_empty_response",
         "timeout",
         "network_error",
         "http_protocol",

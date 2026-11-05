@@ -516,7 +516,7 @@ def _paused_types(work_type, error_code):
 
 
 def _rate_limited(error_code) -> bool:
-    """Whether the provider answered an item with a rate limit, a capacity refusal or an interrupted generation."""
+    """Whether a provider failure ends this work type's pass; refund policy is decided separately."""
     return str(error_code or "").lower() in RATE_LIMITED_ERRORS
 
 
