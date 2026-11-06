@@ -2,6 +2,7 @@ import os
 import re
 import shlex
 import sys
+import zoneinfo
 from pathlib import Path
 
 if sys.platform == "darwin":
@@ -19,6 +20,9 @@ from tier_allows import TIER_ALLOWS  # noqa: E402
 _ISOLATED = Path(os.environ["SCOPE_RECALL_TEST_BOUNDARY_PARENT"]).resolve()
 _RUNTIME = (Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve())
 _SYSTEM = Path(os.environ.get("SystemRoot", "/usr")).resolve()
+# The IANA time zone database that ``zoneinfo`` reads.  macOS links /usr/share/zoneinfo to a directory outside /usr, so
+# the guard allows where each search path really is.
+_ZONEINFO = tuple(Path(item).resolve() for item in zoneinfo.TZPATH)
 _PYTHON = Path(sys.executable).resolve()
 _ALLOW_CHILD_PROCESSES = os.environ.get("SCOPE_RECALL_TEST_ALLOW_OWNED_SUBPROCESSES") == "1"
 _PROCESS_TIER = os.environ.get("SCOPE_RECALL_TEST_TIER", "")
@@ -237,7 +241,7 @@ def _check_path(value, writing=False):
             flush=True,
         )
         raise PermissionError("TEST_BOUNDARY: write outside isolated test directory (%s)" % path)
-    if any(path.is_relative_to(root) for root in (_ROOT, _ISOLATED, *_RUNTIME, _SYSTEM)):
+    if any(path.is_relative_to(root) for root in (_ROOT, _ISOLATED, *_RUNTIME, _SYSTEM, *_ZONEINFO)):
         return
     raise PermissionError("TEST_BOUNDARY: protected data access")
 
