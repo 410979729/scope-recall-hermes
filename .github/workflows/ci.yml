@@ -28,13 +28,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
         # Each layer runs its own tier: integration selects a shared
         # baseline and does not replace the layer-specific test sets.
         tier: [unit, contract, storage, capture, claims, deletion, episodes, retrieval, packaging, migration]
         # Host and native process checks run on Windows. Host includes
-        # Task Scheduler paths; native requires LanceDB. Linux coverage
-        # for these process tiers needs its own validation.
+        # Task Scheduler paths; native requires LanceDB. Linux and macOS
+        # coverage for these process tiers needs its own validation.
         include:
           - os: windows-latest
             tier: host

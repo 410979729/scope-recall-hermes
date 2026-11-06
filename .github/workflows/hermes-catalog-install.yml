@@ -1,0 +1,43 @@
+name: Hermes catalog install
+
+# A fresh Hermes on Linux and macOS installs Scope Recall the way the plugin catalog does, runs setup, and is checked
+# for recall in a new session and a correction against a loopback model. Runs when the Hermes install path changes,
+# and on demand.
+on:
+  pull_request:
+    paths:
+      - "distribution/hermes/**"
+      - "adapters/hermes/**"
+      - "maintenance/setup*.py"
+      - "maintenance/onboarding.py"
+      - "maintenance/hermes_config.py"
+      - ".github/workflows/hermes-catalog-install.yml"
+      - ".github/scripts/hermes_catalog_install.sh"
+      - ".github/scripts/loopback_chat_model.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    name: hermes-catalog-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Build the core wheel the plugin pins
+        run: python -m pip wheel . --no-deps --wheel-dir "$RUNNER_TEMP/wheels"
+      - name: Install Hermes and the plugin, then check setup, recall and a correction
+        env:
+          REPOSITORY: ${{ github.repository }}
+          COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+          WHEELS: ${{ runner.temp }}/wheels
+        run: bash .github/scripts/hermes_catalog_install.sh
