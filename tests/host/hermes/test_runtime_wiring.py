@@ -47,6 +47,145 @@ def _write_runtime_config(path: Path, payload: dict) -> Path:
     return path
 
 
+@pytest.fixture
+def warm_binding(installed_core, initialize_kwargs, hermes_home):
+    core, clock = installed_core
+    payload = _runtime_payload(
+        core.config.binding, session_id="TEST-warm", allowed_scope_ids=core.config.binding.scope_ids
+    )
+    path = _write_runtime_config(hermes_home / "TEST-warm-runtime.json", payload)
+    provider = ScopeRecallHermesAdapter(core=core, clock=clock)
+    yield provider, {**initialize_kwargs, "trusted_runtime_config_path": str(path)}
+    provider.shutdown()
+
+
+def test_bind_warms_without_waiting_and_coalesces(warm_binding, monkeypatch):
+    from scope_recall.runtime.instance import RuntimeInstance
+
+    provider, kwargs = warm_binding
+    started, release, done = threading.Event(), threading.Event(), threading.Event()
+    calls = []
+
+    def warm(_runtime, seconds):
+        calls.append(seconds)
+        assert provider._lock.acquire(timeout=2)
+        provider._lock.release()
+        started.set()
+        try:
+            assert release.wait(5)
+        finally:
+            done.set()
+
+    monkeypatch.setattr(RuntimeInstance, "warm_query_embedding", warm)
+    try:
+        provider.initialize("TEST-warm", **kwargs)
+        assert started.wait(2)
+        assert not done.is_set()
+        provider.initialize("TEST-warm-again", **kwargs)
+        assert calls == [8.0]
+        provider.shutdown()
+        assert not done.is_set()
+    finally:
+        release.set()
+        if started.is_set():
+            assert done.wait(5)
+
+
+def test_recent_recall_suppresses_warm_binding(warm_binding, monkeypatch):
+    from scope_recall.runtime.instance import RuntimeInstance
+
+    provider, kwargs = warm_binding
+    finished = threading.Event()
+    calls = []
+
+    def warm(_runtime, seconds):
+        calls.append(seconds)
+        finished.set()
+
+    monkeypatch.setattr(RuntimeInstance, "warm_query_embedding", warm)
+    provider.initialize("TEST-warm", **kwargs)
+    assert finished.wait(2)
+    provider._binding._warm_thread.join(timeout=2)
+    provider._binding._last_query_at -= 61
+    provider.prefetch("synthetic recent recall")
+    provider.initialize("TEST-warm-again", **kwargs)
+    assert calls == [8.0]
+
+
+def test_idle_after_warm_starts_another(warm_binding, monkeypatch):
+    from scope_recall.runtime.instance import RuntimeInstance
+
+    provider, kwargs = warm_binding
+    calls = []
+    monkeypatch.setattr(RuntimeInstance, "warm_query_embedding", lambda _runtime, seconds: calls.append(seconds))
+    provider.initialize("TEST-warm", **kwargs)
+    provider._binding._warm_thread.join(timeout=2)
+    assert calls == [8.0]
+    provider._binding._last_query_at -= 61
+    provider.initialize("TEST-warm-again", **kwargs)
+    provider._binding._warm_thread.join(timeout=2)
+    assert calls == [8.0, 8.0]
+
+
+def test_warm_error_does_not_change_diagnostics(warm_binding, monkeypatch, caplog):
+    from scope_recall.runtime.instance import RuntimeInstance
+
+    provider, kwargs = warm_binding
+    attempted = threading.Event()
+
+    def warm(_runtime, _seconds):
+        attempted.set()
+        raise RuntimeError("synthetic warm failure")
+
+    monkeypatch.setattr(RuntimeInstance, "warm_query_embedding", warm)
+    with caplog.at_level("DEBUG", logger="scope_recall.adapters.hermes.provider"):
+        provider.initialize("TEST-warm", **kwargs)
+        assert attempted.wait(2)
+        provider._binding._warm_thread.join(timeout=2)
+        assert "Query embedding warm-up failed: RuntimeError" in caplog.text
+        assert not provider.diagnostics.pending_outcome_gaps
+        assert not provider.diagnostics.capture_failures
+        assert not any("warm" in gap for gap in provider.diagnostics.capability_gaps)
+
+
+@pytest.mark.parametrize("private", [False, True])
+def test_warm_respects_private_mode_and_missing_vector(warm_binding, monkeypatch, private):
+    from dataclasses import replace
+
+    from scope_recall.core import private as private_module
+    from scope_recall.runtime.instance import RuntimeInstance, _LazyVectorPort
+    from scope_recall.runtime.instance_config import VectorRuntimeConfig
+
+    provider, kwargs = warm_binding
+    original = RuntimeInstance.warm_query_embedding
+    done = threading.Event()
+    requests = Mock()
+    results = []
+    monkeypatch.setattr(_LazyVectorPort, "_query_embedder", lambda _self: requests)
+    monkeypatch.setattr(private_module, "outbound_blocked", lambda *_args: private)
+
+    def warm(runtime, seconds):
+        try:
+            if private:
+                config = runtime.config
+                vector = VectorRuntimeConfig(
+                    backend="sqlite",
+                    storage_dir=config.binding.data_directory / "vectors" / config.embedding_space_id(),
+                    table_name="TEST_vectors",
+                    dimensions=config.embedding_space()["dimensions"],
+                )
+                runtime.config = replace(config, vector=vector)
+            results.append(original(runtime, seconds))
+        finally:
+            done.set()
+
+    monkeypatch.setattr(RuntimeInstance, "warm_query_embedding", warm)
+    provider.initialize("TEST-warm", **kwargs)
+    assert done.wait(2)
+    assert results == [False]
+    requests.assert_not_called()
+
+
 def test_pending_upgrade_wakes_from_real_provider_initialize(hermes_home, initialize_kwargs, monkeypatch):
     from scope_recall.core import storage
     from scope_recall.runtime import worker_launch

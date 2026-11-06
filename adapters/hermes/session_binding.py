@@ -6,6 +6,7 @@ a record ``doctor`` reads (``unbound_sessions``).  It works on the adapter's sta
 from __future__ import annotations
 
 import logging
+import threading
 from typing import TYPE_CHECKING, Any
 
 from scope_recall.contracts import ContractError
@@ -33,6 +34,9 @@ if TYPE_CHECKING:
 #: line, and a logging configuration may name it.
 _log = logging.getLogger("scope_recall.adapters.hermes.provider")
 _BOUNDED_MESSAGE_SCAN = 8
+# Routes can cool after minutes idle; warm separately from the 3–5 second recall window.
+_QUERY_WARM_IDLE_S = 60.0
+_QUERY_WARM_BUDGET_S = 8.0
 
 
 class SessionBinding:
@@ -42,6 +46,10 @@ class SessionBinding:
         self._adapter = adapter
         #: The route this session last reported as bound to no scope; a session switch on it is not reported again.
         self._unbound_route: tuple[str, ...] | None = None
+        #: Protect the last query activity and the single background warm-up, never across model I/O.
+        self._warm_lock = threading.Lock()
+        self._last_query_at: float | None = None
+        self._warm_thread: threading.Thread | None = None
 
     def bind(self, session_id: str, **kwargs) -> None:
         try:
@@ -130,6 +138,41 @@ class SessionBinding:
             from .hooks import update_adapter_binding
 
             update_adapter_binding(self._adapter)
+            self._warm_query_if_idle()
+
+    def note_recall(self) -> None:
+        """Record a recall using the same monotonic clock as the warm-up."""
+        with self._warm_lock:
+            self._last_query_at = self._adapter._require_core().clock.monotonic()
+
+    def _warm_query_if_idle(self) -> None:
+        """Start at most one background query warm-up after an idle interval."""
+        host_runtime = self._adapter._host_runtime
+        if host_runtime is None:
+            return
+        runtime = host_runtime.runtime
+        if runtime is None:
+            return
+        with self._warm_lock:
+            now = self._adapter._require_core().clock.monotonic()
+            if (self._warm_thread is not None and self._warm_thread.is_alive()) or (
+                self._last_query_at is not None and now - self._last_query_at <= _QUERY_WARM_IDLE_S
+            ):
+                return
+
+            def warm() -> None:
+                try:
+                    with self._warm_lock:
+                        self._last_query_at = self._adapter._require_core().clock.monotonic()
+                    runtime.warm_query_embedding(_QUERY_WARM_BUDGET_S)
+                except Exception as exc:  # noqa: BLE001 - background failures must not reach the host
+                    _log.debug("Query embedding warm-up failed: %s", type(exc).__name__)
+
+            try:
+                self._warm_thread = threading.Thread(target=warm, name="scope-recall-query-warm", daemon=True)
+                self._warm_thread.start()
+            except Exception as exc:  # noqa: BLE001 - thread startup must not break session binding
+                _log.debug("Query embedding warm-up could not start: %s", type(exc).__name__)
 
     def switch(
         self,

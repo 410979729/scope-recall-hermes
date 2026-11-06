@@ -14,6 +14,8 @@ recall or background work, and diagnostics report `capability_gap:unbound_sessio
 level, not as a failure on every hook. No installation owner or earlier session's user is substituted; other identity
 and installation failures still raise their normal errors.
 
+After an idle period, binding a session warms the query embedding route in the background. This request counts toward the auxiliary budget; private mode blocks the warm-up.
+
 ## Package-managed plugin environments
 
 Some Hermes installations build a separate environment from the declarations in the home's `plugins` directory.
