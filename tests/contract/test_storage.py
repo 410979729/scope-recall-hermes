@@ -62,10 +62,13 @@ def test_stable_store_checks_structural_state_once_but_verifies_each_transaction
             return _original(*args, **kwargs)
 
         monkeypatch.setattr(owner, name, counted)
+    # The cache is keyed on the file's stat stamp; a failure shows which field moved between transactions.
+    stamps = [storage._file_stamp()]
     for _ in range(3):
         with storage.write(ctx):
             pass
-    assert calls == dict(backfill=1, index=1, verify=3)
+        stamps.append(storage._file_stamp())
+    assert calls == dict(backfill=1, index=1, verify=3), stamps
 
 
 @pytest.mark.parametrize("change", ["schema", "metadata", "file", "cursor"])
