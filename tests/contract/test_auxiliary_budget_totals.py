@@ -155,6 +155,41 @@ def test_time_zone_change_and_late_settlement_update_registered_windows(tmp_path
     assert_totals(ledger.path, windows)
 
 
+def test_total_only_embedding_usage_settles_the_actual_input(tmp_path):
+    """A total-only embedding response settles its reservation through the normal ledger boundary."""
+    from scope_recall.runtime.embedding_models import _embedding_usage
+
+    ledger = open_ledger(tmp_path / "ledger.sqlite3")
+    try:
+        request = reserve(ledger, instant("2026-02-01T00:00:00"))
+        usage = _embedding_usage({"usage": {"total_tokens": 9}}, dialect="openai")
+        ledger.finish_embedding(request, "http_200", usage)
+        with closing(sqlite3.connect(ledger.path)) as db:
+            assert db.execute("SELECT actual_input,actual_output FROM requests WHERE id=?", (request,)).fetchone() == (
+                9,
+                0,
+            )
+    finally:
+        ledger.close()
+
+
+def test_unknown_embedding_usage_retains_the_reservation(tmp_path):
+    from scope_recall.runtime.embedding_models import _embedding_usage
+
+    ledger = open_ledger(tmp_path / "ledger.sqlite3")
+    try:
+        request = reserve(ledger, instant("2026-02-01T00:00:00"))
+        usage = _embedding_usage({"usage": {"total_tokens": True}}, dialect="openai")
+        assert usage is None
+        assert ledger.finish_embedding(request, "http_200", usage) == "http_200_usage_unknown_reserved_charge_retained"
+        with closing(sqlite3.connect(ledger.path)) as db:
+            assert db.execute(
+                "SELECT status,reserved_input,actual_input FROM requests WHERE id=?", (request,)
+            ).fetchone() == ("http_200_usage_unknown_reserved_charge_retained", 20, None)
+    finally:
+        ledger.close()
+
+
 def test_totals_and_details_roll_back_together(tmp_path):
     ledger = open_ledger(tmp_path / "ledger.sqlite3")
     request = reserve(ledger, instant("2026-02-01T00:00:00"))

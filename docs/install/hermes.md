@@ -9,6 +9,11 @@ and whether it fell back to its own Python. Use `--home` or `--python` only to o
 
 Setup selects memory.provider: scope-recall in config.yaml and installs the provider and memory skill. The CLI owner identity is the default; desktop, TUI and remote login audiences still require explicit owner authorization.
 
+A scheduled session (`platform=cron`) with no user id does not participate in memory. Its hooks return without capture,
+recall or background work, and diagnostics report `capability_gap:unbound_session`. The reason is logged once at debug
+level, not as a failure on every hook. No installation owner or earlier session's user is substituted; other identity
+and installation failures still raise their normal errors.
+
 ## Package-managed plugin environments
 
 Some Hermes installations build a separate environment from the declarations in the home's `plugins` directory.

@@ -433,11 +433,14 @@ def test_truncated_host_entry_is_not_a_complete_statement(tmp_path, host):
     assert partial not in entries
 
 
-def test_claude_default_project_directory_and_project_overrides(tmp_path):
+def test_claude_default_project_directory_and_project_overrides(tmp_path_factory):
     import json
 
     from scope_recall.adapters.host_memory import inspect_host_memory
 
+    # The absolute project path is repeated in one memory-directory component;
+    # keep the fixture label short without changing the host's path encoding.
+    tmp_path = tmp_path_factory.mktemp("cc")
     home = tmp_path / "TEST-claude"
     project = tmp_path / "TEST-project"
     home.mkdir()

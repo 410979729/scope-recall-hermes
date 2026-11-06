@@ -305,6 +305,39 @@ def test_embedding_request_bodies_name_the_model_and_width_in_both_dialects():
     assert openai == {"model": "m", "input": ["t"], "dimensions": 64}
 
 
+def test_openai_embedding_usage_accepts_total_tokens_without_overriding_prompt_tokens():
+    from scope_recall.runtime.embedding_models import _embedding_usage
+
+    assert _embedding_usage({"usage": {"total_tokens": 9}}, dialect="openai") == {"promptTokenCount": 9}
+    assert _embedding_usage({"usage": {"total_tokens": 0}}, dialect="openai") == {"promptTokenCount": 0}
+    assert _embedding_usage({"usage": {"prompt_tokens": 4, "total_tokens": 9}}, dialect="openai") == {
+        "promptTokenCount": 4
+    }
+    assert _embedding_usage({"usage": {"prompt_tokens": 0, "total_tokens": 9}}, dialect="openai") == {
+        "promptTokenCount": 0
+    }
+    assert _embedding_usage({"usage": {}}, dialect="openai") is None
+
+
+@pytest.mark.parametrize("bad", [None, -1, True, 1.0, "9"])
+def test_embedding_usage_rejects_invalid_openai_token_counts(bad):
+    from scope_recall.runtime.embedding_models import _embedding_usage
+
+    assert _embedding_usage({"usage": {"total_tokens": bad}}, dialect="openai") is None
+    assert _embedding_usage({"usage": {"prompt_tokens": bad}}, dialect="openai") is None
+    assert _embedding_usage({"usage": {"prompt_tokens": bad, "total_tokens": 9}}, dialect="openai") is None
+    assert _embedding_usage({"usage": {"prompt_tokens": 4, "total_tokens": bad}}, dialect="openai") == {
+        "promptTokenCount": 4
+    }
+
+
+@pytest.mark.parametrize("bad", [None, -1, True, 1.0, "9"])
+def test_embedding_usage_rejects_invalid_gemini_token_counts(bad):
+    from scope_recall.runtime.embedding_models import _embedding_usage
+
+    assert _embedding_usage({"usageMetadata": {"promptTokenCount": bad}}, dialect="gemini") is None
+
+
 def test_P08_an_openai_route_may_name_the_field_that_carries_the_width():
     """Voyage's /v1/embeddings is OpenAI-shaped but calls the width
     output_dimension and refuses dimensions outright; a request that

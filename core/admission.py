@@ -16,6 +16,7 @@ from dataclasses import dataclass, replace
 
 from ..contracts import ContractError
 from .events import withheld_tool_output
+from .evidence_question import DERIVATION_ROOT_ORIGINS
 from .visibility import allowed
 from .work_storage import FRESH_CONVERSATION_ORIGINS, fresh_since
 
@@ -271,15 +272,16 @@ def _repeated_tool_output(tx, scope_id, text, source_ref, source_revision) -> bo
     )
 
 
-#: What a tool output earns: an embedding, so it is recalled by meaning.  It is not consolidated;
-#: tool output is no derivation root (``evidence_question.DERIVATION_ROOT_ORIGINS``), so a
-#: consolidation of it would show the model nothing.
-TOOL_OUTPUT_WORK_TYPES = frozenset({"embed"})
+#: Non-root sources stay semantically searchable. Consolidation can derive no claim
+#: from them, irrespective of the role the host uses to transport their content.
+NON_ROOT_WORK_TYPES = frozenset({"embed"})
 
 
 def wanted_work_types(event) -> frozenset[str]:
-    """The derived work a scheduled source is owed: every kind, or an embedding alone for tool output."""
-    return TOOL_OUTPUT_WORK_TYPES if event.get("role") == "tool" else WORK_TYPES
+    """The derived work owed by a source's origin, not its transport role."""
+    # This only limits scheduling; the worker verifies import provenance before deriving claims.
+    origin = event.get("source_original_origin") if event.get("origin") == "imported" else event.get("origin")
+    return WORK_TYPES if origin in DERIVATION_ROOT_ORIGINS else NON_ROOT_WORK_TYPES
 
 
 def decide(tx, event, scope_id, policy=None, *, source_ref=None, source_revision=None):
@@ -358,7 +360,7 @@ def _schedule(tx, clock, ref, revision, policy, *, on_demand=True, fresh=False):
     present = {row[0] for row in existing}
     missing = wanted_work_types(source.event) - present
     if not missing:
-        # A tool output deferred before it stopped being owed a consolidation may already hold its
+        # A non-root source deferred before it stopped being owed a consolidation may already hold its
         # embedding; settle its marker, or the refill would select it on every pass.
         if decision_marker(tx, ref, revision) == "admission_deferred:queue_capacity":
             conn.execute(
@@ -492,14 +494,15 @@ def _deferred_page(tx, clock, context, policy, scopes, marks, limit) -> list[tup
             priority = not policy.enabled or count < _capacity(policy, True)
             if not priority:
                 continue
-            # A tool output is owed an embedding only (``wanted_work_types``), so it never holds
+            # A non-root source is owed an embedding only (``wanted_work_types``), so it never holds
             # a consolidation.  It is picked for one only once its embedding is queued, to settle
             # a marker written before that rule; picked while its embedding waits for room, it
             # would come first on every pass and hold the page.
             owed = (
                 ""
-                if kind in TOOL_OUTPUT_WORK_TYPES
-                else """AND (e.role<>'tool' OR EXISTS(
+                if kind in NON_ROOT_WORK_TYPES
+                else f"""AND (CASE WHEN e.origin='imported' THEN e.source_original_origin ELSE e.origin END
+                IN ({",".join("?" for _ in DERIVATION_ROOT_ORIGINS)}) OR EXISTS(
                 SELECT 1 FROM work_items o WHERE o.subject_ref=e.event_id
                 AND o.subject_revision=e.source_revision AND o.work_type='embed'))"""
             )
@@ -510,7 +513,8 @@ def _deferred_page(tx, clock, context, policy, scopes, marks, limit) -> list[tup
             eligible.append(f"""(e.scope_id=? {owed} {priority_filter} AND NOT EXISTS(
                 SELECT 1 FROM work_items w WHERE w.subject_ref=e.event_id
                 AND w.subject_revision=e.source_revision AND w.work_type=?))""")
-            eligibility_params.extend((scope, *priority_params, kind))
+            root_params = () if kind in NON_ROOT_WORK_TYPES else tuple(sorted(DERIVATION_ROOT_ORIGINS))
+            eligibility_params.extend((scope, *root_params, *priority_params, kind))
     if not eligible:
         return []
     return (

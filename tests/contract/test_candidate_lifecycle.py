@@ -1118,6 +1118,35 @@ def test_a_candidate_gets_two_verdicts_then_only_a_restatement_reopens_it(app):
     assert evaluator.calls == 3
 
 
+@pytest.mark.parametrize(
+    "origin", ["tool_observation", "assistant_visible", "host_generated", "external_document", "imported"]
+)
+def test_non_first_hand_restatement_cannot_reopen_an_exhausted_candidate(app, origin):
+    """An unrelated human message must not lend an agent or document echo another model verdict."""
+    core, ctx = app
+    saved, _, _, _ = _candidate(core, ctx)
+    _finish_source_work(core)
+    evaluator = Evaluator()
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    _new_first_hand_evidence(core, ctx, "entity-blue property-blue 今天又讨论了一次。", "TEST-r1/second")
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    assert evaluator.calls == 2
+
+    read = capture(core, ctx, "entity-blue property-blue 蓝色。", origin=origin, key="TEST-r1/readback")
+    with core.storage.write(ctx) as tx:
+        tx.candidates.observe_source(read.ref, read.revision, observed_at=core.clock.utc_now())
+    assert _new_first_hand_evidence(core, ctx, "entity-blue property-blue 还要再想想。", "TEST-r1/unrelated") == 0
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    assert evaluator.calls == 2
+    assert _sweep(core, ctx) == 0
+    assert core.claim_history(ctx, saved.ref)[-1].state == "proposed"
+
+    # The same candidate is still reachable when a person actually restates it.
+    assert _new_first_hand_evidence(core, ctx, "entity-blue property-blue 最后确认用蓝色。", "TEST-r1/restated") == 1
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    assert evaluator.calls == 3
+
+
 def test_a_repeat_queued_before_the_limit_is_answered_without_the_model(app):
     core, ctx = app
     saved, _source, _proposal, _registration = _candidate(core, ctx)

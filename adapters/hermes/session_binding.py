@@ -16,6 +16,7 @@ from .capture import CAPTURE_TIMEOUT_S
 from .identity import (
     HermesIdentity,
     LocalSurfaceUnapproved,
+    SessionUnbound,
     assert_same_installation,
     bind_hermes_identity,
     switch_hermes_identity,
@@ -45,6 +46,15 @@ class SessionBinding:
     def bind(self, session_id: str, **kwargs) -> None:
         try:
             fresh = bind_hermes_identity(session_id, **kwargs)
+        except SessionUnbound:
+            with self._adapter._lock:
+                first = not self._adapter._unbound_session
+                self._adapter._unbound_session = True
+                self._adapter._initialized = False
+                self._adapter._diagnostics.capability_gaps = ("capability_gap:unbound_session",)
+            if first:
+                _log.debug("scope-recall: unbound_session; scheduled session has no user, memory inactive")
+            return
         except LocalSurfaceUnapproved as refused:
             # The owner's session there, refused for want of the surface's approval, keeps nothing either.
             note_owner_session(
@@ -90,6 +100,7 @@ class SessionBinding:
                     }:
                         raise
                     self._adapter._host_runtime.wake_upgrade(known_pending=exc.field != "upgrade_in_progress")
+            self._adapter._unbound_session = False
             self._adapter._identity = fresh
             self._adapter._ledger.reset()
             self._adapter._turn_counter = 0
