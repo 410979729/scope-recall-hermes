@@ -86,8 +86,20 @@ def test_two_profiles_share_store_with_distinct_host_identities(fake_user):
         finally:
             provider.shutdown()
     payload = read_shared_payload(fake_user / ".scope-recall" / "shared")
-    assert len({row["entry_id"] for row in payload["entries"]}) == 2
-    assert {row["agent_identity"] for row in payload["entries"]} == {"default", "research"}
+    assert {(row["entry_id"], row["agent_identity"]) for row in payload["entries"]} == {
+        ("hermes", "default"),
+        ("hermes-research", "research"),
+    }
+
+
+def test_profile_entry_names_fit_entry_ids_or_stay_plain(fake_user):
+    from scope_recall.maintenance.setup_apply import hermes_entry_name
+
+    profiles = fake_user / ".hermes" / "profiles"
+    assert hermes_entry_name(fake_user / ".hermes") == "hermes"
+    assert hermes_entry_name(profiles / "night_shift") == "hermes-night-shift"
+    assert hermes_entry_name(profiles / ("p" * 30)) == "hermes"
+    assert hermes_entry_name(fake_user / "elsewhere") == "hermes"
 
 
 @pytest.mark.parametrize("ending", [b"\n", b"\r\n"])

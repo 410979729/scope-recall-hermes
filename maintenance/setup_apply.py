@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ..adapters.hermes.shared_entries import attachment_path, read_shared_payload
+from ..contracts import ENTRY_ID
 from ..core.schema import SCHEMA_VERSION
 from ..runtime.instance_config import RuntimeInstanceConfig
 from ..runtime.model_budget import initialize_auxiliary_budget_ledger
@@ -51,6 +52,18 @@ def _runtime(row: dict, plan, backups: list[str]) -> Path:
     return path
 
 
+def hermes_entry_name(home: Path) -> str:
+    """The entry name a Hermes home attaches with: ``hermes-<profile>`` for a named profile, else ``hermes``.
+
+    Recalled items carry the name of the entry they came in through, so a named profile's name is what lets another
+    agent say which one heard something. The default profile, a custom home and a profile name that cannot form an
+    entry id (lowercase letters, digits and hyphens, at most 32 characters) keep the plain host name.
+    """
+    identity = profile_identity(home)
+    candidate = "hermes-" + identity.replace("_", "-")
+    return candidate if identity not in {"default", "custom"} and ENTRY_ID.fullmatch(candidate) else "hermes"
+
+
 def _attach(row: dict, plan) -> None:
     if row["state"] != "fresh":
         if row["host"] == "hermes":
@@ -60,9 +73,9 @@ def _attach(row: dict, plan) -> None:
     if not (root / "installation.json").is_file():
         init_shared(root=root, agent_id="scope-recall", test_mode=plan.test_mode)
     payload = read_shared_payload(root)
-    entry = row["host"]
+    entry = hermes_entry_name(Path(row["home"])) if row["host"] == "hermes" else row["host"]
     taken = {item["entry_id"] for item in payload["entries"]}
-    if entry == "hermes" and entry in taken:
+    if row["host"] == "hermes" and entry in taken:
         import hashlib
 
         entry = "hermes-" + hashlib.sha256(str(Path(row["home"]).resolve()).encode()).hexdigest()[:16]
