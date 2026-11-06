@@ -207,10 +207,8 @@ def _assignment_value_allowed(match: re.Match[str]) -> bool:
         return False
     separator = match.groupdict().get("separator") or ""
     label = match.string[match.start() : match.start("value")]
-    # "credential_env: OPENROUTER_API_KEY" names the environment variable that holds a credential; the value is
-    # that variable's identifier, not the credential. Without this exemption the label alone turns ordinary
-    # configuration documentation into a rejected capture (whole messages were being dropped).
-    # The label slice keeps the separator and any quoting (``"credential_env": "``), so trim those first.
+    # An environment-variable label with an UPPER_SNAKE value identifies where a credential is stored;
+    # other values still need secret scanning. The label slice includes separators and quotes, so trim them to match.
     if _ENV_NAME_LABEL_RE.search(label.rstrip(" \t:=”\"'`")) and _ENV_NAME_VALUE_RE.match(
         match["value"].strip().strip("\"'`“”")
     ):

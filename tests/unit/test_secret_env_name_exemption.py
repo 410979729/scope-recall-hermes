@@ -1,10 +1,7 @@
 """A credential's *variable name* is not a credential.
 
 ``credential_env: OPENROUTER_API_KEY`` documents where a key lives; the value is an
-identifier, not the secret.  Because the assignment pattern matched the label, the
-all-caps identifier was judged a secret VALUE and ``prepare_capture`` rejected the
-whole message (``plaintext_secret_rejected``) — twenty-five ordinary configuration
-notes in one day never reached the store.
+identifier, not the secret.
 
 The exemption is deliberately narrow: it only fires when the label names an
 environment variable AND the value is an UPPER_SNAKE identifier, so a real key typed
@@ -12,7 +9,6 @@ into that same field is still refused.
 """
 
 import pytest
-
 from scope_recall.core.secret_patterns import contains_secret_like_text
 
 # label names a variable that HOLDS a credential; the value is that variable's name
