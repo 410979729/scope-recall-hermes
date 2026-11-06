@@ -9,6 +9,8 @@ and whether it fell back to its own Python. Use `--home` or `--python` only to o
 
 Setup selects memory.provider: scope-recall in config.yaml and installs the provider and memory skill. The CLI owner identity is the default; desktop, TUI and remote login audiences still require explicit owner authorization.
 
+After an idle period, binding a session warms the query embedding route in the background. This request counts toward the auxiliary budget; private mode blocks the warm-up.
+
 ## Package-managed plugin environments
 
 Some Hermes installations build a separate environment from the declarations in the home's `plugins` directory.

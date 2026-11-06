@@ -122,6 +122,7 @@ class Prefetch:
             return self._confirm(
                 core, context, effective_session, turn, {}, notice, started, request_id=request["request_id"]
             )
+        self._adapter._binding.note_recall()
         return self._deliver(
             query, (core, context, generation, effective_session, turn, notice, request, current_refs, identity)
         )
