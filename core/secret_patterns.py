@@ -177,6 +177,15 @@ def scan_secret_like_text(value: Any) -> tuple[SecretTextMatch, ...]:
 _LEADING_VALUE_SYMBOLS = frozenset("!@#$%^&*+=~?")
 #: Labels whose values may be words: an e-mail authorization code (授权码) is often sixteen lower-case letters.
 _PASSWORD_LABEL = re.compile(r"pass(?:word|wd)|密码|口令|授权码", re.IGNORECASE)
+#: Labels such as ``credential_env`` / ``api_key_variable`` name the variable that HOLDS a credential, so the
+#: value is an identifier (``OPENROUTER_API_KEY``), never the secret itself. Only UPPER_SNAKE values are exempt:
+#: a mixed-case or digit-heavy value in such a field is still judged a secret.
+_ENV_NAME_LABEL_RE = re.compile(
+    r"(?:api[_ \-]?key|secret|password|passwd|credential(?:s)?|private[_ \-]?key|token)"
+    r"[_ \-](?:env|envvar|env[_ ]?var|variable|varname)[\s:=]*$",
+    re.IGNORECASE,
+)
+_ENV_NAME_VALUE_RE = re.compile(r"[A-Z][A-Z0-9_]{2,}$")
 _CJK_START = re.compile(r"[㐀-鿿豈-﫿]")
 #: What a non-empty container stands for after its credential key (``_after_key``): four digits meet the ASCII value
 #: length rule and cannot name a placeholder.
@@ -198,6 +207,12 @@ def _assignment_value_allowed(match: re.Match[str]) -> bool:
         return False
     separator = match.groupdict().get("separator") or ""
     label = match.string[match.start() : match.start("value")]
+    # An environment-variable label with an UPPER_SNAKE value identifies where a credential is stored;
+    # other values still need secret scanning. The label slice includes separators and quotes, so trim them to match.
+    if _ENV_NAME_LABEL_RE.search(label.rstrip(" \t:=”\"'`")) and _ENV_NAME_VALUE_RE.match(
+        match["value"].strip().strip("\"'`“”")
+    ):
+        return False
     password_label = _PASSWORD_LABEL.search(label) is not None
     # After 是 or 为, Chinese text describes a key or token rather than giving it ("TOKEN 为保存凭据名的字段"); a
     # password may still be a Chinese passphrase.
