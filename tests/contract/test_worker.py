@@ -973,7 +973,6 @@ def test_fresh_lane_keeps_purge_first_window_origins_and_fifo(worker_app):
         (reply.ref, "embed"),
         (outside.ref, "consolidate"),
         (outside.ref, "embed"),
-        (reply.ref, "consolidate"),
         (document.ref, "consolidate"),
         (document.ref, "embed"),
     ]

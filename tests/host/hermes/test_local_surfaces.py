@@ -135,6 +135,98 @@ def test_a_gateway_platform_is_not_local_even_when_its_owner_is_called_local(her
         bind_hermes_identity("TEST-session-1", **_session(initialize_kwargs, "telegram"))
 
 
+@pytest.mark.parametrize("user_id", [None, "", "  "])
+def test_an_unnamed_scheduled_session_is_quiet_and_touches_no_memory(
+    hermes_home, initialize_kwargs, monkeypatch, caplog, user_id
+):
+    """All lifecycle hooks stay inert, including capture retries and compression, without an invented person."""
+    _binding, core = _install(hermes_home, initialize_kwargs)
+    provider = ScopeRecallHermesAdapter(core=core)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("TEST an unbound session must not call memory")
+
+    for port, names in (
+        (core, ("status", "recall", "recall_packet", "drain_worker")),
+        (core.storage, ("write",)),
+        (provider._writer, ("write",)),
+        (provider._retry, ("load_kept", "write_observed")),
+        (provider._binding, ("wake_worker",)),
+    ):
+        for name in names:
+            monkeypatch.setattr(port, name, forbidden)
+    caplog.set_level(logging.DEBUG, logger="scope_recall")
+    try:
+        provider.initialize("TEST-cron", **_session(initialize_kwargs, "cron", user_id=user_id))
+        assert "capability_gap:unbound_session" in provider.diagnostics.capability_gaps
+        for _ in range(2):
+            provider.on_turn_start(1, "TEST scheduled message")
+            provider.observe_pre_llm(session_id="TEST-cron", turn_id="TEST-turn", user_message="TEST scheduled message")
+            provider.observe_post_tool_call(tool_name="TEST-tool", result="TEST result")
+            provider._observe_post_tool_call(tool_name="TEST-tool", result="TEST result")
+            provider.observe_post_llm_call(response="TEST answer")
+            provider.observe_api_request_error(error="TEST error")
+            assert provider.prefetch("TEST query") == ""
+            provider.queue_prefetch("TEST query")
+            provider.sync_turn("TEST scheduled message", "TEST answer")
+            provider.on_memory_write("add", "TEST-memory", "TEST content")
+            assert provider.on_pre_compress([]) == ""
+            provider.on_session_end([])
+            provider.on_session_switch("TEST-compressed-cron", reason="compression")
+        assert not _warnings(caplog)
+        notices = [record for record in caplog.records if "unbound_session" in record.getMessage()]
+        assert len(notices) == 1 and notices[0].levelno == logging.DEBUG
+        assert provider._identity is None and provider._host_runtime is None
+        with sqlite3.connect(core.storage.path) as connection:
+            assert connection.execute("SELECT count(*) FROM source_events").fetchone()[0] == 0
+        assert not (hermes_home / "scope-recall" / "unbound-sessions").exists()
+    finally:
+        provider.shutdown()
+
+
+def test_an_unnamed_scheduled_session_does_not_hide_an_invalid_agent(hermes_home, initialize_kwargs):
+    _binding, core = _install(hermes_home, initialize_kwargs)
+    provider = ScopeRecallHermesAdapter(core=core)
+    try:
+        bad = dict(_session(initialize_kwargs, "cron"), agent_identity="TEST-other-agent")
+        with pytest.raises(HermesIdentityError, match="agent_identity conflict"):
+            provider.initialize("TEST-cron", **bad)
+    finally:
+        provider.shutdown()
+
+
+def test_an_unnamed_scheduled_session_cannot_borrow_an_earlier_users_identity(hermes_home, initialize_kwargs):
+    _binding, core = _install(hermes_home, initialize_kwargs, platform="cli", user_id="TEST-user")
+    provider = ScopeRecallHermesAdapter(core=core)
+    try:
+        provider.initialize("TEST-human", **initialize_kwargs)
+        provider.initialize("TEST-cron", **_session(initialize_kwargs, "cron"))
+        with pytest.raises(HermesIdentityError, match="adapter is not initialized"):
+            provider._require_identity()
+        provider.sync_turn("TEST scheduled message", "TEST answer")
+        assert provider.prefetch("TEST query") == ""
+        with sqlite3.connect(core.storage.path) as connection:
+            assert connection.execute("SELECT count(*) FROM source_events").fetchone()[0] == 0
+    finally:
+        provider.shutdown()
+
+
+def test_a_named_session_can_bind_after_an_unnamed_scheduled_session(hermes_home, initialize_kwargs):
+    _binding, core = _install(hermes_home, initialize_kwargs, platform="cli", user_id="TEST-user")
+    provider = ScopeRecallHermesAdapter(core=core)
+    try:
+        provider.initialize("TEST-cron", **_session(initialize_kwargs, "cron"))
+        provider.initialize("TEST-human", **initialize_kwargs)
+        assert provider._identity.scope.user_id == "TEST-user"
+        assert not provider._identity.read_only
+        assert "capability_gap:unbound_session" not in provider.diagnostics.capability_gaps
+        provider.sync_turn("TEST 本人选择蓝色。", "TEST 好的。")
+        with sqlite3.connect(core.storage.path) as connection:
+            assert connection.execute("SELECT count(*) FROM source_events").fetchone()[0] > 0
+    finally:
+        provider.shutdown()
+
+
 def test_a_login_on_an_approved_surface_is_a_user_like_any_other(hermes_home, initialize_kwargs):
     """The host passes a dashboard login as ``<provider>:<user>``.  That is a named user: no fallback,
     not the local owner's route, and no scope unless an owner principal or an audience names it."""

@@ -58,6 +58,10 @@ class LocalSurfaceUnapproved(HermesIdentityError):
         self.entry_id = entry_id
 
 
+class SessionUnbound(HermesIdentityError):
+    """A scheduled session names no person; binding is refused without a substitute principal."""
+
+
 def _scope_component(label: str, value: str) -> str:
     return f"{label}:{len(value)}:{value}"
 
@@ -86,6 +90,8 @@ def _normalize_user_id(
     # else it is nobody's, and is refused.
     if resolved or platform == "cli" or platform in local_platforms:
         return resolved or LOCAL_USER_ID
+    if platform == "cron":
+        raise SessionUnbound("user principal required for non-cli platform")
     if platform not in LOCAL_PLATFORMS:
         raise HermesIdentityError("user principal required for non-cli platform")
     raise LocalSurfaceUnapproved(
@@ -459,6 +465,9 @@ def bind_hermes_identity(session_id: str, **kwargs: object) -> HermesIdentity:
         raise HermesIdentityError("session_id is required")
 
     platform = _normalize_platform(kwargs.get("platform"))
+    # An inactive scheduled session is not an excuse to hide another agent's
+    # identity or an unsupported context behind its missing user.
+    agent_identity, agent_workspace, agent_context = _agent_fields(kwargs, manifest)
     local_platforms = approved_local_platforms(manifest.owner_principals)
     conversation = _transport_conversation(platform, kwargs)
     if conversation and _names_this_account(kwargs.get("user_id")):
@@ -470,7 +479,6 @@ def bind_hermes_identity(session_id: str, **kwargs: object) -> HermesIdentity:
         user_id = _normalize_user_id(
             platform, kwargs.get("user_id"), kwargs.get("user_id_alt"), manifest, local_platforms
         )
-    agent_identity, agent_workspace, agent_context = _agent_fields(kwargs, manifest)
     if conversation:
         chat_type, chat_id, thread_id = _conversation_route(platform, user_id)
     else:

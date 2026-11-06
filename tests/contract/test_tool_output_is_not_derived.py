@@ -10,12 +10,16 @@ covers the claims derived before the rule.
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 
 import pytest
-from scope_recall.core.admission import AdmissionDecision, store_decision
+from scope_recall.core.admission import AdmissionDecision, store_decision, wanted_work_types
+from scope_recall.core.memory_import import ImportRecord, import_record
+from test_autonomous_admission import app_at, complete_work
 from test_candidate_lifecycle import Evaluator, _candidate_rows, _finish_source_work
 from test_claims import app, capture, draft  # noqa: F401 - app is a fixture
 from test_worker import Clock, FakeConsolidation, consolidation_payload, procedure_proposal
+from v11_support import source_event
 
 
 @pytest.fixture
@@ -33,11 +37,12 @@ def _queued(core, ref):
         ]
 
 
-def test_a_tool_output_is_embedded_and_never_shown_to_the_consolidation_model(worker_app):
+@pytest.mark.parametrize("origin", ["tool_observation", "assistant_visible", "host_generated"])
+def test_a_non_root_source_is_embedded_and_never_shown_to_the_consolidation_model(worker_app, origin):
     core, ctx = worker_app
     said = capture(core, ctx, "TEST 以后导出前先检查透明背景，这是我的决定。")
-    # "失败" raises a tool output's priority; it still earns an embedding only.
-    read = capture(core, ctx, "TEST 导出失败：透明背景未检查，exit=1", origin="tool_observation")
+    # Priority changes queue access, never whether an agent source can derive a claim.
+    read = capture(core, ctx, "TEST 导出失败：透明背景未检查，exit=1", origin=origin)
     assert _queued(core, read.ref) == ["embed"]
     assert _queued(core, said.ref) == ["consolidate", "embed"]
     shown = []
@@ -52,9 +57,10 @@ def test_a_tool_output_is_embedded_and_never_shown_to_the_consolidation_model(wo
     assert f"{read.ref}@{read.revision}" not in shown and f"{said.ref}@{said.revision}" in shown
 
 
-def test_a_consolidation_queued_before_the_change_finishes_without_a_model_call(worker_app):
+@pytest.mark.parametrize("origin", ["tool_observation", "assistant_visible", "host_generated"])
+def test_a_consolidation_queued_before_the_change_is_obsolete_without_a_model_call(worker_app, origin):
     core, ctx = worker_app
-    read = capture(core, ctx, "TEST 目录里有 42 个文件。", origin="tool_observation")
+    read = capture(core, ctx, "TEST 目录里有 42 个文件。", origin=origin)
     with core.storage.write(ctx, remaining_seconds=10) as tx:
         tx.sources.enqueue_source(read.ref, read.revision, work_type="consolidate", available_at=core.clock.utc_now())
     model = FakeConsolidation(
@@ -62,17 +68,24 @@ def test_a_consolidation_queued_before_the_change_finishes_without_a_model_call(
     )
     core.drain_worker(ctx, consolidation=model, max_items=8, remaining_seconds=10)
     with sqlite3.connect(core.storage.path) as conn:
-        state = conn.execute(
-            "SELECT state FROM work_items WHERE subject_ref=? AND work_type='consolidate'", (read.ref,)
-        ).fetchone()[0]
-    assert (state, model.calls) == ("done", 0)
+        state, error, work_id = conn.execute(
+            "SELECT state,last_error_code,work_id FROM work_items WHERE subject_ref=? AND work_type='consolidate'",
+            (read.ref,),
+        ).fetchone()
+        reason = conn.execute("SELECT error_code FROM work_error_details WHERE work_id=?", (work_id,)).fetchone()[0]
+    # The terminal work code retains its compatibility contract; the detail says
+    # why the source is ineligible without pretending it was deleted or suppressed.
+    assert (state, error, model.calls) == ("obsolete", "authority_revoked", 0)
+    assert reason == "no_derivation_root"
+    assert core.source(ctx, read.ref, read.revision).event["content"] == read.event["content"]
     with core.storage.read(ctx) as tx:
         assert not tx.claims.list_refs(predicate="导出方法")
 
 
-def test_a_deferred_tool_output_settles_on_refill_without_a_consolidation(worker_app):
+@pytest.mark.parametrize("origin", ["tool_observation", "assistant_visible", "host_generated"])
+def test_a_deferred_non_root_source_settles_on_refill_without_a_consolidation(worker_app, origin):
     core, ctx = worker_app
-    read = capture(core, ctx, "TEST 构建日志第 42 行。", origin="tool_observation")
+    read = capture(core, ctx, "TEST 构建日志第 42 行。", origin=origin)
     with core.storage.write(ctx, remaining_seconds=10) as tx:
         store_decision(tx, read.ref, read.revision, AdmissionDecision("deferred", "queue_capacity", False))
     resumed = core.records.resume_deferred(ctx, remaining_seconds=10)
@@ -81,6 +94,67 @@ def test_a_deferred_tool_output_settles_on_refill_without_a_consolidation(worker
     assert _queued(core, read.ref) == ["embed"]
     receipt = core.records.schedule_source(ctx, read.ref, read.revision, remaining_seconds=10)
     assert receipt.queued_work == 0 and _queued(core, read.ref) == ["embed"]
+
+
+@pytest.mark.parametrize("origin", ["human_direct", "external_document"])
+def test_derivation_roots_keep_their_derived_work(origin):
+    assert wanted_work_types({"origin": origin, "role": "document"}) == {"consolidate", "embed"}
+
+
+@pytest.mark.parametrize(
+    ("role", "original", "expected"),
+    [
+        ("tool", "tool_observation", {"embed"}),
+        ("assistant", "assistant_visible", {"embed"}),
+        ("user", "human_direct", {"consolidate", "embed"}),
+    ],
+)
+def test_imported_sources_are_scheduled_by_original_origin(worker_app, role, original, expected):
+    core, ctx = worker_app
+    event = source_event(
+        source_event_key="TEST-imported",
+        origin="imported",
+        role=role,
+        source_original_origin=original,
+        content="TEST substantive imported message",
+    )
+    assert wanted_work_types(event) == expected
+    saved = core.record_event(replace(ctx, actor_origin="imported"), event, scope_id="TEST-scope", remaining_seconds=10)
+    assert set(_queued(core, saved.event_refs[0].ref)) == expected
+
+
+def test_import_record_preserves_human_derived_work(worker_app):
+    core, ctx = worker_app
+    item = ImportRecord("TEST-human", "TEST substantive human message", "user", original_origin="human_direct")
+    saved = import_record(core, ctx, item, source="chatgpt", source_id="TEST-account", scope_id="TEST-scope")
+    assert set(_queued(core, saved.event_refs[0].ref)) == {"consolidate", "embed"}
+
+
+@pytest.mark.parametrize("original", ["tool_observation", "assistant_visible"])
+def test_deferred_imported_non_root_does_not_hold_refill_page(tmp_path, original):
+    from scope_recall.core.admission import AdmissionPolicy
+    from test_autonomous_admission import capture as admission_capture
+
+    core, ctx = app_at(tmp_path, AdmissionPolicy(max_pending_work=2, important_reserve=0))
+    admission_capture(core, ctx, "TEST-fill", "TEST fills both work queues")
+    event = source_event(
+        source_event_key="TEST-import",
+        origin="imported",
+        role="tool" if original == "tool_observation" else "assistant",
+        source_original_origin=original,
+        content="TEST imported substantive source",
+    )
+    saved = core.record_event(replace(ctx, actor_origin="imported"), event, scope_id="TEST-scope", remaining_seconds=10)
+    assert saved.admission == ("admission_deferred:queue_capacity",)
+    complete_work(core, ctx, core.clock, allowed_work_types=frozenset({"consolidate"}))
+    assert core.records.resume_deferred(ctx, limit=1, remaining_seconds=10) == ()
+    assert _queued(core, saved.event_refs[0].ref) == []
+    complete_work(core, ctx, core.clock, allowed_work_types=frozenset({"embed"}))
+    resumed = core.records.resume_deferred(ctx, limit=1, remaining_seconds=10)
+    assert [(item.ref, item.disposition) for item in resumed] == [(saved.event_refs[0].ref, "scheduled")]
+    assert _queued(core, saved.event_refs[0].ref) == ["embed"]
+    later = admission_capture(core, ctx, "TEST-later", "TEST another human message")
+    assert _queued(core, later.event_refs[0].ref) == ["consolidate"]
 
 
 # --- the evaluator: the other path by which a claim version is written automatically ---------

@@ -4,8 +4,8 @@ A line or two per release.  Each release's full notes are on its GitHub release 
 
 ## [4.0.1.dev1] - 2026-11-04
 
-Development source; no package release. Empty or whitespace-only HTTP 200 responses use bounded upstream recovery while preserving uncertain billing reservations and duplicate-execution fences.
-Hermes notices retain their trusted host origin across display timestamps and later human steers; human messages keep their own origin and are captured once. No schema or configuration change is required.
+Development source; no package release. Empty or whitespace-only HTTP 200 responses use bounded upstream recovery while preserving uncertain billing reservations and duplicate-execution fences. Hermes notices retain their trusted host origin across display timestamps and later human steers; human messages keep their own origin and are captured once.
+Non-root sources, including imports classified by their original origin, keep their embeddings without starting consolidation, and old ineligible consolidation work becomes obsolete. Waiting candidates cannot use tool or assistant echoes as new first-hand restatements. OpenAI-compatible embedding routes accept a valid total-only token count while retaining reservations for unknown usage. Scheduled Hermes sessions with no user stay inactive, report a diagnostic gap and no longer fail on every lifecycle hook; other identity failures remain errors. No schema or configuration change is required.
 
 ## [4.0.0] - 2026-11-04
 

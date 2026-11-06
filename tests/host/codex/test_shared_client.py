@@ -66,7 +66,8 @@ def store(tmp_path):
         )
         homes[name] = home
     owner = next(row for row in read_shared_payload(root)["entries"][0]["audiences"] if row["kind"] == "owner_private")
-    client = tmp_path / "TEST-claude-code-home"
+    # Pending markers add two random suffixes; leave room within native Windows path limits.
+    client = tmp_path / "TEST-cc-home"
     attach_shared_record(
         root,
         client_entry_record(

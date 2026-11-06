@@ -125,12 +125,32 @@ def build_openai_embed_body(
 
 
 def _embedding_usage(payload: Mapping[str, Any], *, dialect: str) -> dict[str, int] | None:
+    """Read a non-negative integer count without turning an unknown count into zero.
+
+    OpenAI-compatible embedding APIs usually report ``prompt_tokens`` but some
+    routes, including Voyage, expose only ``total_tokens``.  An explicit prompt
+    count remains authoritative; a malformed explicit field makes the usage
+    unusable instead of silently switching fields.
+    """
     if dialect == "gemini":
         metadata, key = payload.get("usageMetadata"), "promptTokenCount"
-    else:
-        metadata, key = payload.get("usage"), "prompt_tokens"
-    if isinstance(metadata, dict) and type(metadata.get(key)) is int:
-        return {"promptTokenCount": metadata[key]}
+        if isinstance(metadata, dict):
+            count = metadata.get(key)
+            if type(count) is int and count >= 0:
+                return {"promptTokenCount": count}
+        return None
+
+    metadata = payload.get("usage")
+    if not isinstance(metadata, dict):
+        return None
+    if "prompt_tokens" in metadata:
+        prompt = metadata["prompt_tokens"]
+        if type(prompt) is int and prompt >= 0:
+            return {"promptTokenCount": prompt}
+        return None
+    total = metadata.get("total_tokens")
+    if type(total) is int and total >= 0:
+        return {"promptTokenCount": total}
     return None
 
 

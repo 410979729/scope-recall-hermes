@@ -25,7 +25,7 @@ from .consolidation_chunks import source_chunk
 from .consolidation_summary import resume_seed
 from .entry_control import sources_paused, sources_paused_now
 from .episodes import source_origin, source_watermark
-from .evidence_question import DERIVATION_ROOT_ORIGINS
+from .evidence_question import DERIVATION_ROOT_ORIGINS, NO_DERIVATION_ROOT_REASON
 from .evidence_quote import align_claim_evidence
 from .evidence_support import using_support
 from .failure_policy import failure_category
@@ -493,13 +493,23 @@ def process_consolidate(
             state = tx.work.read_state(item.work_id) or "stale"
             return "stale", "authority_revoked" if state == "obsolete" else None, state
         checkpoint = adoption_checkpoint(tx, item.work_id)
-        read = _read_batch(tx, item, clock) if checkpoint is None else None
         source = tx.source(item.subject_ref, item.subject_revision)
+        # Old queues may hold work that admission no longer creates. Do not let
+        # such a subject consolidate neighbouring roots on its behalf. A started
+        # adoption has its own durable fences and must retain its continuation.
+        rootless_source = (
+            checkpoint is None and source is not None and source_origin(source) not in DERIVATION_ROOT_ORIGINS
+        )
+        read = _read_batch(tx, item, clock) if checkpoint is None and not rootless_source else None
         entry_paused = source is not None and sources_paused(tx, (source,))
     if entry_paused:
         return hold_for_entry_state(storage, clock, context, item, started=started, budget=budget)
     if checkpoint is not None:
         return process_adoption(storage, clock, context, item, checkpoint, model, started=started, budget=budget)
+    if rootless_source:
+        return finalize_work(
+            storage, clock, context, item, "obsolete", NO_DERIVATION_ROOT_REASON, started=started, budget=budget
+        )
     return _process_ordinary(
         storage, clock, context, item, (read, feedback), model=model, started=started, budget=budget
     )

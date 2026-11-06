@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from ..contracts import ContractError
 from .candidate_debounce import parse_stamp, settle_reason, slowed_until
 from .candidate_lifecycle import CandidateSnapshot
-from .evidence_question import DERIVATION_ROOT_ORIGINS, question_digest, restates
+from .evidence_question import DERIVATION_ROOT_ORIGINS, evidence_text, is_first_hand, question_digest, restates
 
 #: Characters of evidence content one candidate evaluation may carry.
 #:
@@ -290,21 +290,21 @@ class CandidateTables:
         return len(rows), frozenset(judged)
 
     def _restated_in_unjudged(self, payload, refs, judged: frozenset[tuple[str, int]]) -> bool:
-        """Whether a source no earlier verdict saw restates the candidate."""
+        """Whether first-hand testimony no earlier verdict saw restates the candidate.
+
+        A new human source can change the question while an unjudged tool or agent
+        echo carries the value. That echo cannot supply the restatement itself;
+        verified imports must retain their effective origin at this gate too.
+        """
         unjudged = []
         for ref, revision in refs:
             if (ref, revision) in judged:
                 continue
-            row = (
-                self._read()
-                .execute(
-                    "SELECT content FROM source_events WHERE event_id=? AND source_revision=?",
-                    (ref, revision),
-                )
-                .fetchone()
-            )
-            if row is not None:
-                unjudged.append(row["content"])
+            source = self._tx.source(ref, revision)
+            if source is not None:
+                text = evidence_text(source)
+                if is_first_hand(text.origin):
+                    unjudged.append(text.content)
         return bool(unjudged) and restates(payload, unjudged)
 
     def _candidate_of(self, evaluation_id: int) -> tuple[str, int] | None:

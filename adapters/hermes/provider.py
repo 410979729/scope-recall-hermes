@@ -37,13 +37,32 @@ _log = logging.getLogger(__name__)
 _CAPTURE_DRAIN_WAIT_S = 10.0
 
 
+def _participating_session(*, empty=None):
+    """Skip hooks only for an explicitly unbound session, preserving each hook's empty return value.
+
+    Other initialization failures still reach the normal identity checks. A hook
+    cannot borrow an earlier session's identity or replay its captures here.
+    """
+
+    def decorate(method):
+        @wraps(method)
+        def guarded(self, *args, **kwargs):
+            if self._unbound_session:
+                return empty
+            return method(self, *args, **kwargs)
+
+        return guarded
+
+    return decorate
+
+
 def _serialized_host_event(method):
     @wraps(method)
     def guarded(self, *args, **kwargs):
         with self._lock, self._calls.holding(method.__name__):
             return method(self, *args, **kwargs)
 
-    return guarded
+    return _participating_session()(guarded)
 
 
 def _memory_provider_base():
@@ -150,6 +169,9 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         #: What the last worker launch attempt added to capability_gaps.
         self._worker_launch_gaps: tuple[str, ...] = ()
         self._initialized = False
+        #: A valid installation's scheduled session with no person behind it.
+        #: Keep it distinct from a failed initialization: only this case is quiet.
+        self._unbound_session = False
         #: Which call holds ``_lock``, since when, on which thread: read without the lock, to say what a call that
         #: could not wait was waiting for.
         self._holder: tuple[str, float, int] | None = None
@@ -196,7 +218,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         self._binding.bind(session_id, **kwargs)
 
     def _require_identity(self) -> HermesIdentity:
-        if self._identity is None or not self._initialized:
+        if self._unbound_session or self._identity is None or not self._initialized:
             raise HermesIdentityError("adapter is not initialized")
         return self._identity
 
@@ -223,6 +245,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         merged = tuple(dict.fromkeys(values))[-128:]
         self._diagnostics.pending_outcome_gaps = merged
 
+    @_participating_session(empty="")
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """The turn's automatic recall (``Prefetch.recall``)."""
         return self._prefetch.recall(query, session_id=session_id)
@@ -243,6 +266,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
     def observe_post_tool_call(self, **kwargs) -> None:
         self._turns.tool_result(**kwargs)
 
+    @_participating_session()
     def _observe_post_tool_call(self, **kwargs) -> None:
         """A tool result, for ``hooks``, which holds ``_lock`` exactly once (``TurnCapture.tool_result``)."""
         self._turns.tool_result(**kwargs)
@@ -251,9 +275,11 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
     def observe_api_request_error(self, **kwargs) -> None:
         self._turns.request_error(**kwargs)
 
+    @_participating_session()
     def observe_post_llm_call(self, **kwargs) -> None:
         self._turns.post_llm(**kwargs)
 
+    @_participating_session()
     def sync_turn(
         self,
         user_content: str,
@@ -273,6 +299,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
 
         record_memory_write(self, action, target, content, metadata)
 
+    @_participating_session()
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         # One capture pass (``steer_deadline``) for the steers and the retry inside ``end``. The steers' store
         # I/O runs without the lock; ``end`` then holds it, serialized with shutdown, and never drains. The worker
@@ -297,6 +324,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             new_session_id, parent_session_id=parent_session_id, reset=reset, rewound=rewound, **kwargs
         )
 
+    @_participating_session(empty="")
     def on_pre_compress(self, messages: List[Dict[str, Any]], **kwargs) -> str:
         # One budget for the hook's captures: what the retry pass leaves of it is the steers'.
         deadline = steer_deadline()

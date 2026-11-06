@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pytest
 from scope_recall.core.candidate_lifecycle import candidate_name_matches
+from scope_recall.core.claims import Qualification
 
 from tests.contract.test_candidate_lifecycle import (  # noqa: F401  (fixture)
     Evaluator,
@@ -16,6 +17,7 @@ from tests.contract.test_candidate_lifecycle import (  # noqa: F401  (fixture)
     _finish_source_work,
     app,
 )
+from tests.contract.test_claims import capture, draft
 
 
 def _verdict(core, ctx, *, candidate_predicate=None, **changes):
@@ -33,6 +35,29 @@ def test_a_predicate_shortened_to_its_first_word_still_settles_the_candidate(app
     current, evaluation, work = _verdict(core, ctx, candidate_predicate="prefers blue paint", predicate="prefers")
     assert work["state"] == "done" and evaluation["state"] == "resolved"
     assert current.state == "active" and current.payload["predicate"] == "prefers blue paint"
+
+
+def test_a_chinese_demonstrative_echo_settles_the_original_candidate(app):
+    """The request fixes identity; a longer Chinese echo must not spend four retries on its spelling."""
+    core, ctx = app
+    subject, predicate = "自动处理通知消息的cron", "增加相应能力"
+    source = capture(core, ctx, f"{subject} {predicate} 蓝色。")
+    proposal = draft(source, "蓝色", subject=subject, predicate=predicate)
+    with core.storage.write(ctx) as tx:
+        saved = tx.claims.append(
+            "TEST-scope",
+            proposal,
+            Qualification("proposed", "inferred_suggestion", "TEST_candidate"),
+            recorded_at=core.clock.utc_now(),
+        )
+        tx.candidates.register(saved.ref, saved.revision, observed_at=core.clock.utc_now())
+    _finish_source_work(core)
+    evaluator = Evaluator({**proposal, "subject": "配套的自动处理通知消息的那个cron"})
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    current = core.current_claim(ctx, saved.ref)
+    _lifecycle, evaluations, work = _candidate_rows(core)
+    assert (current.state, current.payload["subject"], current.payload["predicate"]) == ("active", subject, predicate)
+    assert (evaluations[0]["state"], work[0]["state"], evaluator.calls) == ("resolved", "done", 1)
 
 
 def test_a_predicate_without_its_subject_s_words_still_settles_the_candidate(app):

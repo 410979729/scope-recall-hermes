@@ -69,20 +69,35 @@ def test_late_leased_subject_is_in_its_actual_batch(worker_app):
 
 def test_expired_no_root_worker_cannot_ack_siblings(worker_app):
     core, ctx, clock = worker_app
-    for i in range(4):
-        capture(core, ctx, f"TEST nonroot {i}", key=f"nonroot/{i}", origin="assistant_visible")
+    sources = [
+        capture(core, ctx, f"TEST nonroot {i}", key=f"nonroot/{i}", origin="assistant_visible") for i in range(4)
+    ]
     _mark_embed_done(core)
     with core.storage.write(ctx) as tx:
+        # Simulate consolidation work persisted before non-root admission stopped creating it.
+        for source in sources:
+            assert tx.work.enqueue("consolidate", source.ref, source.revision, available_at=clock.utc_now())
         old = tx.work.claim_next("old-worker", clock.utc_now(), lease_seconds=0.001)[0]
     clock.advance(seconds=1, iso="2026-09-06T12:00:01Z")
     with core.storage.write(ctx) as tx:
-        tx.work.claim_next("new-worker", clock.utc_now(), lease_seconds=60)
+        new = tx.work.claim_next("new-worker", clock.utc_now(), lease_seconds=60)[0]
     before = _snapshot(core)
     from scope_recall.core.worker_consolidation import process_consolidate
 
-    result = process_consolidate(core.storage, clock, ctx, old, model=None, started=clock.monotonic(), budget=30)
+    tracker = BatchTracker()
+    result = process_consolidate(core.storage, clock, ctx, old, model=tracker, started=clock.monotonic(), budget=30)
     assert result[0] == "stale"
     assert _snapshot(core) == before
+    result = process_consolidate(core.storage, clock, ctx, new, model=tracker, started=clock.monotonic(), budget=30)
+    assert result == ("obsolete", "no_derivation_root", "obsolete")
+    assert tracker.calls == 0
+    states = dict(_consolidate_states(core))
+    assert states[new.subject_ref] == "obsolete"
+    assert all(states[source.ref] == "pending" for source in sources if source.ref != new.subject_ref)
+    with sqlite3.connect(core.storage.path) as conn:
+        assert conn.execute("SELECT error_code FROM work_error_details WHERE work_id=?", (new.work_id,)).fetchone() == (
+            "no_derivation_root",
+        )
 
 
 @pytest.mark.parametrize("state", ["failed", "leased"])
@@ -237,14 +252,21 @@ def test_unrelated_capture_before_no_root_completion_still_completes(worker_app,
     from scope_recall.core.worker_consolidation import process_consolidate
 
     with original_write(ctx) as tx:
+        assert tx.work.enqueue("consolidate", original.ref, original.revision, available_at=core.clock.utc_now())
         item = tx.work.claim_next("TEST-no-root", core.clock.utc_now(), lease_seconds=60)[0]
+    tracker = BatchTracker()
     monkeypatch.setattr(core.storage, "write", capture_before_write)
     result = process_consolidate(
-        core.storage, core.clock, ctx, item, model=None, started=core.clock.monotonic(), budget=30
+        core.storage, core.clock, ctx, item, model=tracker, started=core.clock.monotonic(), budget=30
     )
     assert injected
-    assert result == ("completed", None, "done")
-    assert dict(_consolidate_states(core))[original.ref] == "done"
+    assert result == ("obsolete", "no_derivation_root", "obsolete")
+    assert tracker.calls == 0
+    assert dict(_consolidate_states(core))[original.ref] == "obsolete"
+    with sqlite3.connect(core.storage.path) as conn:
+        assert conn.execute(
+            "SELECT error_code FROM work_error_details WHERE work_id=?", (item.work_id,)
+        ).fetchone() == ("no_derivation_root",)
 
 
 # --- what still discards a result: a change to something it was derived from ---
@@ -806,10 +828,14 @@ def test_no_root_write_boundary_rechecks_the_lease(worker_app, monkeypatch):
     from scope_recall.core.worker_consolidation import process_consolidate
 
     core, ctx, clock = worker_app
-    for i in range(3):
+    sources = [
         capture(core, ctx, f"TEST write fence {i}", key=f"write-fence/{i}", origin="assistant_visible")
+        for i in range(3)
+    ]
     _mark_embed_done(core)
     with core.storage.write(ctx) as tx:
+        for source in sources:
+            assert tx.work.enqueue("consolidate", source.ref, source.revision, available_at=clock.utc_now())
         old = tx.work.claim_next("old-worker", clock.utc_now(), lease_seconds=60)[0]
     original_write = core.storage.write
     observed = {}
@@ -823,9 +849,11 @@ def test_no_root_write_boundary_rechecks_the_lease(worker_app, monkeypatch):
         with original_write(context, **kwargs) as tx:
             yield tx
 
+    tracker = BatchTracker()
     monkeypatch.setattr(core.storage, "write", steal_before_write)
-    result = process_consolidate(core.storage, clock, ctx, old, model=None, started=clock.monotonic(), budget=30)
+    result = process_consolidate(core.storage, clock, ctx, old, model=tracker, started=clock.monotonic(), budget=30)
     assert result[0] == "stale"
+    assert tracker.calls == 0
     assert _snapshot(core) == observed["rows"]
 
 
