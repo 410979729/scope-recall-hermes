@@ -705,6 +705,15 @@ class _Authority:
 
 def _revision_head(tx, request):
     """The current version of the claim a revision names, at the revision the request expects."""
+    if request["target_ref"].startswith("event-"):
+        raise ContractError(
+            "SOURCE_MISSING",
+            "target_ref",
+            hint=(
+                "这是原始消息记录，不能用 revise 修改。用户在对话里说出新值时无需调用任何工具；"
+                "请按新的说法回答，不要重试 revise 或直接编辑记忆库。"
+            ),
+        )
     history = tx.claims.versions(request["target_ref"])
     if not history:
         raise ContractError("SOURCE_MISSING")

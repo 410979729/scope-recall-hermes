@@ -21,6 +21,178 @@ from scope_recall.adapters.hermes.runtime_wiring import (
 from scope_recall.core.retrieval import MAX_CURRENT_SOURCE_REFS
 
 
+def _scoped_runtime(tmp_path, monkeypatch, *, responses=False):
+    from dataclasses import replace
+
+    from scope_recall.adapters.runtime_wiring import attach_trusted_host_runtime
+
+    from tests.contract.test_finite_supervisor import fixture
+    from tests.contract.test_runtime_auxiliary import _runtime_config
+
+    core, cfg, path = fixture(tmp_path)
+    auxiliary, _, _ = _runtime_config(tmp_path)
+    if responses:
+        from scope_recall.runtime.consolidation_models import ResponsesRouteConfig
+
+        auxiliary = replace(
+            auxiliary,
+            consolidation=ResponsesRouteConfig(
+                model="deepseek-v4-flash",
+                endpoint="https://example.test/v1/responses",
+                credential_env="SCOPE_RECALL_TEST_CHAT_KEY",
+                max_output_tokens=512,
+            ),
+        )
+    cfg = replace(cfg, auxiliary=auxiliary)
+    monkeypatch.setattr("scope_recall.adapters.runtime_wiring.load_config", lambda path: cfg)
+    secrets = {"SCOPE_RECALL_TEST_CHAT_KEY": "TEST-profile-chat", "SCOPE_RECALL_TEST_EMBED_KEY": "TEST-profile-embed"}
+    secret = Mock(side_effect=lambda name: secrets.get(name))
+    monkeypatch.setitem(sys.modules, "agent.secret_scope", SimpleNamespace(get_secret=secret))
+    for name in secrets:
+        monkeypatch.setenv(name, "TEST-other-profile")
+    host = attach_trusted_host_runtime(
+        config_path=path,
+        expected_binding=cfg.binding,
+        session_id=cfg.session_id,
+        allowed_scope_ids=cfg.allowed_scope_ids,
+        host_adapter="hermes",
+    )
+    return host, secrets, secret
+
+
+@pytest.mark.parametrize("responses", [False, True])
+def test_in_process_credentials_follow_the_active_hermes_profile(tmp_path, monkeypatch, responses):
+    from scope_recall.runtime.models import AuxiliaryModelError
+
+    host, secrets, secret = _scoped_runtime(tmp_path, monkeypatch, responses=responses)
+    runtime = host.runtime
+    sent = []
+
+    def post(url, **kwargs):
+        sent.append(kwargs["headers"])
+        raise AuxiliaryModelError("TEST-transport")
+
+    try:
+        runtime.auxiliary.consolidation._transport = SimpleNamespace(post=post)
+        runtime.auxiliary.query_embedding._query_transport = SimpleNamespace(post=post)
+        for value in ("TEST-profile-chat", "TEST-switched-profile-chat"):
+            secrets["SCOPE_RECALL_TEST_CHAT_KEY"] = value
+            with pytest.raises(AuxiliaryModelError, match="TEST-transport"):
+                runtime.auxiliary.consolidation.propose(
+                    [{"role": "user", "content": "TEST hello"}], remaining_seconds=5
+                )
+            assert sent[-1]["Authorization"] == f"Bearer {value}"
+        with pytest.raises(AuxiliaryModelError, match="TEST-transport"):
+            runtime.auxiliary.query_embedding.embed_query("TEST hello", remaining_seconds=5)
+        assert sent[-1]["x-goog-api-key"] == secrets["SCOPE_RECALL_TEST_EMBED_KEY"]
+        assert secret.call_count == 3
+    finally:
+        host.close()
+
+
+def test_hermes_scope_errors_never_fall_back_to_other_profile_environment(tmp_path, monkeypatch):
+    host, _, secret = _scoped_runtime(tmp_path, monkeypatch)
+    secret.side_effect = RuntimeError("TEST-unscoped-profile")
+    try:
+        with pytest.raises(RuntimeError, match="TEST-unscoped-profile"):
+            host.runtime.auxiliary.consolidation.propose(
+                [{"role": "user", "content": "TEST hello"}], remaining_seconds=5
+            )
+    finally:
+        host.close()
+
+
+def test_query_embedding_thread_keeps_the_hermes_profile_scope(tmp_path, monkeypatch):
+    from contextvars import ContextVar
+
+    from scope_recall.core.retrieval import SearchContext, SearchLimits
+    from scope_recall.runtime.instance import _LazyVectorPort
+
+    host, _, _ = _scoped_runtime(tmp_path, monkeypatch)
+    runtime = host.runtime
+    profile = ContextVar("TEST-profile", default="TEST-unscoped")
+    token = profile.set("TEST-active-profile")
+    clock = runtime.core.clock.monotonic
+    context = SearchContext(
+        "TEST hello",
+        "current",
+        None,
+        (),
+        SearchLimits(),
+        clock() + 5,
+        "2026-09-12T00:00:00Z",
+        runtime.config.context(),
+    )
+    port = _LazyVectorPort(runtime)
+    monkeypatch.setattr(runtime, "config", SimpleNamespace(vector=object()))
+    monkeypatch.setattr(
+        port, "_embedding_adapter", lambda: SimpleNamespace(_embed_query=lambda text, seconds: (profile.get(),))
+    )
+    try:
+        pending = port.prefetch_query(context)
+        assert pending.result(clock() + 5) == ("TEST-active-profile",)
+    finally:
+        profile.reset(token)
+        host.close()
+
+
+def test_standalone_attachment_falls_back_only_when_hermes_cannot_be_imported(tmp_path, monkeypatch):
+    from scope_recall.adapters import runtime_wiring
+
+    host, _, _ = _scoped_runtime(tmp_path, monkeypatch)
+    try:
+        monkeypatch.setattr(runtime_wiring, "import_module", Mock(side_effect=ImportError))
+        getter = runtime_wiring._host_credential_getter("hermes")
+        assert getter("SCOPE_RECALL_TEST_CHAT_KEY") == "TEST-other-profile"
+        assert runtime_wiring._host_credential_getter("codex") is None
+    finally:
+        host.close()
+
+
+def test_hermes_worker_receives_only_declared_profile_credentials(tmp_path, monkeypatch):
+    from scope_recall.adapters.runtime_wiring import launch_audience_worker
+    from scope_recall.runtime.worker_launch import launch_worker
+
+    host, secrets, secret = _scoped_runtime(tmp_path, monkeypatch)
+    secrets["TEST_UNDECLARED_SECRET"] = "TEST-not-for-worker"
+    del secrets["SCOPE_RECALL_TEST_CHAT_KEY"]
+    calls = []
+    popen = Mock(return_value=Mock(pid=12345))
+    monkeypatch.setattr("scope_recall.runtime.worker_launch.subprocess.Popen", popen)
+
+    def launch(path, **kwargs):
+        calls.append(kwargs)
+        try:
+            return launch_worker(path, **kwargs)
+        finally:
+            path.unlink()
+
+    try:
+        assert (
+            launch_audience_worker(
+                host,
+                session_id=host.runtime.config.session_id,
+                allowed_scope_ids=host.runtime.config.allowed_scope_ids,
+                launcher=launch,
+            )
+            == ()
+        )
+        assert calls[0]["environment"] == {
+            "SCOPE_RECALL_TEST_CHAT_KEY": "",
+            "SCOPE_RECALL_TEST_EMBED_KEY": "TEST-profile-embed",
+        }
+        child = popen.call_args.kwargs["env"]
+        assert child["SCOPE_RECALL_TEST_CHAT_KEY"] == ""
+        assert child["SCOPE_RECALL_TEST_EMBED_KEY"] == "TEST-profile-embed"
+        assert "TEST_UNDECLARED_SECRET" not in child
+        assert {call.args[0] for call in secret.call_args_list} == {
+            "SCOPE_RECALL_TEST_CHAT_KEY",
+            "SCOPE_RECALL_TEST_EMBED_KEY",
+        }
+    finally:
+        host.close()
+
+
 def _runtime_payload(binding, *, session_id: str, allowed_scope_ids) -> dict:
     return {
         "binding": {

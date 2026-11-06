@@ -15,7 +15,11 @@ WORKFLOW = Path(__file__).with_name("AGENT_WORKFLOW.md")
 
 
 def _selected_provider_without_binding(root: Path, host: str) -> bool:
-    """Keep orphaned configuration and receipts from silently selecting a fresh empty store."""
+    """Keep orphaned receipts and a legacy lancepro selection from silently selecting a fresh empty store.
+
+    A Hermes home that only selects scope-recall, with no database, manifest or receipt, holds a setup that never
+    finished: it is not routed here, so setup can run again from the start.
+    """
     if (root / RECEIPT_FILENAME).exists():
         return True
     if host != "hermes":
@@ -32,7 +36,7 @@ def _selected_provider_without_binding(root: Path, host: str) -> bool:
     if value is None:
         return False
     memory = value.get("memory", {}) if isinstance(value, dict) else None
-    return not isinstance(memory, dict) or memory.get("provider") in {"scope-recall", "lancepro"}
+    return not isinstance(memory, dict) or memory.get("provider") == "lancepro"
 
 
 def _empty_home_route(root: Path, host: str, result: dict) -> dict:

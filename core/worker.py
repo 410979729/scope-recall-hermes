@@ -67,8 +67,8 @@ __all__ = [
     "drain_worker",
 ]
 
-#: Work that waits on an auxiliary provider; purge and projection rebuilds never do.
-_HOLDABLE_WORK_TYPES = frozenset({"consolidate", "embed", "evaluate_candidate"})
+#: A credential gap also holds projection rebuilds because summaries and reflections share that lane.
+_HOLDABLE_WORK_TYPES = frozenset({"consolidate", "embed", "evaluate_candidate", "rebuild_projection"})
 #: Truncated source-trigger pages a pass continues before it claims work.  At
 #: one page a pass, a source matching a thousand candidates would take sixty
 #: passes, started back to back, each paying a whole pass to link sixteen of them.
@@ -115,7 +115,7 @@ class WorkerConfig:
     #: The bound consolidation and candidate-evaluation requests are clamped to instead, when the runtime gives
     #: them a longer one (``model_request_seconds``).  None: ``request_seconds``.
     model_request_seconds: float | None = None
-    #: Work types whose provider is on hold (runtime/model_budget.py): not
+    #: Work types whose provider or credential is unavailable: not
     #: claimed at all this pass, so no item is leased only to be parked.
     held_work_types: frozenset[str] = frozenset()
     summary_capable: bool = False
@@ -435,7 +435,12 @@ def _pass_work_types(
         storage, clock, context, config, started, budget, candidate_available=ports["evaluate_candidate"] is not None
     )
     unavailable = _queued_work_types(
-        storage, clock, context, started, budget, [kind for kind, port in ports.items() if port is None]
+        storage,
+        clock,
+        context,
+        started,
+        budget,
+        sorted({kind for kind, port in ports.items() if port is None} | config.held_work_types),
     )
     return _private_allowed(storage, clock, context, allowed, started, budget), unavailable
 

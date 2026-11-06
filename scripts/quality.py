@@ -326,8 +326,11 @@ def grown(recorded: dict, current: dict) -> list[str]:
 LAYERS = ("contracts", "core", "vector", "runtime", "adapters", "maintenance")
 #: The entry modules the installed hook and server command lines name: composition roots, free to import any layer.
 ENTRY_MODULES = frozenset(
-    f"adapters/codex/{name}.py"
-    for name in ("hook_entry", "mcp_entry", "remote_client", "remote_server", "resident_entry")
+    [
+        f"adapters/codex/{name}.py"
+        for name in ("hook_entry", "mcp_entry", "remote_client", "remote_server", "resident_entry")
+    ]
+    + ["adapters/hermes/register.py"]
 )
 #: The upward imports the layering keeps, each made in the function that needs it, never while its module loads.  A
 #: worker that replays a capture checks it against its host's current installation, which is the adapters' identity
@@ -335,6 +338,7 @@ ENTRY_MODULES = frozenset(
 #: front of it.
 LAZY_UPWARD = frozenset(
     {
+        ("adapters/hermes/register.py", "maintenance/setup.py"),
         ("runtime/worker_entry.py", "adapters/clients/ledger.py"),
         ("runtime/worker_entry.py", "adapters/clients/store_service.py"),
         ("runtime/instance.py", "adapters/clients/authorization.py"),

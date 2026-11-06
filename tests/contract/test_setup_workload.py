@@ -160,7 +160,9 @@ def test_hundred_turn_worker_cost_matches_setup_catalog(tmp_path, monkeypatch, r
 
     transport = FakeTransport(response)
     monkeypatch.setattr(
-        instance, "build_auxiliary_runtime", lambda config: build_auxiliary_runtime(config, transport=transport)
+        instance,
+        "build_auxiliary_runtime",
+        lambda config, **kwargs: build_auxiliary_runtime(config, transport=transport, **kwargs),
     )
     monkeypatch.setenv("TEST_COST_CREDENTIAL", "synthetic-placeholder")
     models = dict(

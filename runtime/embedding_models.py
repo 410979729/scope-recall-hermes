@@ -26,6 +26,7 @@ from .model_budget import AuxiliaryBudgetLedger
 from .models import (
     RESERVE_ENVELOPE_MARGIN,
     AuxiliaryModelError,
+    CredentialGetter,
     HttpsTransport,
     HttpsTransportPool,
     HttpTransport,
@@ -299,8 +300,10 @@ class GeminiEmbeddingAdapter:
         *,
         ledger: AuxiliaryBudgetLedger,
         transport: HttpTransport | None = None,
+        credential_getter: CredentialGetter | None = None,
     ) -> None:
         self._route = route
+        self._credential_getter = credential_getter
         self._ledger = ledger
         self._transport = (
             transport
@@ -445,7 +448,7 @@ class GeminiEmbeddingAdapter:
             # The provider refused the calls just before this one; asking again
             # now only adds a refusal (runtime/model_budget.py).
             raise AuxiliaryModelError("provider_hold")
-        key = load_credential(self._route.credential_env)
+        key = load_credential(self._route.credential_env, self._credential_getter)
         # Google authenticates with its own header; every OpenAI-compatible
         # provider uses bearer auth.
         auth = {"x-goog-api-key": key} if self._dialect == "gemini" else {"Authorization": f"Bearer {key}"}

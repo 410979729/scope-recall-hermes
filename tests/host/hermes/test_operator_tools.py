@@ -14,6 +14,29 @@ from scope_recall.adapters.hermes import ScopeRecallHermesAdapter, install_herme
 from scope_recall.adapters.installation import _build_audience_scope_ids
 
 
+def test_revise_original_event_returns_actionable_guidance(adapter):
+    provider, _clock = adapter
+    provider.on_turn_start(1, "TEST Atlas beta is March 17", turn_id="TEST-correction")
+    provider.observe_pre_llm(user_message="TEST Atlas beta is March 17", turn_id="TEST-correction")
+    ref = provider.diagnostics.current_source_refs[0]
+    result = json.loads(
+        provider.handle_tool_call(
+            "revise",
+            {
+                "protocol_version": "1.1",
+                "target_ref": ref,
+                "expected_revision": 1,
+                "new_value": "March 17",
+                "conditions": [],
+                "source_evidence_refs": [ref],
+                "valid_from": None,
+            },
+        )
+    )
+    assert result["error"]["code"] == "SOURCE_MISSING"
+    assert "不能" in result["error"]["hint"] and "无需调用任何工具" in result["error"]["hint"]
+
+
 def _payload(text: str, *, key: str) -> dict:
     return {
         "protocol_version": "1.1",

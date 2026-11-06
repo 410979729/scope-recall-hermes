@@ -19,7 +19,8 @@ from ..runtime.instance_config import RuntimeInstanceConfig
 from ..runtime.worker_entry import credential_environment, run_worker
 from .doctor import load_binding
 from .install_common import HostChoice
-from .shared import attach, init_shared
+from .install_hermes import profile_identity
+from .shared import attach, fresh_installation, init_shared
 
 MARKER = "amber-orchid"
 STATEMENT = "The synthetic bluebird project marker is amber-orchid."
@@ -41,7 +42,7 @@ def _client(home: Path, host: str, session: str, prompt: str) -> dict:
         )
 
 
-def _hermes(home: Path, session: str, prompt: str, *, capture: bool):
+def _hermes(home: Path, session: str, prompt: str, *, capture: bool, agent_identity: str):
     provider = ScopeRecallHermesAdapter()
     try:
         provider.initialize(
@@ -49,7 +50,7 @@ def _hermes(home: Path, session: str, prompt: str, *, capture: bool):
             hermes_home=str(home),
             platform="cli",
             agent_context="primary",
-            agent_identity="setup-check",
+            agent_identity=agent_identity,
             agent_workspace="hermes",
             user_id=LOCAL_USER_ID,
             parent_session_id="",
@@ -102,14 +103,45 @@ def verify_memory(parent: Path, host: HostChoice, source: dict, *, env_file: str
     """Run the host adapter and real worker on an independent synthetic store, then remove it."""
     from .setup_configuration import runtime_payload
 
-    root = parent.parent / ("setup-check-" + uuid.uuid4().hex)
+    if host == "hermes":
+        from ..adapters.hermes.identity import bind_hermes_identity
+
+        # Check the selected entry with the real host identity before probing a disposable store.
+        bind_hermes_identity(
+            "setup-check",
+            hermes_home=str(parent),
+            platform="cli",
+            user_id=LOCAL_USER_ID,
+            agent_identity=profile_identity(parent),
+            agent_workspace="hermes",
+        )
+
+    probe_parent = parent.parent
+    # Named profiles sit inside another home; disposable stores must be outside every host home.
+    for ancestor in parent.parents:
+        if (ancestor / "scope-recall").is_dir() or (ancestor / "codex-installation.json").is_file():
+            probe_parent = ancestor.parent
+    root = probe_parent / ("setup-check-" + uuid.uuid4().hex)
     root.mkdir(parents=True)
     try:
         store, home = root / "store", root / "host"
         init_shared(root=store, agent_id="setup-check", test_mode=True)
-        attach(host=host, instance_root=home, root=store, entry_id="setup-check", display_name="Setup check")
+        identity = profile_identity(parent)
+        grants = (
+            fresh_installation(home, {"agent_id": "setup-check", "test_mode": True}, identity)
+            if host == "hermes"
+            else None
+        )
+        attach(
+            host=host,
+            instance_root=home,
+            root=store,
+            entry_id="setup-check",
+            display_name="Setup check",
+            grants_from=grants,
+        )
         if host == "hermes":
-            _hermes(home, "setup-first", STATEMENT, capture=True)
+            _hermes(home, "setup-first", STATEMENT, capture=True, agent_identity=identity)
         else:
             _client(home, host, "setup-first", STATEMENT)
         binding, _directory = load_binding(host, home)
@@ -131,7 +163,7 @@ def verify_memory(parent: Path, host: HostChoice, source: dict, *, env_file: str
             code = run_worker(str(config_path), output=stream)
             worker = json.loads(stream.getvalue())
             answer = (
-                _hermes(home, "setup-second", QUESTION, capture=False)
+                _hermes(home, "setup-second", QUESTION, capture=False, agent_identity=identity)
                 if host == "hermes"
                 else _client(home, host, "setup-second", QUESTION)
             )

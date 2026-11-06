@@ -221,6 +221,9 @@ def _entry_view(store: Path, payload: dict[str, Any], record: Mapping[str, Any])
         entry_id=_entry_id(record.get("entry_id")),
         entry_name=_display_name(record.get("display_name")),
         entry_host=record["host"],
+        agent_identity=bounded_text(record["agent_identity"], field="agent_identity")
+        if "agent_identity" in record
+        else None,
         **fields,
     )
     validate_archive_fields(manifest, present=False, test_mode=payload["test_mode"])
@@ -314,6 +317,7 @@ def shared_entry_record(
         "entry_id": _entry_id(entry_id),
         "display_name": _display_name(display_name),
         "host": "hermes",
+        "agent_identity": source.agent_identity or source.agent_id,
         "home": str(source.hermes_home),
         "attached_at": bounded_text(attached_at, field="attached_at"),
         "scope_ids": mapped,

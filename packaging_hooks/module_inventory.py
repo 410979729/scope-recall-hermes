@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 from pathlib import Path
 
 from _version import manifest_version
@@ -172,15 +173,26 @@ def expected_allowlist(repo_root: Path | None = None) -> dict:
     }
 
 
-def stamped_manifest(text: str, version: str) -> str:
+def stamped_manifest(text: str, version: str, *, core_dependency: bool = False) -> str:
     """Stamp the host SemVer derived from the distribution version, preserving other fields."""
     lines = text.splitlines(keepends=True)
     for index, line in enumerate(lines):
         if line.startswith("version:"):
             ending = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
             lines[index] = f"version: {manifest_version(version)}{ending}"
-            return "".join(lines)
-    raise RuntimeError("plugin manifest has no version line")
+            break
+    else:
+        raise RuntimeError("plugin manifest has no version line")
+    stamped = "".join(lines)
+    pattern = r"(?m)^pip_dependencies:\r?\n(?:[ \t]+[^\n]*\n?)*"
+    if core_dependency or re.search(pattern, stamped):
+        dependency = f'pip_dependencies:\n  - "hermes-scope-recall[vectors]=={version}"\n'
+        stamped = (
+            re.sub(pattern, lambda _: dependency, stamped)
+            if re.search(pattern, stamped)
+            else stamped.rstrip("\n") + "\n" + dependency
+        )
+    return stamped
 
 
 def stale_version_files(repo_root: Path | None = None) -> dict[str, str]:
@@ -190,12 +202,8 @@ def stale_version_files(repo_root: Path | None = None) -> dict[str, str]:
     stale: dict[str, str] = {}
     for relative in PLUGIN_MANIFESTS:
         text = (root / relative).read_text(encoding="utf-8")
-        for line in text.splitlines():
-            if line.startswith("version:"):
-                found = line.split(":", 1)[1].strip()
-                if found != manifest_version(version):
-                    stale[relative] = found
-                break
+        if text != stamped_manifest(text, version, core_dependency=relative == "distribution/hermes/plugin.yaml"):
+            stale[relative] = "version or core dependency pin differs"
     listed = json.loads((root / "packaging" / "v11-module-allowlist.json").read_text(encoding="utf-8"))
     if listed.get("package_version") != version:
         stale["packaging/v11-module-allowlist.json"] = str(listed.get("package_version"))
@@ -210,7 +218,7 @@ def write_all(repo_root: Path | None = None) -> list[str]:
     for relative in PLUGIN_MANIFESTS:
         path = root / relative
         text = path.read_text(encoding="utf-8")
-        stamped = stamped_manifest(text, version)
+        stamped = stamped_manifest(text, version, core_dependency=relative == "distribution/hermes/plugin.yaml")
         if stamped != text:
             path.write_text(stamped, encoding="utf-8", newline="\n")
             changed.append(relative)

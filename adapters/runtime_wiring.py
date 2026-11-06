@@ -16,6 +16,7 @@ import threading
 import time
 from dataclasses import dataclass, field, replace
 from datetime import tzinfo
+from importlib import import_module
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -26,6 +27,7 @@ from scope_recall.core.storage import SQLiteStorage
 from scope_recall.runtime import worker_launch
 from scope_recall.runtime.instance import RuntimeInstance, build_runtime_instance
 from scope_recall.runtime.instance_config import RuntimeInstanceConfig
+from scope_recall.runtime.models import CredentialGetter
 from scope_recall.runtime.store_maintenance import store_upgrade_pending
 from scope_recall.runtime.worker_entry import load_config
 from scope_recall.runtime.worker_launch import EPHEMERAL_CONFIG_INFIX, RUNTIME_CONFIG_FILENAME
@@ -63,6 +65,9 @@ READ_VIEW_BUDGET_GUIDANCE = (
 #: it nothing about the difference a person cares about: a deletion takes the
 #: whole source message, and every other fact drawn from it, with the one named.
 REVISE_GUIDANCE = (
+    "When the user states a new value in conversation, no tool call is needed. "
+    "Use revise only when they explicitly ask to change a specific stored fact. "
+    "Original messages (event refs) cannot be revised; do not retry or edit storage. "
     "Correct or withdraw one remembered fact: writes a new version and keeps the "
     "old one as history (new_value null withdraws it). Refused unless the user's "
     "own latest message asks for it, contains the new value and names what is "
@@ -282,6 +287,16 @@ class TrustedHostRuntime:
             runtime.close()
 
 
+def _host_credential_getter(host_adapter: str | None) -> CredentialGetter | None:
+    """Use Hermes's active profile scope when available; standalone hosts keep their process environment."""
+    if host_adapter != "hermes":
+        return None
+    try:
+        return import_module("agent.secret_scope").get_secret
+    except ImportError:
+        return os.environ.get
+
+
 def attach_trusted_host_runtime(
     *,
     config_path: object,
@@ -315,7 +330,9 @@ def attach_trusted_host_runtime(
         project_id=project_id if project_id is not None else runtime_config.project_id,
         branch_id=branch_id if branch_id is not None else runtime_config.branch_id,
     )
-    runtime = build_runtime_instance(runtime_config)
+    runtime = build_runtime_instance(
+        runtime_config, credential_getter=_host_credential_getter(runtime_config.host_adapter)
+    )
     host = runtime_class(
         core=runtime.core,
         _runtime=runtime,
@@ -384,6 +401,22 @@ def _reap_lane(active, tail):
     return active, tail
 
 
+def _worker_credential_options(host: TrustedHostRuntime) -> dict:
+    """Pass only declared route credentials from the active Hermes scope through the child's environment."""
+    runtime = host._runtime
+    if host._host_adapter != "hermes" or runtime is None or runtime.auxiliary is None:
+        return {}
+    auxiliary = runtime.auxiliary
+    if not auxiliary.credential_envs:
+        return {}
+    # Empty values mask another profile's inherited key when this profile has none.
+    return {
+        "environment": {
+            name: auxiliary.credential_getter(name) or "" for name in set(auxiliary.credential_envs.values())
+        }
+    }
+
+
 def launch_audience_worker(
     host: TrustedHostRuntime,
     *,
@@ -436,6 +469,7 @@ def launch_audience_worker(
         since_last = now - host._last_worker_launch
         interval = runtime.config.worker_min_interval_seconds
         options = {"cleanup_config": True, "detach_output": True}
+        options.update(_worker_credential_options(host))
         if upgrade_only:
             options["upgrade_only"] = True
         if active is not None:

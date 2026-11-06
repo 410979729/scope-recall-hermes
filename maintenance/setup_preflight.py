@@ -11,6 +11,7 @@ import yaml
 from ..core.secret_patterns import structure_contains_secret_like_text
 from ..runtime.instance_config import RuntimeInstanceConfig, configuration_value
 from .doctor import load_binding
+from .hermes_config import provider_configuration
 from .install import plan_installation
 from .install_common import InstallError, InstallPlan, validate_write_path
 from .install_receipt import setup_receipts_directory
@@ -131,11 +132,15 @@ def check_plan(plan) -> list[str]:
             if row["host"] == "codex":
                 codex_catalog(Path(row["target"]), plan.user_root)
             elif row["host"] == "hermes":
+                from .setup_bindings import profile_repair
+
+                profile_repair(Path(row["home"]))
                 path = Path(row["home"]) / "config.yaml"
                 validate_write_path(path)
-                raw = yaml.safe_load(path.read_text("utf-8")) if path.is_file() else {}
-                if not isinstance(raw, dict) or not isinstance(raw.get("memory", {}), dict):
-                    raise InstallError("host memory configuration is not an object")
+                provider_configuration(path)
         except (InstallError, OSError, ValueError, TypeError, yaml.YAMLError) as exc:
-            conflicts.append("host preflight rejected configuration: " + type(exc).__name__)
+            conflicts.append(
+                "host preflight rejected configuration: "
+                + (str(exc) if isinstance(exc, InstallError) else type(exc).__name__)
+            )
     return conflicts

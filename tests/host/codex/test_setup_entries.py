@@ -99,7 +99,7 @@ providers = []
 ctx = SimpleNamespace(register_memory_provider=providers.append, register_hook=lambda *a, **kw: None)
 module.register(ctx)
 p = providers[0]
-kwargs = dict(hermes_home=str(home), platform="cli", agent_context="primary", agent_identity="scope-recall",
+kwargs = dict(hermes_home=str(home), platform="cli", agent_context="primary", agent_identity="default",
               agent_workspace="hermes", user_id="local", parent_session_id="")
 p.initialize("TEST-first", **kwargs)
 p.observe_pre_llm(session_id="TEST-first", turn_id="TEST-first-turn",

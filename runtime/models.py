@@ -28,6 +28,8 @@ RESERVE_ENVELOPE_MARGIN = 256
 MAX_CREDENTIAL_BYTES = 8192
 _ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
 
+CredentialGetter = Callable[[str], str | None]
+
 
 class AuxiliaryModelError(RuntimeError):
     def __init__(
@@ -424,9 +426,10 @@ def json_bytes(value: object) -> bytes:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
 
 
-def load_credential(env_name: str) -> str:
+def load_credential(env_name: str, credential_getter: CredentialGetter | None = None) -> str:
+    """Resolve and validate a named credential through the host's lookup, or the process environment."""
     validate_credential_env_name(env_name)
-    value = os.environ.get(env_name)
+    value = (credential_getter or os.environ.get)(env_name)
     if type(value) is not str:
         raise AuxiliaryModelError("credential_missing")
     value = value.strip()

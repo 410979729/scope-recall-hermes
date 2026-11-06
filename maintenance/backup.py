@@ -48,11 +48,15 @@ def adjacent_backup(path: Path) -> Path:
     backup = path.with_name(path.name + ".scope-recall-" + uuid.uuid4().hex + ".bak")
     with path.open("rb") as source:
         descriptor = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(descriptor, "wb") as target:
-            preserve_file_access(path, backup)
-            target.write(source.read())
-            target.flush()
-            os.fsync(target.fileno())
+        try:
+            with os.fdopen(descriptor, "wb") as target:
+                preserve_file_access(path, backup)
+                target.write(source.read())
+                target.flush()
+                os.fsync(target.fileno())
+        except BaseException:
+            backup.unlink()
+            raise
     return backup
 
 

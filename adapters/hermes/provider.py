@@ -115,6 +115,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         core: MemoryCore | None = None,
         host_runtime: TrustedHostRuntime | None = None,
         clock: Any | None = None,
+        setup: Any | None = None,
     ) -> None:
         self._lock = threading.RLock()
         self._brief_lock = threading.Lock()
@@ -129,6 +130,8 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         self._host_runtime = host_runtime
         self._core = host_runtime.core if host_runtime is not None else core
         self._clock = clock
+        # Registration supplies the operator workflow; runtime capture never imports maintenance.
+        self._setup = setup
         self._worker = AdapterWorker()
         self._ledger = SourceObservationLedger()
         self._outcomes = TurnOutcomeTracker()
@@ -203,7 +206,23 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
 
     def is_available(self) -> bool:
         if self._identity is None:
-            return True
+            from pathlib import Path
+
+            from .shared_entries import load_binding_for_home
+
+            try:
+                from hermes_constants import get_hermes_home  # pyright: ignore[reportMissingImports]
+            except ImportError:
+                import os
+
+                home = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
+            else:
+                home = get_hermes_home()
+            try:
+                manifest = load_binding_for_home(home)
+            except (HermesIdentityError, OSError, ValueError):
+                return False
+            return (manifest.data_directory / "memory.sqlite3").is_file()
         manifest_path = self._identity.manifest.data_directory / "installation.json"
         db_path = self._identity.manifest.data_directory / "memory.sqlite3"
         return manifest_path.is_file() and db_path.is_file()
@@ -211,7 +230,13 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
     def unavailable_reason(self) -> str:
         if self.is_available():
             return ""
-        return "scope-recall installation manifest or database is unavailable"
+        return "Scope Recall is not bound to a usable store; run hermes memory setup and select scope-recall."
+
+    def post_setup(self, hermes_home: str, config: dict) -> None:
+        """Let the host wizard run the ordinary noninteractive setup before activating the provider."""
+        if self._setup is None:
+            raise ValueError("Use the registered Scope Recall plugin with hermes memory setup.")
+        self._setup(hermes_home, config)
 
     def initialize(self, session_id: str, **kwargs) -> None:
         """Bind the session Hermes opens (``SessionBinding.bind``)."""
@@ -289,6 +314,8 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         messages: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         """Write the finished turn (``TurnCapture.sync``); one turn at a time, and a shutdown waits for it."""
+        if not self._initialized:
+            return
         with self._sync_lock:
             self._turns.sync(user_content, assistant_content, session_id=session_id, messages=messages)
 
@@ -301,6 +328,8 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
 
     @_participating_session()
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
+        if not self._initialized:
+            return
         # One capture pass (``steer_deadline``) for the steers and the retry inside ``end``. The steers' store
         # I/O runs without the lock; ``end`` then holds it, serialized with shutdown, and never drains. The worker
         # start in ``end`` keeps its own budget and is not this pass.
@@ -411,13 +440,3 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                 state["captures_still_writing"] = still_writing
             self._diagnostics.shutdown_state = state
             self._initialized = False
-
-
-def register_adapter(ctx: Any) -> ScopeRecallHermesAdapter:
-    from .hooks import register_capture_hooks, unsupported_host_fields
-
-    adapter = ScopeRecallHermesAdapter()
-    adapter._diagnostics.unsupported_fields = unsupported_host_fields()
-    ctx.register_memory_provider(adapter)
-    register_capture_hooks(ctx, adapter)
-    return adapter

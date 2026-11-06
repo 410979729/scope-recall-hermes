@@ -23,6 +23,7 @@ from .models import (
     MAX_CHAT_RESPONSE_BYTES,
     RESERVE_ENVELOPE_MARGIN,
     AuxiliaryModelError,
+    CredentialGetter,
     HttpsTransport,
     HttpTransport,
     json_bytes,
@@ -510,8 +511,10 @@ class _ConsolidationAdapter:
         ledger: AuxiliaryBudgetLedger,
         reserve_input: int,
         transport: HttpTransport | None = None,
+        credential_getter: CredentialGetter | None = None,
     ) -> None:
         self._route = route
+        self._credential_getter = credential_getter
         self._ledger = ledger
         self._reserve_input = reserve_input
         self._transport = (
@@ -528,7 +531,7 @@ class _ConsolidationAdapter:
             raise AuxiliaryModelError("timeout")
         if self._ledger.provider_hold_until(self._route.model) is not None:
             raise AuxiliaryModelError("provider_hold")
-        key = load_credential(self._route.credential_env)
+        key = load_credential(self._route.credential_env, self._credential_getter)
         return metered_post(
             ledger=self._ledger,
             settle=self._ledger.finish,

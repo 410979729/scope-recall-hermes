@@ -262,7 +262,8 @@ def plan_installation(options: InstallPlan) -> InstallPlan:
     adoptable = _adoptable(adapter, target, home_plugin, planned)
     keep = {normalized_path(path) for path in planned} | {norm for norm in owned if within(norm, target_norm)}
     # A host's own home holds the host's files; only a plugin directory is the installer's alone.
-    for path in _foreign_plugin_entries(target, keep) if not host_files else ():
+    host_owned = plan.host == "hermes" and install_hermes.host_owned_plugin(instance, target)
+    for path in _foreign_plugin_entries(target, keep) if not host_files and not host_owned else ():
         plan.conflicts.append(f"unrelated plugin file: {path}")
 
     plan.reuse_instance = adapter.config_path(instance).is_file()
@@ -527,8 +528,9 @@ def plan_uninstall(
 
     target_norm = normalized_path(target)
     wrapper_norms = {normalized_path(path) for path in adapter.instance_wrapper_files(instance)}
+    host_owned = plan.host == "hermes" and install_hermes.host_owned_plugin(instance, target)
     for norm, expected in owned.items():
-        if not (within(norm, target_norm) or norm in wrapper_norms):
+        if (host_owned and within(norm, target_norm)) or not (within(norm, target_norm) or norm in wrapper_norms):
             continue
         path = Path(norm)
         if not path.is_file():

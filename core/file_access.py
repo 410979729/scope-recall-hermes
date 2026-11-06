@@ -44,6 +44,8 @@ def preserve_file_access(source: Path, target: Path) -> None:
         pointer,
     ]
     api.SetNamedSecurityInfoW.restype = wintypes.DWORD
+    api.EqualSid.argtypes = [pointer, pointer]
+    api.EqualSid.restype = wintypes.BOOL
     kernel.LocalFree.argtypes = [pointer]
     kernel.LocalFree.restype = pointer
     owner, acl, descriptor = pointer(), pointer(), pointer()
@@ -60,14 +62,46 @@ def preserve_file_access(source: Path, target: Path) -> None:
     if status:
         raise ctypes.WinError(status)
     try:
+
+        def same_owner() -> bool:
+            """Compare actual SIDs; an already matching owner needs no WRITE_OWNER permission."""
+            target_owner, target_descriptor = pointer(), pointer()
+            result = api.GetNamedSecurityInfoW(
+                ctypes.create_unicode_buffer(str(target)),
+                1,
+                1,
+                ctypes.byref(target_owner),
+                None,
+                None,
+                None,
+                ctypes.byref(target_descriptor),
+            )
+            if result:
+                raise ctypes.WinError(result)
+            try:
+                return bool(api.EqualSid(owner, target_owner))
+            finally:
+                kernel.LocalFree(target_descriptor)
+
         control, revision = wintypes.WORD(), wintypes.DWORD()
         if not api.GetSecurityDescriptorControl(descriptor, ctypes.byref(control), ctypes.byref(revision)):
             raise ctypes.WinError(ctypes.get_last_error())
         # Preserve protected versus inherited DACL semantics, not just its ACEs.
         inheritance = 0x80000000 if control.value & 0x1000 else 0x20000000
+        flags = 4 if same_owner() else 5
         status = api.SetNamedSecurityInfoW(
-            ctypes.create_unicode_buffer(str(target)), 1, 5 | inheritance, owner, None, acl, None
+            ctypes.create_unicode_buffer(str(target)),
+            1,
+            flags | inheritance,
+            owner if flags & 1 else None,
+            None,
+            acl,
+            None,
         )
+        if status == 5 and flags & 1 and same_owner():
+            status = api.SetNamedSecurityInfoW(
+                ctypes.create_unicode_buffer(str(target)), 1, 4 | inheritance, None, None, acl, None
+            )
         if status:
             raise ctypes.WinError(status)
     finally:

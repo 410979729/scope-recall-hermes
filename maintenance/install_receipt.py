@@ -147,6 +147,11 @@ def write_receipt(
     }
     if plan.agent_workspace:
         body["agent_workspace"] = plan.agent_workspace
+    if plan.host == "hermes":
+        from .install_hermes import host_owned_plugin
+
+        if host_owned_plugin(plan.instance_root, plan.target_plugin_dir):
+            body["plugin_directory_owner"] = "hermes"
     if plan.env_file is not None:
         body["env_file"] = normalized_path(plan.env_file)
     body["receipt_sha256"] = _receipt_digest(body)

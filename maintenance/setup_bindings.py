@@ -2,11 +2,64 @@
 
 from __future__ import annotations
 
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from ..adapters.hermes.installation import build_installation_manifest
 from ..adapters.hermes.shared_entries import read_shared_payload
 from .install_common import InstallError
+from .install_hermes import profile_identity
+
+
+def profile_repair(home: Path) -> dict | None:
+    """Allow an old default setup identity to change only after checking its captured sources."""
+    from ..adapters.shared_entries import read_attachment
+
+    pointer = read_attachment(home)
+    if pointer is None or pointer.host != "hermes":
+        return None
+    payload = read_shared_payload(pointer.root)
+    record = next(item for item in payload["entries"] if item["entry_id"] == pointer.entry_id)
+    identity = profile_identity(home)
+    if record.get("agent_identity", payload["agent_id"]) == identity:
+        return None
+    if "agent_identity" in record or payload["agent_id"] != "scope-recall":
+        raise InstallError("Hermes entry identity differs from its profile; preserve the existing binding")
+    database = pointer.root / "memory.sqlite3"
+    with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as db:
+        db.execute("PRAGMA query_only=ON")
+        count = db.execute("SELECT count(*) FROM source_events WHERE entry_id=?", (pointer.entry_id,)).fetchone()[0]
+    if count:
+        raise InstallError(
+            "Hermes entry identity repair refused: captured sources exist; preserve the existing binding"
+        )
+    return dict(entry_id=pointer.entry_id, agent_identity=identity, captured_sources=count)
+
+
+def repair_profile(home: Path) -> dict | None:
+    """Back up and correct an unused entry without rekeying the shared database or its grants."""
+    from ..adapters.shared_entries import read_attachment, write_shared_payload
+    from .shared_run import Run, home_lock, store_lock
+
+    pointer = read_attachment(home)
+    if pointer is None:
+        return None
+    from .shared import _now
+
+    now = _now()
+    with home_lock(home, "setup profile identity", now), store_lock(pointer.root, "setup profile identity", now):
+        repair = profile_repair(home)
+        if repair is None:
+            return None
+        payload = read_shared_payload(pointer.root)
+        record = next(item for item in payload["entries"] if item["entry_id"] == pointer.entry_id)
+        run = Run(pointer.root, "setup-profile-identity", now)
+        run.keep(pointer.root / "installation.json", "store")
+        record["agent_identity"] = repair["agent_identity"]
+        write_shared_payload(pointer.root, payload)
+        repair["receipt"] = run.receipt(repair)
+        return repair
 
 
 def scope_choice(home: Path, host: str, store: Path, *, share_with: str | None, fresh: bool) -> dict:

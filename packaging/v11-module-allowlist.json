@@ -263,6 +263,7 @@
     "maintenance/doctor_recall.py",
     "maintenance/doctor_report.py",
     "maintenance/doctor_store.py",
+    "maintenance/hermes_config.py",
     "maintenance/import_chats.py",
     "maintenance/import_markdown.py",
     "maintenance/import_progress.py",

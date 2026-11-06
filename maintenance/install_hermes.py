@@ -3,6 +3,10 @@ manifest-bound instance a receipt-backed uninstall verifies."""
 
 from __future__ import annotations
 
+import json
+import os
+import re
+import sys
 from pathlib import Path
 
 import yaml
@@ -44,6 +48,49 @@ from .install_common import (
 # The public installer must bind that exact host value; identifiers are not aliased.
 DEFAULT_AGENT_WORKSPACE = "hermes"
 DIST_HERMES = REPO_ROOT / "distribution" / "hermes"
+
+
+def profile_identity(home: Path) -> str:
+    """Infer the host's profile name from its native or custom root without importing Hermes."""
+    resolved = home.resolve()
+    suffix = os.environ.get("HERMES_DATA_DIR_SUFFIX", "")
+    native = (
+        Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / ("hermes" + suffix)
+        if sys.platform == "win32"
+        else Path.home() / (".hermes" + suffix)
+    ).resolve()
+    if resolved.is_relative_to(native):
+        root = native
+    else:
+        root = resolved.parent.parent if resolved.parent.name == "profiles" else resolved
+    if resolved == root:
+        return "default"
+    parts = resolved.relative_to(root).parts
+    if len(parts) == 2 and parts[0] == "profiles" and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", parts[1]):
+        return parts[1]
+    return "custom"
+
+
+def host_owned_plugin(home: Path, target: Path) -> bool:
+    """Recognize only the host's installed plugin namespace, using its external install record."""
+    if normalized_path(target) != normalized_path(home_plugin_dir(home)):
+        return False
+    metadata = home / "plugins" / ".install-metadata.json"
+    try:
+        if metadata.stat().st_size > 1024 * 1024:
+            return False
+        records = json.loads(metadata.read_text(encoding="utf-8"))
+        manifest = yaml.safe_load((target / "plugin.yaml").read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError, yaml.YAMLError):
+        return False
+    record = records.get("scope-recall") if isinstance(records, dict) else None
+    return bool(
+        isinstance(record, dict)
+        and record.get("source")
+        and record.get("revision")
+        and isinstance(manifest, dict)
+        and manifest.get("name") == "scope-recall"
+    )
 
 
 def data_dir(instance_root: Path) -> Path:
@@ -168,19 +215,22 @@ def wrapper_manifest(template: str, version: str = __version__) -> str:
     ``pyproject.toml`` pins the build and its wheel source must be supplied during environment sync.
     """
     if _non_pypi_version(version):
-        return template
-    return template.rstrip("\n") + f'\npip_dependencies:\n  - "hermes-scope-recall[vectors]=={version}"\n'
+        return re.sub(r"(?m)^pip_dependencies:\r?\n(?:[ \t]+[^\n]*\n?)*", "", template)
+    return template
 
 
 def planned_files(plan: InstallPlan) -> dict[Path, str | bytes]:
     files: dict[Path, str | bytes] = {}
-    for name in ("__init__.py", "plugin.yaml"):
+    host_owned = host_owned_plugin(plan.instance_root, plan.target_plugin_dir)
+    for name in () if host_owned else ("__init__.py", "plugin.yaml"):
         source = DIST_HERMES / name
         if not source.is_file():
             raise InstallError(f"distribution template missing: {source}")
         text = source.read_text(encoding="utf-8")
         files[plan.target_plugin_dir / name] = wrapper_manifest(text) if name == "plugin.yaml" else text
-    if normalized_path(plan.target_plugin_dir) == normalized_path(home_plugin_dir(plan.instance_root)):
+    if not host_owned and normalized_path(plan.target_plugin_dir) == normalized_path(
+        home_plugin_dir(plan.instance_root)
+    ):
         files[plan.target_plugin_dir / "pyproject.toml"] = wrapper_pyproject()
     for name, source in SKILLS.items():
         files[plan.instance_root / "skills" / name / "SKILL.md"] = source.read_text(encoding="utf-8")

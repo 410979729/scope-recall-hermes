@@ -2,7 +2,7 @@ name: scope-recall-core
 version: 4.0.1
 description: Bounded Hermes adapter slice over the host-independent Scope Recall core
 provider_entry: scope_recall.adapters.hermes.register:register
-hooks:
+provides_hooks:
   - pre_llm_call
   - api_request_error
   - post_tool_call

@@ -7,23 +7,25 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from ..adapters.hermes.shared_entries import attachment_path, read_shared_payload
 from ..core.schema import SCHEMA_VERSION
 from ..runtime.instance_config import RuntimeInstanceConfig
 from ..runtime.model_budget import initialize_auxiliary_budget_ledger
 from .backup import atomic_write, sha256
 from .doctor import load_binding, run_doctor
+from .hermes_config import provider_configuration
 from .install import apply_install
 from .install_common import InstallError
+from .install_hermes import profile_identity
 from .install_receipt import setup_receipts_directory
 from .setup_activation import register_codex
+from .setup_bindings import repair_profile
 from .setup_configuration import runtime_payload, write_configuration
 from .setup_packages import install_package
 from .setup_preflight import check_plan, installation_plan
 from .setup_projects import register_project_copy
-from .shared import attach, init_shared, store_binding
+from .shared import attach, fresh_installation, init_shared, store_binding
+from .shared_run import SharedStoreError
 
 
 def _runtime(row: dict, plan, backups: list[str]) -> Path:
@@ -51,6 +53,8 @@ def _runtime(row: dict, plan, backups: list[str]) -> Path:
 
 def _attach(row: dict, plan) -> None:
     if row["state"] != "fresh":
+        if row["host"] == "hermes":
+            row["identity_repair"] = repair_profile(Path(row["home"]))
         return
     root = plan.store
     if not (root / "installation.json").is_file():
@@ -58,13 +62,21 @@ def _attach(row: dict, plan) -> None:
     payload = read_shared_payload(root)
     entry = row["host"]
     taken = {item["entry_id"] for item in payload["entries"]}
+    if entry == "hermes" and entry in taken:
+        import hashlib
+
+        entry = "hermes-" + hashlib.sha256(str(Path(row["home"]).resolve()).encode()).hexdigest()[:16]
     if entry in taken:
         raise ValueError("entry name already belongs to another home; choose that home or detach explicitly")
     source = row["scopes"]["source_entry"]
-    kwargs: dict[str, Any] = dict(grants_like=(source,), capture_like=source) if source and entry != "hermes" else {}
+    kwargs: dict[str, Any] = (
+        dict(grants_like=(source,), capture_like=source) if source and row["host"] != "hermes" else {}
+    )
+    if row["host"] == "hermes":
+        kwargs["grants_from"] = fresh_installation(Path(row["home"]), payload, profile_identity(Path(row["home"])))
     routes = root / "runtime-config.json"
     attach(
-        host=entry,
+        host=row["host"],
         instance_root=Path(row["home"]),
         root=root,
         entry_id=entry,
@@ -77,11 +89,7 @@ def _attach(row: dict, plan) -> None:
 
 def _activate_hermes(home: Path, backups: list[str]) -> None:
     path = home / "config.yaml"
-    raw = yaml.safe_load(path.read_text(encoding="utf-8")) if path.is_file() else {}
-    if not isinstance(raw, dict) or not isinstance(raw.get("memory", {}), dict):
-        raise ValueError("host memory configuration is not an object")
-    raw.setdefault("memory", {})["provider"] = "scope-recall"
-    write_configuration(path, yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), backups)
+    write_configuration(path, provider_configuration(path), backups)
 
 
 def _worker(plan, config_path: Path, python: str, backups: list[str], env_file: str | None = None) -> dict:
@@ -226,7 +234,12 @@ def apply_setup(plan, *, register_copies: bool = False) -> dict[str, Any]:
             completed.append(stage)
             results.append(
                 dict(
-                    host=row["host"], installation=installed, worker=worker, doctor=doctor.to_dict(), verification=check
+                    host=row["host"],
+                    installation=installed,
+                    worker=worker,
+                    doctor=doctor.to_dict(),
+                    verification=check,
+                    identity_repair=row.get("identity_repair"),
                 )
             )
         full = bool(results) and all(
@@ -254,11 +267,13 @@ def apply_setup(plan, *, register_copies: bool = False) -> dict[str, Any]:
             host_activation="Start a new host session; approve plugin hooks or MCP when the host requests it.",
         )
     except Exception as exc:  # noqa: BLE001 -- external failures must produce a sanitized recovery receipt.
-        # Unexpected transport/parser errors may carry credentials. Persist only a type and the known stage.
+        # Unexpected transport/parser errors may carry credentials. Persist only a type and the known stage, plus
+        # the text of the installer's own refusals, which name paths and settings and never credential values.
         value = dict(
             status="failed",
             failed_step=stage,
             error_type=type(exc).__name__,
+            reason=str(exc) if isinstance(exc, (InstallError, SharedStoreError)) else None,
             completed=completed,
             backups=backups,
             receipt=str(receipt),

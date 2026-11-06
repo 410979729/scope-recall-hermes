@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 from pathlib import Path
+from time import monotonic
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from .codex_cli import CodexCliConsolidationAdapter, CodexCliRouteConfig
 from .consolidation_models import (
@@ -28,11 +31,32 @@ from .model_budget import (
     load_hermes_attempt_authorization,
     read_auxiliary_budget_status,
 )
-from .models import HttpTransport
+from .models import CredentialGetter, HttpTransport
 from .subscription_budget import SubscriptionBudgetLedger
 from .validation import absolute_path, mapping, only_keys, positive_int, strict_bool, text
 
 DEFAULT_LEDGER_NAME = "auxiliary-budget.sqlite3"
+
+# A minute notices newly supplied keys promptly without rechecking every queued item or pass.
+CREDENTIAL_RECHECK_SECONDS = 60.0
+_REPORTED_CREDENTIAL_GAPS: set[str] = set()
+_CREDENTIAL_GAP_LOCK = threading.Lock()
+
+
+#: The work kinds each model route serves, so a missing key holds only its own route's work.
+CREDENTIAL_KINDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {"embedding": ("embed",), "consolidation": ("consolidate", "evaluate_candidate", "rebuild_projection")}
+)
+
+
+def credential_routes(config: AuxiliaryRuntimeConfig | None) -> dict[str, str]:
+    """Map enabled API work to its declared credential name; CLI subscriptions use their own authentication."""
+    result = {}
+    for role, kinds in CREDENTIAL_KINDS.items():
+        route = getattr(config, role, None)
+        if getattr(config, f"external_{role}", False) and (name := getattr(route, "credential_env", None)):
+            result.update(dict.fromkeys(kinds, name))
+    return result
 
 
 @dataclass(frozen=True)
@@ -101,6 +125,36 @@ class AuxiliaryRuntime:
     capability_gaps: tuple[str, ...]
     ledger_path: Path | None
     ledger: AuxiliaryBudgetLedger | None = None
+    credential_getter: CredentialGetter = os.environ.get
+    credential_envs: Mapping[str, str] = field(default_factory=dict)
+    _missing_credentials: dict[str, float] = field(default_factory=dict, repr=False, compare=False)
+
+    def credential_holds(self, roles: Iterable[str] = CREDENTIAL_KINDS) -> frozenset[str]:
+        """Recheck the named routes' missing keys at a fixed interval, holding their work without leasing items.
+
+        ``roles`` are the routes the pass depends on; a route the caller replaced with its own port needs no key and is
+        neither checked nor reported.
+        """
+        kinds = {kind for role in roles for kind in CREDENTIAL_KINDS[role]}
+        envs = {kind: name for kind, name in self.credential_envs.items() if kind in kinds}
+        now = monotonic()
+        for name in set(envs.values()):
+            if self._missing_credentials.get(name, 0.0) > now:
+                continue
+            if self.credential_getter(name):
+                self._missing_credentials.pop(name, None)
+                continue
+            self._missing_credentials[name] = now + CREDENTIAL_RECHECK_SECONDS
+            with _CREDENTIAL_GAP_LOCK:
+                if name not in _REPORTED_CREDENTIAL_GAPS:
+                    _REPORTED_CREDENTIAL_GAPS.add(name)
+                    logging.getLogger(__name__).warning("credential_missing:%s", name)
+        return frozenset(kind for kind, name in envs.items() if name in self._missing_credentials)
+
+    @property
+    def credential_gaps(self) -> tuple[str, ...]:
+        """Current missing names for status; values never enter diagnostics."""
+        return tuple(f"credential_missing:{name}" for name in sorted(self._missing_credentials))
 
     def close(self) -> None:
         """Release owned connections even when transport shutdown fails."""
@@ -306,7 +360,9 @@ def build_auxiliary_runtime(
     config: AuxiliaryRuntimeConfig,
     *,
     transport: HttpTransport | None = None,
+    credential_getter: CredentialGetter | None = None,
 ) -> AuxiliaryRuntime:
+    """Compose approved adapters with one host credential lookup; construction never resolves secret values."""
     gaps: list[str] = []
     ledger = None
     authorization = load_hermes_attempt_authorization()
@@ -327,7 +383,9 @@ def build_auxiliary_runtime(
     elif ledger is None:
         gaps.append("auxiliary_budget_ledger_unconfigured")
     else:
-        embed_adapter = GeminiEmbeddingAdapter(config.embedding, ledger=ledger, transport=transport)
+        embed_adapter = GeminiEmbeddingAdapter(
+            config.embedding, ledger=ledger, transport=transport, credential_getter=credential_getter
+        )
     consolidation_adapter = None
     if config.external_consolidation is not True:
         gaps.append("external_consolidation_not_approved")
@@ -348,6 +406,7 @@ def build_auxiliary_runtime(
             ledger=ledger,
             reserve_input=reserve_input,
             transport=transport,
+            credential_getter=credential_getter,
         )
     else:
         consolidation_adapter = OpenAIConsolidationAdapter(
@@ -355,6 +414,7 @@ def build_auxiliary_runtime(
             ledger=ledger,
             reserve_input=reserve_input,
             transport=transport,
+            credential_getter=credential_getter,
         )
     return AuxiliaryRuntime(
         source_embedding=embed_adapter,
@@ -363,6 +423,8 @@ def build_auxiliary_runtime(
         capability_gaps=tuple(gaps),
         ledger_path=config.ledger_path,
         ledger=ledger,
+        credential_getter=credential_getter or os.environ.get,
+        credential_envs=credential_routes(config),
     )
 
 

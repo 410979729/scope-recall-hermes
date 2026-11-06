@@ -587,10 +587,14 @@ def released(monkeypatch):
     to Hermes, and between releases the tree is a candidate."""
     from scope_recall.maintenance import install_hermes
 
+    from packaging_hooks.module_inventory import stamped_manifest
+
     version = "3.10.3"
     manifest, project = install_hermes.wrapper_manifest, install_hermes.wrapper_pyproject
     monkeypatch.setattr(
-        install_hermes, "wrapper_manifest", lambda template, version=version: manifest(template, version)
+        install_hermes,
+        "wrapper_manifest",
+        lambda template, version=version: manifest(stamped_manifest(template, version), version),
     )
     monkeypatch.setattr(install_hermes, "wrapper_pyproject", lambda version=version: project(version))
     return version
@@ -2154,7 +2158,10 @@ def test_a_released_wrapper_declares_its_core_and_a_candidate_declares_nothing()
     from packaging.requirements import Requirement
     from scope_recall.maintenance.install_hermes import wrapper_manifest
 
-    template = "name: scope-recall\nversion: 3.3.0\nprovider_entry: register:register\n"
+    template = (
+        "name: scope-recall\nversion: 3.3.0\nprovider_entry: register:register\n"
+        'pip_dependencies:\n  - "hermes-scope-recall[vectors]==3.3.0"\n'
+    )
     (spec,) = yaml.safe_load(wrapper_manifest(template, "3.3.0"))["pip_dependencies"]
     requirement = Requirement(spec)
     assert (requirement.name, requirement.extras, str(requirement.specifier)) == (
@@ -2163,7 +2170,7 @@ def test_a_released_wrapper_declares_its_core_and_a_candidate_declares_nothing()
         "==3.3.0",
     )
     for build in ("3.3.0rc4", "3.3.0.dev1", "3.3.0+local"):
-        assert wrapper_manifest(template, build) == template
+        assert wrapper_manifest(template, build) == template.split("pip_dependencies:")[0]
 
 
 def test_remote_release_candidate_manifest_is_converted_once(tmp_path, monkeypatch):

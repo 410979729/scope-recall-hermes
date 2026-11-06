@@ -363,6 +363,55 @@ def print_plan(plan: SetupPlan, *, machine: bool = False) -> None:
     print("  Then: doctor and an isolated capture, worker pass and cross-session recall check.")
 
 
+def package_interpreter(start: Path | None = None) -> Path:
+    """The interpreter of the environment this package is installed in.
+
+    Hermes runs plugins on its base interpreter and adds the plugin environment's site-packages at start-up, so
+    ``sys.executable`` there cannot import this package on its own; the environment's own interpreter can.  Outside
+    a virtual environment (a checkout on ``sys.path``) the running interpreter is the answer.
+    """
+    for parent in (start or Path(__file__)).resolve().parents:
+        if (parent / "pyvenv.cfg").is_file():
+            # Not resolved: a POSIX venv's bin/python is a link whose target is the base interpreter.
+            candidate = parent / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+            if candidate.is_file():
+                return candidate
+    return Path(sys.executable)
+
+
+def configure_hermes(hermes_home: str, config: dict) -> None:
+    """Run the host wizard's noninteractive local setup before writing activation through its exact patch.
+
+    Only ``hermes memory setup`` calls this, and it does not catch provider errors, so a refusal ends the command
+    with one line naming the reason and a nonzero status instead of a traceback.
+    """
+    from .setup_apply import apply_setup
+
+    args = parser().parse_args(
+        [
+            "--host",
+            "hermes",
+            "--home",
+            str(Path(hermes_home).resolve()),
+            "--python",
+            str(package_interpreter()),
+            "--yes",
+        ]
+    )
+    plan = build_plan(args)
+    if plan.blockers:
+        raise SystemExit("Scope Recall setup blocked: " + "; ".join(plan.blockers))
+    result = apply_setup(plan)
+    if result["status"] != "ready":
+        reason = result.get("reason") or result.get("error_type") or result["status"]
+        raise SystemExit(
+            f"Scope Recall setup failed at {result.get('failed_step') or 'verification'}: {reason}. "
+            f"Setup receipt: {result['receipt']}"
+        )
+    config.setdefault("memory", {})["provider"] = "scope-recall"
+    print("Scope Recall: original-message retrieval ready. Start a new Hermes session.")
+
+
 def main(argv: list[str] | None = None) -> int:
     """Confirm once, apply in order and return a structured completion or resumable failure."""
     from .setup_apply import apply_setup

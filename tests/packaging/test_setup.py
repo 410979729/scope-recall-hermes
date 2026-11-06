@@ -183,7 +183,9 @@ def test_configured_models_use_the_existing_metered_test_transport(fake_user, mo
 
     transport = FakeTransport(response)
     monkeypatch.setattr(
-        instance, "build_auxiliary_runtime", lambda config: build_auxiliary_runtime(config, transport=transport)
+        instance,
+        "build_auxiliary_runtime",
+        lambda config, **kwargs: build_auxiliary_runtime(config, transport=transport, **kwargs),
     )
     monkeypatch.setenv("SCOPE_RECALL_TEST_SETUP_KEY", "test-placeholder")
     models = {

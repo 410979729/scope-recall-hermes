@@ -387,7 +387,7 @@ def _agent_fields(kwargs: dict, manifest) -> tuple[str, str, str]:
         raise HermesIdentityError(f"unsupported agent_context: {agent_context}")
     if not agent_identity:
         raise HermesIdentityError("agent_identity is required")
-    if agent_identity != manifest.agent_id:
+    if agent_identity != (manifest.agent_identity or manifest.agent_id):
         raise HermesIdentityError("agent_identity conflict")
     return agent_identity, agent_workspace, agent_context
 

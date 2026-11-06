@@ -60,11 +60,22 @@ def test_repository_origin_normalization_never_exposes_url_credentials(tmp_path)
     assert remote_identity(project) is None
 
 
-def test_selected_provider_without_its_binding_is_preserved_for_repair(tmp_path):
+def test_selected_scope_recall_without_any_installation_is_fresh(tmp_path):
+    """An interrupted setup can leave scope-recall selected with nothing installed; running setup again starts fresh."""
     from scope_recall.maintenance.onboarding import inspect_installation
 
     home = tmp_path / "TEST-existing-hermes"
     home.mkdir()
     (home / "config.yaml").write_text("memory:\n  provider: scope-recall\n", encoding="utf-8")
+    assert inspect_installation(home, host="hermes")["route"] == "fresh_install"
+
+
+def test_selected_legacy_provider_without_its_database_is_preserved_for_repair(tmp_path):
+    from scope_recall.maintenance.onboarding import inspect_installation
+
+    home = tmp_path / "TEST-existing-hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("memory:\n  provider: lancepro\n", encoding="utf-8")
     result = inspect_installation(home, host="hermes")
     assert result["route"] == "repair_required"
+    assert result["reason"] == "selected_provider_without_binding"

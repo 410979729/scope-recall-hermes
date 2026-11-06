@@ -124,9 +124,9 @@ def validate_models(raw: dict) -> dict:
         ) from exc
 
 
-def write_configuration(path: Path, content: str, backups: list[str]) -> None:
+def write_configuration(path: Path, content: str | bytes, backups: list[str]) -> None:
     """Replace changed configuration with an exact rollback copy; identical files remain untouched."""
-    raw = content.encode("utf-8")
+    raw = content.encode("utf-8") if isinstance(content, str) else content
     if path.is_file() and path.read_bytes() == raw:
         return
     if path.is_file():

@@ -20,7 +20,7 @@ from ..core.inbox_rules import REPLAY_CANDIDATES, RETRIED, deferred_until, repla
 from ..core.installation_copy import copy_task_name, installation_copy_id
 from ..core.storage import SQLiteStorage
 from ..core.work_storage import AUTO_RECOVERABLE_WORK_TYPES
-from .auxiliary import summary_budget_enabled
+from .auxiliary import CREDENTIAL_RECHECK_SECONDS, credential_routes, summary_budget_enabled
 from .backup_upkeep import BACKUP_JOB_SECONDS, next_backup_wake
 from .model_budget import provider_holds
 from .worker_entry import (
@@ -46,7 +46,7 @@ BUSY_BACKOFF_SECONDS = SUPERVISOR_RETRY.delay()
 MAX_CONSECUTIVE_WORKER_FAILURES = SUPERVISOR_RETRY.attempts or 0
 #: The work types a model or embedding route does.  A pass can find one unavailable (no port, or a port that
 #: refused before any attempt); the supervisor then cools it down and records how long it stays unavailable.
-ROUTED_WORK_TYPES = frozenset({"embed", "consolidate", "evaluate_candidate"})
+ROUTED_WORK_TYPES = frozenset({"embed", "consolidate", "evaluate_candidate", "rebuild_projection"})
 #: Seconds between two reads of the operator pause while a supervisor sleeps its start delay.
 PAUSE_POLL_SECONDS = 5.0
 #: Seconds before a worker is woken for settled candidates again after a pass that did not sweep them: a provider
@@ -93,6 +93,18 @@ def capable_work_types(config) -> set[str]:
     if ledger and aux.external_embedding and aux.embedding is not None and config.vector is not None:
         capable.add("embed")
     return capable
+
+
+def _unavailable_deadline(config, payload: dict, kind: str, now: datetime) -> datetime:
+    """Reuse the credential recheck interval for missing keys; other capability gaps keep their existing cooldown."""
+    name = credential_routes(config.auxiliary).get(kind)
+    gaps = payload.get("capability_gaps") or ()
+    seconds = (
+        CREDENTIAL_RECHECK_SECONDS
+        if name is not None and f"credential_missing:{name}" in gaps
+        else min(config.auto_retry_cooldown_seconds, CAPABILITY_RECHECK.delay())
+    )
+    return now + timedelta(seconds=seconds)
 
 
 def _unavailable_streaks(previous: object, payload: dict, tracked: set[str], stamp: str) -> dict:
@@ -664,10 +676,7 @@ def supervise(
                 "progress": int(payload.get("completed", 0)) + int(payload.get("recovered", 0)),
             }
             unavailable = set(payload.get("unavailable_work_types", ())) & ROUTED_WORK_TYPES
-            unavailable_until = {
-                kind: utc_now() + timedelta(seconds=min(config.auto_retry_cooldown_seconds, CAPABILITY_RECHECK.delay()))
-                for kind in unavailable
-            }
+            unavailable_until = {kind: _unavailable_deadline(config, payload, kind, utc_now()) for kind in unavailable}
             if code in (0, 75, 124):
                 failures = 0
             else:

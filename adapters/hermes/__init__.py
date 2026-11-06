@@ -25,8 +25,12 @@ __all__ = [
 def __getattr__(name: str):
     # Install/identity must not import the host MemoryProvider.  Adapter
     # registration still resolves these names on first use.
-    if name in {"ScopeRecallHermesAdapter", "register_adapter"}:
-        from .provider import ScopeRecallHermesAdapter, register_adapter
+    if name == "ScopeRecallHermesAdapter":
+        from .provider import ScopeRecallHermesAdapter
 
-        return ScopeRecallHermesAdapter if name == "ScopeRecallHermesAdapter" else register_adapter
+        return ScopeRecallHermesAdapter
+    if name == "register_adapter":
+        from .register import register
+
+        return register
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

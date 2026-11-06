@@ -207,15 +207,20 @@ def _entry_config(
     return out
 
 
-def _fresh_installation(home: Path, payload: dict[str, Any]) -> InstallationManifest:
+def fresh_installation(home: Path, payload: dict[str, Any], agent_identity: str | None = None) -> InstallationManifest:
     """The grants of a home with no installation to carry over: a fresh installation's, the CLI's owner row alone.
 
     Its owner scope is the one an installation of the store's agent made with the default workspace holds: that
     installation's entry and an entry given these grants read, write and capture into the same scope.
+    The optional host identity names its profile without changing those scopes.
     """
-    return build_installation_manifest(
-        home, agent_id=payload["agent_id"], agent_workspace=DEFAULT_AGENT_WORKSPACE, test_mode=payload["test_mode"]
+    manifest = build_installation_manifest(
+        home,
+        agent_id=payload["agent_id"],
+        agent_workspace=DEFAULT_AGENT_WORKSPACE,
+        test_mode=payload["test_mode"],
     )
+    return replace(manifest, agent_identity=agent_identity)
 
 
 def _client_grants(
@@ -243,7 +248,7 @@ def _client_grants(
                 "no other entry is attached to this store to take grants like: attach its first client without "
                 "--grants-like and --capture-like, and it brings the owner's scope"
             )
-        owner = _fresh_installation(home, payload).audience_scopes["owner_private"]
+        owner = fresh_installation(home, payload).audience_scopes["owner_private"]
         return {owner}, {owner}, owner
     if not like or not capture_like:
         raise SharedStoreError(
@@ -323,7 +328,11 @@ def init_shared(
 
 
 def _refuse_misfit(
-    host: str, home: Path, grants_from: Path | None, grants_like: tuple[str, ...], capture_like: str | None
+    host: str,
+    home: Path,
+    grants_from: Path | InstallationManifest | None,
+    grants_like: tuple[str, ...],
+    capture_like: str | None,
 ) -> None:
     """Refuse a host this command does not attach, grant options ``host`` takes none of, and a home whose own store is
     still in place."""
@@ -410,7 +419,7 @@ def attach(
     root: Path,
     entry_id: str,
     display_name: str,
-    grants_from: Path | None = None,
+    grants_from: Path | InstallationManifest | None = None,
     runtime_config_from: Path | None = None,
     python_executable: Path | None = None,
     grants_like: tuple[str, ...] = (),
@@ -443,11 +452,16 @@ def attach(
                     "the grant options given are not used (scope-recall grants changes grants)"
                 )
         elif host == "hermes":
-            source = (
-                load_archived_installation(grants_from, instance_root)
-                if grants_from is not None
-                else _fresh_installation(instance_root, payload)
-            )
+            if isinstance(grants_from, InstallationManifest):
+                source = grants_from
+                if source.hermes_home.resolve() != instance_root.resolve():
+                    raise SharedStoreError("grant manifest belongs to another home")
+            else:
+                source = (
+                    load_archived_installation(grants_from, instance_root)
+                    if grants_from is not None
+                    else fresh_installation(instance_root, payload)
+                )
             record = shared_entry_record(source, entry_id=entry_id, display_name=display_name, attached_at=now)
         else:
             allowed, writable, capture = _client_grants(payload, instance_root, entry_id, grants_like, capture_like)
@@ -499,7 +513,7 @@ def attach(
             "entry_runtime_config": str(entry_path) if entry_config is not None else None,
             "worker_runtime_config": str(worker_path) if worker_config is not None or worker_now is not None else None,
             "worker_runtime_config_written": worker_config is not None,
-            "grants_from": str(grants_from) if grants_from is not None else None,
+            "grants_from": str(grants_from) if isinstance(grants_from, Path) else None,
             "grants_like": list(grants_like) or None,
             "capture_scope_like": capture_like,
             "ledgers_created": ledgers,

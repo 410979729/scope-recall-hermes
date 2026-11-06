@@ -82,6 +82,23 @@ def test_stamping_a_manifest_preserves_everything_else(tmp_path):
         inventory.stamped_manifest("name: no-version-line\n", "9.9.9rc1")
 
 
+def test_core_dependency_pin_is_stamped_and_checked(tmp_path):
+    import shutil
+
+    for relative in (*inventory.PLUGIN_MANIFESTS, "_version.py", "packaging/v11-module-allowlist.json"):
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(REPO_ROOT / relative, target)
+    path = tmp_path / "distribution/hermes/plugin.yaml"
+    text = path.read_text("utf-8")
+    path.write_text(text.replace("hermes-scope-recall[vectors]==", "hermes-scope-recall[vectors]==0"), encoding="utf-8")
+    assert "distribution/hermes/plugin.yaml" in inventory.stale_version_files(tmp_path)
+    inventory.write_all(tmp_path)
+    assert not inventory.stale_version_files(tmp_path)
+    stamped = inventory.stamped_manifest(text, "9.8.7", core_dependency=True)
+    assert "version: 9.8.7\n" in stamped and "hermes-scope-recall[vectors]==9.8.7" in stamped
+
+
 # --------------------------------------------------------------------------
 # The documents a reader checks the version against
 # --------------------------------------------------------------------------

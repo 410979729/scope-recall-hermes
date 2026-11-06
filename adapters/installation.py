@@ -110,6 +110,8 @@ class InstallationManifest:
     #: An explicit recovery reanchors the home while keeping the store's id,
     #: because source identities and deletion tombstones depend on that id.
     location_id: str | None = None
+    #: The host profile an entry accepts; the database keeps its independent agent_id.
+    agent_identity: str | None = None
 
     def to_binding(self) -> InstanceBinding:
         return InstanceBinding(
