@@ -24,6 +24,7 @@ from functools import partial
 from typing import Any, cast
 
 from ..contracts import ContractError, TrustedContext
+from ..core.admission import AdmissionPolicy
 from ..core.composition import CoreConfig, MemoryCore
 from ..core.deadline import RequestDeadline, using_request_deadline
 from ..core.index_rebuild import IMPORT_EMBED_QUEUE_CEILING
@@ -925,6 +926,9 @@ def build_runtime_instance(
             injection_format=config.injection_format,
             injection_token_cap=config.injection_token_cap,
             session_token_cap=config.session_token_cap,
+            admission_policy=AdmissionPolicy(
+                tool_output_embedding=config.vector.tool_output_embedding if config.vector else True
+            ),
             recall_log_policy=LogPolicy(config.recall_log_days, config.recall_log_bytes, config.recall_log_queue),
         ),
         storage=SQLiteStorage(config.binding),

@@ -91,6 +91,7 @@ Credentials are environment variable references. Never put their values in a rou
 | <a id="metric"></a>`metric` | `str` | `"cosine"` |
 | <a id="test_injection_override"></a>`test_injection_override` | `bool` | `false` |
 | <a id="tool_output_retention_days"></a>`tool_output_retention_days` | `int` | `180` |
+| <a id="tool_output_embedding"></a>`tool_output_embedding` | `bool` | `true` |
 
 ## AuxiliaryRuntimeConfig
 
