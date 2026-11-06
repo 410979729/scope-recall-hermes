@@ -17,6 +17,7 @@ from .candidate_tables import (
     CandidateTables,
     is_live_head,
     parse_refs,
+    parse_time,
     snapshot,
 )
 from .evidence_question import (
@@ -57,7 +58,8 @@ class CandidateEvaluations(CandidateTables):
                 f"""SELECT e.evaluation_id,e.state,e.evidence_refs_json,e.evidence_fingerprint,e.memory_epoch,
                        e.model_attempted_at,{HEAD_COLUMNS}
                 FROM candidate_evaluations e
-                JOIN candidate_lifecycle l ON l.candidate_ref=e.candidate_ref AND l.candidate_revision=e.candidate_revision
+                JOIN candidate_lifecycle l ON l.candidate_ref=e.candidate_ref
+                  AND l.candidate_revision=e.candidate_revision
                 {HEAD_JOINS}
                 WHERE e.evaluation_id=? AND {context}""",
                 (evaluation_id, *params),
@@ -83,7 +85,7 @@ class CandidateEvaluations(CandidateTables):
         )
 
     def settle_without_model(self, evaluation: CandidateEvaluationSnapshot, work, sources, *, now: str):
-        """Answer a queued evaluation that a rule in ``core/evidence_question.py`` already decides.
+        """Answer a rule-decided question or defer a queued question still inside its daily interval.
 
         Returns the work mutation, or ``None`` when the model has to be asked.
         Nothing here begins a model attempt, so the at-most-once fence is
@@ -108,6 +110,15 @@ class CandidateEvaluations(CandidateTables):
                 ):
                     answer = ("waiting_evidence", REPEAT_WITHOUT_RESTATEMENT_REASON)
         if answer is None:
+            # Repairs and explicit retries can queue work without the intake/sweep timing gates.
+            # Reuse their daily limit here before any model attempt, retaining the queued question.
+            until = self._slowed_until(candidate.ref, candidate.revision)
+            if evaluation.model_attempted_at is None and until is not None:
+                delay = (until - parse_time(now)).total_seconds()
+                if delay > 0:
+                    return self._tx.work.defer_without_attempt(
+                        *work.lease, now=now, error_code="candidate_slowed", seconds=delay
+                    )
             return None
         return self.complete(
             evaluation.evaluation_id, work, now=now, state=answer[0], reason=answer[1], result_digest=None
@@ -253,7 +264,8 @@ class CandidateEvaluations(CandidateTables):
             self._read()
             .execute(
                 "SELECT evaluation_id,candidate_ref,candidate_revision,state, "
-                "(SELECT last_error_code FROM work_items w WHERE w.work_id=e.work_id) AS work_error FROM candidate_evaluations e "
+                "(SELECT last_error_code FROM work_items w WHERE w.work_id=e.work_id) AS work_error "
+                "FROM candidate_evaluations e "
                 "WHERE work_id=? AND (state='failed' OR (? AND state='queued' AND EXISTS "
                 "(SELECT 1 FROM work_items w WHERE w.work_id=e.work_id AND w.state='failed')))",
                 (work_id, include_unfinished),
