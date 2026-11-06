@@ -1,10 +1,10 @@
 name: scope-recall
-version: 4.0.1
+version: 4.0.2
 description: Scope Recall long-term memory, local and source-backed, one store shared by your agents
 provider_entry: register:register
 requires_hermes: ">=0.22.5"
 pip_dependencies:
-  - "hermes-scope-recall[vectors]==4.0.1.dev1"
+  - "hermes-scope-recall[vectors]==4.0.2"
 provides_hooks:
   - pre_llm_call
   - api_request_error

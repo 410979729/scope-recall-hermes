@@ -2,6 +2,14 @@
 
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``).
 
+## [4.0.2] - 2026-11-06
+
+A Hermes that installs Scope Recall from its plugin catalog can now use it. `hermes memory setup` with `scope-recall` selected runs the ordinary setup through the provider's setup hook, using the plugin environment's interpreter, and reports a refusal in one line. Hermes entries in a shared store carry the Hermes profile's identity instead of a fixed agent id, so a fresh installation's sessions no longer fail with an `agent_identity` conflict; an unused entry recorded with the old id is repaired. Setup leaves a catalog-installed plugin directory under Hermes's control, treats a home that selects the provider but holds no database, manifest or receipt as a fresh installation, and changes only `memory.provider` in `config.yaml`. The provider reports itself unavailable until it is bound, and unbound turns no longer raise. `plugin.yaml` declares `provides_hooks`, `requires_hermes` and the pinned core package.
+
+Inside Hermes, model and embedding credentials come from Hermes's own secret source for the active profile; the plugin does not read `.env` or other credential files. Background workers receive only the declared credential names, and work that needs a missing credential is held and rechecked every minute instead of being claimed and returned (#354). On Windows, copying a file's access control no longer needs permission to change its owner when the owner stays the same, and a failed backup leaves no empty file. The `revise` tool's guidance says that original messages cannot be revised and that a value stated in conversation needs no tool call.
+
+No schema change is needed: stores from 4.0.0 and 4.0.1 work directly with this release. Before release, a pre-release build was taken through the catalog installation on Windows and Linux with Hermes v0.23.0: install, setup, recall in a new session, and a correction.
+
 ## [4.0.1] - 2026-11-05
 
 Empty or whitespace-only HTTP 200 responses now get bounded recovery as unfinished upstream responses, while uncertain billing reservations and duplicate-execution safeguards remain in place. Hermes notices retain their trusted host origin across display timestamps and later human messages; those messages keep their own origin and are captured once. Scheduled Hermes sessions without a user no longer participate in memory and report `capability_gap:unbound_session` in diagnostics. After more than 60 seconds idle, binding a Hermes session warms the query embedding route in the background using the auxiliary budget; private mode skips the warm-up.
