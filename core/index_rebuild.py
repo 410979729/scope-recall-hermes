@@ -8,7 +8,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 
 from ..contracts import ContractError
-from .admission import classify
+from .admission import classify, decision_marker
 from .visibility import allowed
 
 #: The roles of an import whose words a person reads back: what the owner said, what they were told, their
@@ -172,6 +172,9 @@ def queue_import_embeddings(
                 try:
                     tx.claims.require_live_source(source.ref, source.revision)
                 except ContractError:
+                    continue
+                # Preserve the capture-time opt-out even when an import uses a non-tool transport role.
+                if decision_marker(tx, source.ref, source.revision) == "admission_source_only:tool_output_not_embedded":
                     continue
                 if classify(source.event).disposition != "schedule":
                     continue

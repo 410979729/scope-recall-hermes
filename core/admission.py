@@ -30,10 +30,13 @@ class AdmissionPolicy:
     enabled: bool = True
     max_pending_work: int = 2048
     important_reserve: int = 128
+    tool_output_embedding: bool = True
 
     def __post_init__(self):
         if type(self.enabled) is not bool:
             raise ValueError("admission enabled must be boolean")
+        if type(self.tool_output_embedding) is not bool:
+            raise ValueError("tool_output_embedding must be boolean")
         if type(self.max_pending_work) is not int or not 2 <= self.max_pending_work <= 100000:
             raise ValueError("max_pending_work must be between 2 and 100000")
         if type(self.important_reserve) is not int or not 0 <= self.important_reserve <= 10000:
@@ -277,15 +280,21 @@ def _repeated_tool_output(tx, scope_id, text, source_ref, source_revision) -> bo
 NON_ROOT_WORK_TYPES = frozenset({"embed"})
 
 
+def _effective_origin(event):
+    """Use an import's original origin solely to decide which work it is owed."""
+    return event.get("source_original_origin") if event.get("origin") == "imported" else event.get("origin")
+
+
 def wanted_work_types(event) -> frozenset[str]:
     """The derived work owed by a source's origin, not its transport role."""
     # This only limits scheduling; the worker verifies import provenance before deriving claims.
-    origin = event.get("source_original_origin") if event.get("origin") == "imported" else event.get("origin")
-    return WORK_TYPES if origin in DERIVATION_ROOT_ORIGINS else NON_ROOT_WORK_TYPES
+    return WORK_TYPES if _effective_origin(event) in DERIVATION_ROOT_ORIGINS else NON_ROOT_WORK_TYPES
 
 
 def decide(tx, event, scope_id, policy=None, *, source_ref=None, source_revision=None):
     policy = policy or AdmissionPolicy()
+    if not policy.tool_output_embedding and _effective_origin(event) == "tool_observation":
+        return AdmissionDecision("source_only", "tool_output_not_embedded")
     decision = classify(event, policy)
     if decision.disposition != "schedule":
         return decision

@@ -666,6 +666,7 @@ CORE_RELEASE_CONTRACTS += [
     "tests/contract/test_processing_loop_survives.py",
     "tests/contract/test_embed_group_bookkeeping.py",
     "tests/contract/test_tool_output_is_not_derived.py",
+    "tests/contract/test_tool_output_embedding.py",
     "tests/contract/test_retire_rootless_claims.py",
 ]
 

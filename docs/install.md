@@ -55,6 +55,10 @@ For scripts, `--models` reads a JSON object containing the existing `auxiliary` 
 and an optional `vector_threshold`. Unknown input fields are never copied to generated configuration.
 Set credentials in the process environment before starting the host; setup does not collect or log their values.
 
+HTTP model and embedding routes share the worker process's proxy environment settings; on Windows, system proxy
+settings can also apply when proxy environment variables are absent. Add the host of each local or LAN route to
+`no_proxy` so its requests bypass the proxy; otherwise they may be sent through it and time out.
+
 Setup and doctor share one workload catalog measured with synthetic conversations through the real worker,
 including ended-session and completed-task summaries and adoption processing.
 Request token figures are estimates of message contents; chat planning also applies a floor from recorded

@@ -162,6 +162,31 @@ def bindings_match(expected: InstanceBinding, actual: InstanceBinding) -> bool:
     )
 
 
+def trusted_runtime_config(config_path, expected_binding):
+    """Return the verified config path, parsed config, and capability gaps for the host binding.
+
+    Missing or invalid configuration returns no path or config and names the gaps.
+    """
+    path, explicit = _resolve_runtime_config_path(config_path, expected_binding)
+    if path is None:
+        return None, None, (GAP_UNCONFIGURED,)
+    if not path.is_absolute() or not _is_regular_nonreparse_file(path):
+        return None, None, (GAP_UNCONFIGURED, GAP_INVALID)
+    if not explicit:
+        try:
+            if path.resolve(strict=False).parent != expected_binding.data_directory.resolve(strict=False):
+                return None, None, (GAP_UNCONFIGURED, GAP_INVALID)
+        except OSError:
+            return None, None, (GAP_UNCONFIGURED, GAP_INVALID)
+    try:
+        config = load_config(path)
+    except (OSError, ValueError):
+        return None, None, (GAP_UNCONFIGURED, GAP_INVALID)
+    if not bindings_match(expected_binding, config.binding):
+        return None, None, (GAP_UNCONFIGURED, GAP_BINDING_MISMATCH)
+    return path, config, ()
+
+
 def _basic_core(expected_binding: InstanceBinding, core: MemoryCore | None, clock: Any | None) -> MemoryCore:
     if core is not None:
         return core
@@ -279,23 +304,9 @@ def attach_trusted_host_runtime(
     def basic(*gaps: str) -> TrustedHostRuntime:
         return runtime_class(core=_basic_core(expected_binding, core, clock), capability_gaps=gaps)
 
-    path, explicit = _resolve_runtime_config_path(config_path, expected_binding)
-    if path is None:
-        return basic(GAP_UNCONFIGURED)
-    if not path.is_absolute() or not _is_regular_nonreparse_file(path):
-        return basic(GAP_UNCONFIGURED, GAP_INVALID)
-    if not explicit:
-        try:
-            if path.resolve(strict=False).parent != expected_binding.data_directory.resolve(strict=False):
-                return basic(GAP_UNCONFIGURED, GAP_INVALID)
-        except OSError:
-            return basic(GAP_UNCONFIGURED, GAP_INVALID)
-    try:
-        runtime_config = load_config(path)
-    except (OSError, ValueError):
-        return basic(GAP_UNCONFIGURED, GAP_INVALID)
-    if not bindings_match(expected_binding, runtime_config.binding):
-        return basic(GAP_UNCONFIGURED, GAP_BINDING_MISMATCH)
+    path, runtime_config, gaps = trusted_runtime_config(config_path, expected_binding)
+    if runtime_config is None:
+        return basic(*gaps)
     runtime_config = replace(
         runtime_config,
         session_id=session_id.strip() or runtime_config.session_id,

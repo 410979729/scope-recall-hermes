@@ -15,6 +15,7 @@ from typing import Any, Protocol, cast
 
 from scope_recall.contracts import ContractError, Origin, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
+from scope_recall.core.admission import AdmissionPolicy
 from scope_recall.core.capture_inbox import DELETED_KEY, PendingCapture
 from scope_recall.core.events import prepare_capture
 from scope_recall.core.recall_budget import DEFAULT_INJECTION_TOKEN_CAP
@@ -25,7 +26,7 @@ from scope_recall.core.writer_lease import TruthWriterBusyError
 from scope_recall.runtime.instance_config import RuntimeInstanceConfig
 
 from ..host_profiles import HOSTS, agent_run
-from ..runtime_wiring import strict_hook_budget
+from ..runtime_wiring import strict_hook_budget, trusted_runtime_config
 from .boundary import (
     filter_capture_reply,
     without_lone_surrogates,
@@ -104,12 +105,24 @@ class HookCall:
         return self.persisted or self.queued
 
 
-def _hook_core(config: CodexInstallationConfig | SharedClientConfig, clock: HookClock | None) -> MemoryCore:
+def _hook_core(
+    config: CodexInstallationConfig | SharedClientConfig, clock: HookClock | None, *, runtime_config_path=None
+) -> MemoryCore:
     """The core a hook captures through until its trusted runtime attaches: its writes may wait for the writer lease as
     long as the owner's prompt asks (``PROMPT_CAPTURE_TIMEOUT_S``); every other capture asks for its 1 s.  A store waits
     no longer than its core's write timeout, whatever a capture asks, and at the default 1 s a prompt that met a lease
     held longer would not be stored."""
-    return MemoryCore(CoreConfig(config.to_binding(), write_timeout_seconds=PROMPT_CAPTURE_TIMEOUT_S), clock=clock)
+    binding = config.to_binding()
+    _, runtime_config, _ = trusted_runtime_config(runtime_config_path, binding)
+    vector = runtime_config.vector if runtime_config is not None else None
+    return MemoryCore(
+        CoreConfig(
+            binding,
+            write_timeout_seconds=PROMPT_CAPTURE_TIMEOUT_S,
+            admission_policy=AdmissionPolicy(tool_output_embedding=vector.tool_output_embedding if vector else True),
+        ),
+        clock=clock,
+    )
 
 
 class CodexHookHandler:
@@ -197,7 +210,7 @@ class CodexHookHandler:
         if host_runtime is None and core is None:
             # Capture uses a basic Core first.  Trusted runtime attach
             # (vectors/auxiliary/worker) waits until after a durable Source commit.
-            core = _hook_core(config, clock)
+            core = _hook_core(config, clock, runtime_config_path=trusted_runtime_config_path)
             handler = cls(config, core=core, clock=clock, hook_started_at=hook_started_at)
             handler._pending_runtime_config_path = trusted_runtime_config_path
             return handler
@@ -230,7 +243,7 @@ class CodexHookHandler:
         ``clock``'s time for when it stored them.
         """
         config = load_shared_client(home, host)
-        core = _hook_core(config, clock)
+        core = _hook_core(config, clock, runtime_config_path=trusted_runtime_config_path or config.runtime_config_path)
         handler = cls(
             config, core=core, clock=event_clock if event_clock is not None else clock, hook_started_at=hook_started_at
         )
