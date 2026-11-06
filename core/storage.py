@@ -1060,7 +1060,12 @@ class SQLiteStorage:
             self._close(conn, original)
 
     def _file_stamp(self):
-        """Observe file identity without opening a descriptor that could disturb POSIX locks."""
+        """Observe file identity and content without opening a descriptor that could disturb POSIX locks.
+
+        The first three fields name the file; modification time and size stand for its content. The inode change
+        time is left out: macOS advances it on every write transaction, even one that writes nothing, which would
+        make every transaction recheck the structural state.
+        """
         try:
             info = self.path.stat()
         except FileNotFoundError:
@@ -1069,7 +1074,6 @@ class SQLiteStorage:
             info.st_dev,
             info.st_ino,
             getattr(info, "st_birthtime_ns", 0),
-            info.st_ctime_ns,
             info.st_mtime_ns,
             info.st_size,
         )
