@@ -2,10 +2,13 @@
 
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``).
 
-## [4.0.1.dev1] - 2026-11-04
+## [4.0.1] - 2026-11-05
 
-Development source; no package release. Empty or whitespace-only HTTP 200 responses use bounded upstream recovery while preserving uncertain billing reservations and duplicate-execution fences. Hermes notices retain their trusted host origin across display timestamps and later human steers; human messages keep their own origin and are captured once.
-Non-root sources, including imports classified by their original origin, keep their embeddings without starting consolidation, and old ineligible consolidation work becomes obsolete. Waiting candidates cannot use tool or assistant echoes as new first-hand restatements. OpenAI-compatible embedding routes accept a valid total-only token count while retaining reservations for unknown usage. Scheduled Hermes sessions with no user stay inactive, report a diagnostic gap and no longer fail on every lifecycle hook; other identity failures remain errors. No schema change is required; the new optional `vector.tool_output_embedding` switch defaults to on and can keep new tool outputs searchable by words without embedding them.
+Empty or whitespace-only HTTP 200 responses now get bounded recovery as unfinished upstream responses, while uncertain billing reservations and duplicate-execution safeguards remain in place. Hermes notices retain their trusted host origin across display timestamps and later human messages; those messages keep their own origin and are captured once. Scheduled Hermes sessions without a user no longer participate in memory and report `capability_gap:unbound_session` in diagnostics. After more than 60 seconds idle, binding a Hermes session warms the query embedding route in the background using the auxiliary budget; private mode skips the warm-up.
+
+Only first-hand human messages, external documents and imports originally from either can start consolidation. Assistant messages, tool output and host notices can still be embedded; old ineligible consolidation work is marked obsolete without a model call. After two automatic decisions, only a first-hand human restatement can reopen a candidate; after five undecided evaluations, retries and other paths also observe the limit of one question per day. OpenAI-compatible embedding routes can settle usage reported only as `total_tokens`, while unknown or invalid usage keeps its reservation. Configuration lines that name a credential environment variable, such as `credential_env: OPENROUTER_API_KEY`, are no longer refused as credentials. The documentation explains that model and embedding routes use the worker process's proxy environment and that local network routes belong in `no_proxy`.
+
+No schema change is needed: stores from 4.0.0 work directly with this release. The optional `vector.tool_output_embedding` setting defaults to `true`, preserving existing behavior; set it to `false` to keep new tool output searchable by keyword without embedding it. The changes in this release have not been verified on a real host; validation was limited to automated tests using synthetic data.
 
 ## [4.0.0] - 2026-11-04
 
