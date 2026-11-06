@@ -305,7 +305,7 @@ def attach_trusted_host_runtime(
         return runtime_class(core=_basic_core(expected_binding, core, clock), capability_gaps=gaps)
 
     path, runtime_config, gaps = trusted_runtime_config(config_path, expected_binding)
-    if runtime_config is None:
+    if path is None or runtime_config is None:
         return basic(*gaps)
     runtime_config = replace(
         runtime_config,
@@ -323,7 +323,7 @@ def attach_trusted_host_runtime(
         _host_adapter=runtime_config.host_adapter,
     )
     store = getattr(host.core, "storage", None)
-    if isinstance(store, SQLiteStorage):
+    if store is not None and isinstance(store, SQLiteStorage):
         store.on_upgrade_pending = lambda: host.wake_upgrade(known_pending=True)
     host.wake_upgrade()
     return host

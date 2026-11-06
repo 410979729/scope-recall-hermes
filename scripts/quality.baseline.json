@@ -378,9 +378,6 @@
   "core/candidate_debounce.py": {
    "UP017": 1
   },
-  "core/candidate_evaluations.py": {
-   "E501": 2
-  },
   "core/candidate_intake.py": {
    "E501": 2
   },
@@ -853,9 +850,6 @@
   },
   "tests/contract/test_autonomous_worker.py": {
    "E501": 2
-  },
-  "tests/contract/test_candidate_debounce.py": {
-   "UP017": 1
   },
   "tests/contract/test_candidate_lifecycle.py": {
    "E501": 2
