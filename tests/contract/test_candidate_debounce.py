@@ -9,7 +9,7 @@ evaluations before anyone judged them.
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from scope_recall.core.candidate_debounce import (
@@ -22,9 +22,11 @@ from scope_recall.core.candidate_debounce import (
     slowed_until,
 )
 from scope_recall.core.claims import Qualification
+from scope_recall.core.consolidate import candidate_evaluation_messages
+from test_candidate_lifecycle import Evaluator, _finish_source_work
 from test_claims import app, capture, draft
 
-NOW = datetime(2026, 9, 6, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 9, 6, 12, 0, 0, tzinfo=UTC)
 
 
 def _at(seconds_ago: float) -> str:
@@ -485,3 +487,112 @@ def test_a_pass_that_deferred_a_slowed_candidate_leaves_it_its_wake(app):
     with core.storage.read(ctx) as tx:
         planned = tx.candidates.next_settle_at(after=deferred_by.isoformat(), now=core.clock.utc_now())
     assert parse_stamp(planned) == last + timedelta(seconds=SLOW_INTERVAL_SECONDS)
+
+
+def _queue_again(tx, saved, route, now, index):
+    """Exercise the public recovery/registration paths after first-hand evidence arrives."""
+    if route == "source":
+        return
+    registered = tx.candidates.register(saved.ref, saved.revision, observed_at=now, rule_version=f"TEST-rule-{index}")
+    assert registered.work_queued
+    if route == "rule_change":
+        return
+    conn = tx._check(write=True)
+    # The oversized question stopped before making a model request.
+    # Its history is separate from the six completed, unresolved questions.
+    conn.execute(
+        """UPDATE candidate_evaluations SET state='failed',failure_code='input_invalid'
+           WHERE evaluation_id=(SELECT max(evaluation_id) FROM candidate_evaluations WHERE work_id IS NOT NULL)"""
+    )
+    conn.execute(
+        """UPDATE work_items SET state='failed',last_error_code=?,attempt=1
+           WHERE work_id=(SELECT max(work_id) FROM candidate_evaluations WHERE work_id IS NOT NULL)""",
+        ("budget_checked:TEST|input_invalid" if route == "budget_rebound" else "input_invalid",),
+    )
+    if route == "retry":
+        assert tx.work.retry_failed(now=now, include_terminal=True, dry_run=False)["retried"] == 1
+    elif route == "budget_repair":
+        assert tx.candidates.recover_oversized_evaluations(now=now, formatter=candidate_evaluation_messages) == 1
+    else:
+        assert tx.candidates.reschedule_budget_blocked_candidates(now=now, rule_version=f"TEST-rebound-{index}") == 1
+
+
+@pytest.mark.parametrize("route", ["source", "rule_change", "retry", "budget_repair", "budget_rebound"])
+def test_repeated_first_hand_restatements_call_the_model_at_most_once_per_day(app, route):
+    """A hot candidate retains each restatement while every queue route waits out its day."""
+    core, ctx = app
+    saved = _register(core, ctx, 0)
+    _retire_live_evaluations(core)
+    last = _asked(core, SLOW_AFTER_QUESTIONS + 1, hours_ago=25)
+    with core.storage.write(ctx) as tx:
+        tx._check(write=True).execute(
+            "UPDATE candidate_evaluations SET state='waiting_evidence',reason='insufficient_evidence'"
+        )
+    start = parse_stamp(core.clock.utc_now())
+    evaluator = Evaluator()
+    for index in range(6):
+        core.clock.now = (start + timedelta(hours=index * 3)).isoformat().replace("+00:00", "Z")
+        capture(core, ctx, f"entity0 property0 sharedtoken 值0。TEST-witness-{index}", key=f"TEST-pace/{index}")
+        _settle(core)
+        _sweep(core, ctx)
+        with core.storage.write(ctx) as tx:
+            _queue_again(tx, saved, route, core.clock.utc_now(), index)
+        _finish_source_work(core)
+        core.drain_worker(ctx, max_items=1, remaining_seconds=20, consolidation=evaluator)
+
+    assert evaluator.calls == 1, f"{route} made {evaluator.calls} model calls in fifteen hours"
+    with core.storage.read(ctx) as tx:
+        conn = tx._check()
+        asked = conn.execute(
+            "SELECT count(*) FROM candidate_evaluations WHERE model_attempted_at IS NOT NULL"
+        ).fetchone()[0]
+        evidence = conn.execute("SELECT count(*) FROM candidate_evidence").fetchone()[0]
+        assert asked == SLOW_AFTER_QUESTIONS + 2
+        assert evidence == 7
+        assert tx.candidates._slowed_until(saved.ref, saved.revision) == start + timedelta(
+            seconds=SLOW_INTERVAL_SECONDS
+        )
+    assert last < start - timedelta(seconds=SLOW_INTERVAL_SECONDS)
+
+    # Exactly at the boundary the retained evidence gets another real worker call.
+    core.clock.now = (start + timedelta(seconds=SLOW_INTERVAL_SECONDS)).isoformat().replace("+00:00", "Z")
+    core.drain_worker(ctx, max_items=1, remaining_seconds=20, consolidation=evaluator)
+    assert evaluator.calls == 2
+
+
+@pytest.mark.parametrize("route", ["intake", "worker"])
+@pytest.mark.parametrize("questions", [SLOW_AFTER_QUESTIONS - 1, SLOW_AFTER_QUESTIONS + 1])
+def test_no_model_answers_neither_start_nor_extend_the_daily_interval(app, monkeypatch, route, questions):
+    """Deterministic answers do not count as questions or replace the last model-attempt timestamp."""
+    from scope_recall.core import candidate_intake
+
+    core, ctx = app
+    saved = _register(core, ctx, 0)
+    _retire_live_evaluations(core)
+    last = _asked(core, questions, hours_ago=1)
+    capture(core, ctx, "entity0 property0 sharedtoken TEST-unrelated", key="TEST-pace/unrelated")
+    # Reproduce a persisted question queued before the repeated-verdict rule.
+    with monkeypatch.context() as previous_rule:
+        if route == "worker":
+            previous_rule.setattr(candidate_intake, "AUTOMATIC_VERDICTS", questions + 1)
+        with core.storage.write(ctx) as tx:
+            tx.candidates.register(
+                saved.ref, saved.revision, observed_at=core.clock.utc_now(), rule_version="TEST-legacy"
+            )
+    _finish_source_work(core)
+    evaluator = Evaluator()
+    core.drain_worker(ctx, max_items=1, remaining_seconds=20, consolidation=evaluator)
+    assert evaluator.calls == 0
+    with core.storage.read(ctx) as tx:
+        conn = tx._check()
+        rows = conn.execute(
+            "SELECT model_attempted_at,result_digest,work_id,state,reason "
+            "FROM candidate_evaluations ORDER BY evaluation_id"
+        ).fetchall()
+        assert len(rows) == questions + 1
+        assert rows[-1][0] is None and rows[-1][1] is None
+        assert (rows[-1][2] is None) == (route == "intake")
+        assert tuple(rows[-1][3:]) == ("waiting_evidence", "repeat_without_restatement")
+        until = tx.candidates._slowed_until(saved.ref, saved.revision)
+    expected = last + timedelta(seconds=SLOW_INTERVAL_SECONDS) if questions >= SLOW_AFTER_QUESTIONS else None
+    assert until == expected
