@@ -2,6 +2,12 @@
 
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``).
 
+## [4.0.3] - 2026-11-07
+
+`hermes memory setup` and `scope-recall setup --host hermes` now give a new Hermes entry's memory to Hermes Desktop on the same machine as well as to the CLI: the entry gets the owner principal `(desktop, local)` and its `owner_private` row on the CLI row's scope, so a Desktop chat recalls and captures without a `scope-recall grants` edit. `hermes --tui` still needs the owner's approval, because the browser dashboard's chat tab runs the TUI and a dashboard on loopback can serve it without a login. Running setup again keeps an existing entry's grants; add Desktop to an entry made by an earlier release as `docs/install/hermes.md` describes.
+
+No schema change is needed: stores from 4.0.0 through 4.0.2 work directly with this release.
+
 ## [4.0.2] - 2026-11-06
 
 A Hermes that installs Scope Recall from its plugin catalog can now use it. `hermes memory setup` with `scope-recall` selected runs the ordinary setup through the provider's setup hook, using the plugin environment's interpreter, and reports a refusal in one line. Hermes entries in a shared store carry the Hermes profile's identity instead of a fixed agent id, so a fresh installation's sessions no longer fail with an `agent_identity` conflict; an unused entry recorded with the old id is repaired. Setup leaves a catalog-installed plugin directory under Hermes's control, treats a home that selects the provider but holds no database, manifest or receipt as a fresh installation, and changes only `memory.provider` in `config.yaml`. The provider reports itself unavailable until it is bound, and unbound turns no longer raise. A named Hermes profile attaches to a shared store as `hermes-<profile>`, so another agent recalling its items can say which profile heard them. `plugin.yaml` declares `provides_hooks`, `requires_hermes` and the pinned core package.
