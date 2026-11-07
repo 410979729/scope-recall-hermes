@@ -14,6 +14,8 @@ hermes memory setup
 Select `scope-recall`, then start a new session. Setup creates `~/.scope-recall/shared` or reuses the home's
 existing attachment, installs the memory skill and sets `memory.provider` in `config.yaml`, leaving every other
 line unchanged. A new installation uses original-message retrieval with model routes disabled and a zero budget.
+Its memory is yours in the Hermes CLI and in Hermes Desktop on this machine; `hermes --tui` needs your approval
+first ([local surfaces](../../docs/install/hermes.md#local-surfaces)).
 
 ## Tools
 

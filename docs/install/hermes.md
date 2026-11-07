@@ -11,8 +11,9 @@ hermes memory setup
 
 Select `scope-recall`, then start a new session. The provider's setup hook uses the same local setup workflow as
 `scope-recall setup --host hermes`: it creates `~/.scope-recall/shared` or reuses the home's existing attachment,
-installs the memory skill, and selects `memory.provider`. New installations use original-message retrieval with
-model routes disabled and a zero budget. Setup preserves the other configuration bytes and leaves the
+installs the memory skill, and selects `memory.provider`. A new entry gives the owner's memory to the CLI and to
+Hermes Desktop on this machine ([local surfaces](#local-surfaces)). New installations use original-message retrieval
+with model routes disabled and a zero budget. Setup preserves the other configuration bytes and leaves the
 catalog-installed plugin directory under Hermes's control. Unsupported YAML layouts are refused with a reason.
 
 ## Package installation
@@ -24,7 +25,7 @@ catalog-installed plugin directory under Hermes's control. Unsupported YAML layo
 Discovery uses `HERMES_HOME`, otherwise `~/.hermes`. A host-local venv is preferred; setup shows the exact interpreter
 and whether it fell back to its own Python. Use `--home` or `--python` only to override that choice.
 
-Setup selects memory.provider: scope-recall in config.yaml and installs the provider and memory skill. The CLI owner identity is the default; desktop, TUI and remote login audiences still require explicit owner authorization.
+Setup selects memory.provider: scope-recall in config.yaml and installs the provider and memory skill.
 
 A scheduled session (`platform=cron`) with no user id does not participate in memory. Its hooks return without capture,
 recall or background work, and diagnostics report `capability_gap:unbound_session`. The reason is logged once at debug
@@ -32,6 +33,25 @@ level, not as a failure on every hook. No installation owner or earlier session'
 and installation failures still raise their normal errors.
 
 After an idle period, binding a session warms the query embedding route in the background. This request counts toward the auxiliary budget; private mode blocks the warm-up.
+
+## Local surfaces
+
+A new entry made by setup, from the catalog or from the package, gives the owner's private memory to two surfaces:
+the CLI and the Hermes Desktop chat panel on this machine. The chat panel reaches the agent only through the Desktop
+app's own loopback backend or the gateway's local session transport, which serves only the account the gateway runs
+as. A session that carries a dashboard login is a user of its own and binds nothing until that login is approved.
+
+`hermes --tui` is not approved, and setup asks no question about it: the browser dashboard's chat tab runs the TUI,
+and a dashboard on loopback can serve that tab without a login to anything that reaches its port, a tunnel included.
+If nobody else can reach it, approve the surface. On an entry of a shared store, add the owner principal
+`{"platform": "tui", "user_id": "local"}` and its `owner_private` row with `scope-recall grants`
+([changing an entry's grants](../shared-store.md#changing-an-entrys-grants)); on a home with its own store, run
+`apply-install --local-platform tui`. Approve a dashboard login of your own the same way, with the login in place of
+`local`, or on a home with its own store `apply-install --owner-login <platform>=<login>`.
+
+Running setup again keeps an existing entry's grants, so an entry made by an earlier release does not gain Desktop
+that way: add `desktop` as above. Until a surface is approved, its sessions capture and recall nothing; the host log
+says so once per session, and `doctor` reports `local_session_unbound` with what approves it.
 
 ## Model credentials
 

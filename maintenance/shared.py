@@ -29,7 +29,7 @@ import shutil
 import sqlite3
 import sys
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -207,8 +207,15 @@ def _entry_config(
     return out
 
 
-def fresh_installation(home: Path, payload: dict[str, Any], agent_identity: str | None = None) -> InstallationManifest:
-    """The grants of a home with no installation to carry over: a fresh installation's, the CLI's owner row alone.
+def fresh_installation(
+    home: Path,
+    payload: dict[str, Any],
+    agent_identity: str | None = None,
+    *,
+    local_platforms: Sequence[str] = (),
+) -> InstallationManifest:
+    """The grants of a home with no installation to carry over: a fresh installation's, the CLI's owner row, and the
+    owner's row on each of ``local_platforms`` (``approve_local_platforms``), which setup passes for a new entry.
 
     Its owner scope is the one an installation of the store's agent made with the default workspace holds: that
     installation's entry and an entry given these grants read, write and capture into the same scope.
@@ -219,6 +226,7 @@ def fresh_installation(home: Path, payload: dict[str, Any], agent_identity: str 
         agent_id=payload["agent_id"],
         agent_workspace=DEFAULT_AGENT_WORKSPACE,
         test_mode=payload["test_mode"],
+        local_platforms=local_platforms,
     )
     return replace(manifest, agent_identity=agent_identity)
 

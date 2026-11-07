@@ -92,6 +92,48 @@ def test_two_profiles_share_store_with_distinct_host_identities(fake_user):
     }
 
 
+ACCOUNT = "sid:S-1-5-21-1000000001-2000000002-3000000003-1001"
+CONVERSATION = "local-" + "0123456789abcdef" * 4
+
+
+def test_wizard_setup_gives_desktop_chats_the_owners_memory_and_leaves_the_tui_unapproved(fake_user, monkeypatch):
+    """After ``hermes memory setup`` a Hermes Desktop chat reads and writes the owner's private memory, as the CLI does:
+    unnamed, or through the gateway's local session transport, which names the account the gateway runs as.
+    ``hermes --tui`` stays unapproved: the browser dashboard's chat tab runs the TUI, and on loopback it asks no
+    login."""
+    from scope_recall.adapters.hermes import HermesIdentityError, bind_hermes_identity
+    from scope_recall.adapters.hermes import identity as hermes_identity
+    from scope_recall.maintenance.setup import configure_hermes
+
+    home = fake_user / ".hermes"
+    catalog_plugin(home)
+    (home / "config.yaml").write_text("model: TEST\n", encoding="utf-8")
+    plan = build_plan(options(home))
+    monkeypatch.setattr("builtins.input", lambda *a: pytest.fail("setup prompted"))
+    for _run in range(2):  # run again, the entry keeps its grants
+        ScopeRecallHermesAdapter(setup=configure_hermes).post_setup(str(home), {})
+    monkeypatch.setattr(hermes_identity, "host_account_principal", lambda: ACCOUNT)
+    sent = dict(hermes_home=str(home), agent_identity="default", agent_workspace="hermes")
+    transport = dict(
+        user_id=ACCOUNT, chat_type="dm", chat_id=CONVERSATION, gateway_session_key=f"agent:main:local:dm:{CONVERSATION}"
+    )
+
+    cli = bind_hermes_identity("TEST-cli", platform="cli", **sent)
+    for identity in (
+        bind_hermes_identity("TEST-desktop", platform="desktop", **sent),
+        bind_hermes_identity(CONVERSATION, platform="desktop", **transport, **sent),
+    ):
+        assert identity.entry_id == "hermes"
+        assert identity.runtime_audience.includes_owner_private and not identity.read_only
+        assert identity.runtime_audience.capture_scope_id == cli.runtime_audience.capture_scope_id
+
+    with pytest.raises(HermesIdentityError, match="user principal required"):
+        bind_hermes_identity("TEST-tui", platform="tui", **sent)
+    tui = bind_hermes_identity(CONVERSATION, platform="tui", **transport, **sent)
+    assert tui.runtime_audience.allowed_scope_ids == frozenset() and tui.read_only
+    assert plan.hosts[0]["scopes"]["local_platforms"] == ["desktop"], "the plan names the approval before it is made"
+
+
 def test_profile_entry_names_fit_entry_ids_or_stay_plain(fake_user):
     from scope_recall.maintenance.setup_apply import hermes_entry_name
 

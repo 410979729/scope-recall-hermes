@@ -11,6 +11,15 @@ from ..adapters.hermes.shared_entries import read_shared_payload
 from .install_common import InstallError
 from .install_hermes import profile_identity
 
+#: The local surfaces a new Hermes entry approves as the owner's own, beside the CLI (``adapters/audiences``).
+#: Hermes names a session ``desktop`` in the Desktop app's chat panel, which reaches the agent from the app's own
+#: backend on this machine: a loopback listener on a port of its own, or the gateway's local session transport, which
+#: serves only the account the gateway runs as.  A session there that carries a dashboard login is a principal of its
+#: own.  ``tui`` is not here: the browser dashboard's chat tab runs the TUI, and a dashboard on loopback can serve it
+#: without a login to whatever reaches its port, a tunnel included; only the owner can say that nobody else does.
+#: An existing entry keeps the grants it holds.
+SETUP_LOCAL_PLATFORMS = ("desktop",)
+
 
 def profile_repair(home: Path) -> dict | None:
     """Allow an old default setup identity to change only after checking its captured sources."""
@@ -72,13 +81,16 @@ def scope_choice(home: Path, host: str, store: Path, *, share_with: str | None, 
         agent = payload["agent_id"] if payload else "scope-recall"
         manifest = build_installation_manifest(home, agent_id=agent, agent_workspace="hermes")
         scope = manifest.audience_scopes["owner_private"]
-        return dict(
+        choice = dict(
             policy="new private owner grant",
             source_entry=None,
             read_scopes=[scope],
             write_scopes=[scope],
             capture_scope=scope,
         )
+        if host == "hermes":
+            choice["local_platforms"] = list(SETUP_LOCAL_PLATFORMS)
+        return choice
     choices = {}
     for entry in entries:
         owners = [row for row in entry["audiences"] if row["kind"] == "owner_private"]

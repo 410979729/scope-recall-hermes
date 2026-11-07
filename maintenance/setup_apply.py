@@ -86,7 +86,12 @@ def _attach(row: dict, plan) -> None:
         dict(grants_like=(source,), capture_like=source) if source and row["host"] != "hermes" else {}
     )
     if row["host"] == "hermes":
-        kwargs["grants_from"] = fresh_installation(Path(row["home"]), payload, profile_identity(Path(row["home"])))
+        kwargs["grants_from"] = fresh_installation(
+            Path(row["home"]),
+            payload,
+            profile_identity(Path(row["home"])),
+            local_platforms=row["scopes"]["local_platforms"],
+        )
     routes = root / "runtime-config.json"
     attach(
         host=row["host"],
